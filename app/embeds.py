@@ -1,6 +1,7 @@
 """Rich Discord embed builder."""
 from __future__ import annotations
 import json
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 def build_embed(war: Any, s: Dict, banner_fname: Optional[str], 
@@ -67,3 +68,13 @@ def build_embed(war: Any, s: Dict, banner_fname: Optional[str],
     }
     
     return embed
+
+def build_payload(embeds: List[Dict], s: Dict, mention_role_id: Optional[str]) -> Dict:
+    content = ""
+    if mention_role_id:
+        content = f"<@&{mention_role_id}>"
+    
+    return {
+        "content": content,
+        "embeds": embeds
+    }
