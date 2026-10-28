@@ -18,7 +18,7 @@ from .models import War
 from .report import build_report, is_over
 from .source import EsiWarSource
 from .store import WarStore
-from .structures import StructureIndex, summarize, make_structures
+from .structures import StructureIndex, make_structures
 
 PROJECT_URL = "https://github.com/Headruner/eve-war-bot-2"
 
