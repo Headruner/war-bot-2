@@ -8,6 +8,10 @@ from typing import Any, Dict, List, Optional
 
 log = logging.getLogger(__name__)
 
+class EsiError(Exception):
+    """Exception raised for ESI errors."""
+    pass
+
 class EsiClient:
     def __init__(self, base_url: str, user_agent: str, timeout: float = 15.0,
                  compatibility_date: str = "2025-08-26",
@@ -46,18 +50,18 @@ class EsiClient:
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429 or e.response.status_code >= 500:
                     if attempt == max_retries - 1:
-                        raise
+                        raise EsiError(f"ESI Server Error: {e.response.status_code}")
                     wait_time = e.response.headers.get("Retry-After", backoff)
                     log.warning("ESI Rate Limit / Server Error. Retrying in %.2fs...", float(wait_time))
                     await asyncio.sleep(float(wait_time))
                     backoff *= 2
                 else:
                     log.error("ESI Request failed with %s: %s", e.response.status_code, url)
-                    raise
+                    raise EsiError(f"ESI Request failed with {e.response.status_code}")
             except Exception as e:
                 if attempt == max_retries - 1:
                     log.exception("Unexpected ESI Error: %s", e)
-                    raise
+                    raise EsiError(str(e))
                 await asyncio.sleep(backoff)
                 backoff *= 2
 
