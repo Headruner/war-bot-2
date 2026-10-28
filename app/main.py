@@ -8,7 +8,7 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import ConfigError, Credentials, Settings, load_credentials, load_settings
+from .config import ConfigError, load_credentials, load_settings
 from .discord_notifier import DiscordNotifier, WebhookInvalid, NotifyError
 from .embeds import build_embed, build_payload
 import requests

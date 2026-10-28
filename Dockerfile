@@ -1,22 +1,28 @@
-# Build environment
-FROM python:3.11-slim as builder
-WORKDIR /app
-RUN apt-get update && apt-get install -y gcc libjpeg-dev libtiff6 && rm -rf /var/lib/apt/lists/*
-COPY requirements.txt .
-RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir PyYAML
-
-# Runtime environment
+# Use a standard python slim image
 FROM python:3.11-slim
-WORKDIR /app
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
-ENV PATH="/usr/local/bin:${PATH}"
+
+# Set environment variables
 ENV PYTHONUNBUFFERED=1
+ENV PATH="/usr/local/bin:${PATH}"
 
-# Install runtime dependencies for Pillow
-RUN apt-get update && apt-get install -y libjpeg62-turbo libtiff6 && rm -rf /var/lib/apt/lists/*
+# Set working directory
+WORKDIR /app
 
+# Install system dependencies, including the system-level python-yaml
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libpq-dev \
+    libjpeg-dev \
+    libtiff6 \
+    python3-yaml \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy project files
 COPY . .
 
 # Create a non-root user for security
