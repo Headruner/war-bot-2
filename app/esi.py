@@ -38,8 +38,7 @@ class EsiClient:
             params["X-Cache-Purge"] = "true"
 
         # Retry Logic
-        max_retries = 3
-        backoff = 2.0
+        max_retries = 1
         
         for attempt in range(max_retries):
             try:
@@ -48,22 +47,11 @@ class EsiClient:
                     response.raise_for_status()
                     return response.json()
             except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429 or e.response.status_code >= 500:
-                    if attempt == max_retries - 1:
-                        raise EsiError(f"ESI Server Error: {e.response.status_code}")
-                    wait_time = e.response.headers.get("Retry-After", backoff)
-                    log.warning("ESI Rate Limit / Server Error. Retrying in %.2fs...", float(wait_time))
-                    await asyncio.sleep(float(wait_time))
-                    backoff *= 2
-                else:
-                    log.error("ESI Request failed with %s: %s", e.response.status_code, url)
-                    raise EsiError(f"ESI Request failed with {e.response.status_code}")
+                log.error("ESI Request failed with %s: %s", e.response.status_code, url)
+                raise EsiError(f"ESI Request failed with {e.response.status_code}")
             except Exception as e:
-                if attempt == max_retries - 1:
-                    log.exception("Unexpected ESI Error: %s", e)
-                    raise EsiError(str(e))
-                await asyncio.sleep(backoff)
-                backoff *= 2
+                log.exception("Unexpected ESI Error: %s", e)
+                raise EsiError(str(e))
 
     async def wars(self) -> List[Dict]:
         return await self._request("GET", "wars/")

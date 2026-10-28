@@ -3,7 +3,11 @@ from __future__ import annotations
 import aiosqlite
 import json
 import logging
-from typing import Dict, List, Optional
+import os
+import sqlite3
+from typing import Dict, List, Optional, Any
+from datetime import datetime
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -13,25 +17,43 @@ class WarStore:
         self.db: Optional[aiosqlite.Connection] = None
 
     async def connect(self):
-        self.db = await aiosqlite.connect(self.db_path)
-        await self.db.execute("""
-            CREATE TABLE IF NOT EXISTS wars (
-                war_id INTEGER PRIMARY KEY,
-                status TEXT,
-                notified_at TEXT,
-                discord_message_id TEXT,
-                attachments TEXT,
-                report_json TEXT,
-                watermark_war_id INTEGER
-            )
-        """)
-        await self.db.execute("""
-            CREATE TABLE IF NOT EXISTS meta (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
-        await self.db.commit()
+        import os
+        db_path = Path(self.db_path)
+        
+        if not db_path.parent.exists():
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            # Ensure directory is writable by the current user
+            # This can help if the directory was created by root but we are running as botuser
+            try:
+                os.chmod(db_path.parent, 0o777)
+            except Exception as e:
+                log.warning("Could not chmod %s: %s", db_path.parent, e)
+
+        try:
+            self.db = await aiosqlite.connect(str(db_path))
+            await self.db.execute("""
+                CREATE TABLE IF NOT EXISTS wars (
+                    war_id INTEGER PRIMARY KEY,
+                    status TEXT,
+                    notified_at TEXT,
+                    discord_message_id TEXT,
+                    attachments TEXT,
+                    report_json TEXT,
+                    watermark_war_id INTEGER
+                )
+            """)
+            await self.db.execute("""
+                CREATE TABLE IF NOT EXISTS meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+            await self.db.commit()
+        except sqlite3.OperationalError as e:
+            if "unable to open database file" in str(e):
+                log.error("Failed to open database at %s. Please ensure the directory is writable.", db_path)
+            raise e
 
     async def close(self):
         if self.db:
