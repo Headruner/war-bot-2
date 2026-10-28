@@ -1,35 +1,46 @@
-# FRD — EVE War Bot v2
+# FRD — EVE War Bot v2 (Enterprise Edition)
 
-## 1. Functional Requirements
+## 1. Project Overview
+The **EVE War Bot** is a production-grade monitoring service that tracks war declarations in EVE Online. It provides real-time updates to Discord channels, featuring rich media, live scorecards, and structure ownership analysis.
 
-### 1.1 War Detection
-- **FR-01:** The bot shall poll the ESI `/wars/` endpoint at a configurable frequency.
-- **FR-02:** The bot shall identify new wars by comparing the highest seen ID (watermark) against the current ESI list.
-- **FR-03:** The bot shall skip "skipped" wars (IDs that appear in ESI but return a 404 on details) to avoid retry loops.
+## 2. Functional Requirements
 
-### 1.2 Data Ingestion
-- **FR-04:** For every new war, the bot shall fetch:
-    - Aggressor/Defender IDs and types (Corp/Alliance).
-    - Tickers and Names.
-    - Declarations, Start times, and End times.
-    - Mutual and Open For Allies flags.
-- **FR-05:** The bot shall fetch the last 25 killmails (or max page) for each war to generate a "Recent Kills" feed.
-- **FR-06:** The bot shall fetch the top 3 "Hot Systems" based on kill density from the latest killmails.
-- **FR-07:** The bot shall fetch publicly known structures for both sides (if the alliance/corp has ≤ 20 corporations).
+### 2.1 Data Ingestion
+- **ESI Integration:** Connects to CCP's ESI API to monitor the `/wars/` endpoint.
+- **War Detection:** Identifies new wars using a persistent "watermark" to prevent duplicate notifications.
+- **Structure Analysis:** 
+    - Fetches structure data from `adam4eve.eu`.
+    - For **Corporation wars**, lists all known structures for the corporation.
+    - For **Alliance wars**, lists structures for every corporation belonging to the alliance.
+- **Live Scorecard:** Calculates and displays:
+    - Ships killed and ISK destroyed.
+    - Efficiency percentages.
+    - Hot systems (Top 3 by kill density).
+    - Recent killmail links.
 
-### 1.3 Discord Notifications
-- **FR-08:** The bot shall send a rich embed containing logos, a banner, and the full scorecard.
-- **FR-09:** The bot shall include a zKillboard link for the war and individual kills.
-- **FR-10:** The bot shall perform "Live Updates" by editing the Discord message whenever the scorecard or timeline changes significantly.
-- **FR-11:** The bot shall support "Batching" of notifications (e.g., grouping 5 wars into one message) to prevent Discord rate-limit triggers.
+### 2.2 Notification Engine
+- **Discord Webhooks:** Delivers notifications with custom branding.
+- **Dynamic Banners:** Generates PNG images showing "Aggressor vs Defender" logos.
+- **Live Updates:** Edits existing Discord messages as the battle progresses.
+- **Rate Limiting:** Implements `Retry-After` handling and token bucket management to respect Discord's API limits.
 
-### 1.4 Storage & Reliability
-- **FR-12:** The bot shall persist the "watermark" and "sent" statuses in a SQLite database.
-- **FR-13:** The bot shall provide a healthcheck endpoint for Docker monitoring.
-- **FR-14:** The bot shall provide a `stats` command to view monthly war summaries.
+### 2.3 Persistence & Statistics
+- **SQLite Storage:** Uses `aiosqlite` for non-blocking storage of war states and historical data.
+- **Monthly Reporting:** Generates summaries of wars declared on the 1st of each month.
 
-## 2. Non-Functional Requirements
-- **NFR-01: Performance.** The bot must use Asynchronous I/O (`httpx`) to ensure that network latency does not block the main execution loop.
-- **NFR-02: Efficiency.** The bot must cache static entity data (Names/Tickers) to minimize API calls.
-- **NFR-03: Scalability.** The bot must be able to handle "War Rushes" of 50+ declarations without exceeding 10% CPU usage.
-- **NFR-04: Observability.** The bot must log all errors, rate-limit events, and successes to `stdout`.
+## 3. Non-Functional Requirements
+
+### 3.1 Technical Architecture
+- **Asynchronous Core:** Built on `httpx` and `asyncio` to handle high-concurrency network requests.
+- **Entity Caching:** Implements a TTL-based in-memory cache for tickers and names to minimize redundant API calls.
+- **Batching:** Uses batching for database writes to maintain high performance under load.
+- **Memory Efficiency:** Uses `ijson` to stream large JSON datasets (like structures) without consuming excessive RAM.
+
+### 3.2 Deployment & Security
+- **Containerization:** Deployed via Docker with resource limits (1GB RAM, 2 CPUs).
+- **Persistence:** Uses Docker volumes to ensure database records survive container restarts.
+- **Security:** Secrets are stored in `config/credentials.json`, which is excluded from version control.
+
+## 4. User Experience
+- **Dummy Manual:** Provides a "one-click" setup guide for non-technical users.
+- **Observability:** Logs all events, errors, and rate-limit hits for easy debugging.

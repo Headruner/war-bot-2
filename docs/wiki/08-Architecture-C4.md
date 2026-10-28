@@ -1,34 +1,33 @@
 # Architecture (C4) — EVE War Bot v2
 
 ## C1 — System Context
-The **EVE War Bot** is a notification service for the EVE Online community.
-- **Users:** Discord users, Alliance officers, and Corporation leaders.
-- **External Systems:**
-    - **ESI API:** Source of truth for war data and entity information.
-    - **Discord:** Delivery platform for rich notifications.
-    - **Adam4EVE:** Source of truth for structure data.
-    - **SQLite:** Persistence layer for deduplication and historical stats.
+- **Users:** Discord community members, Alliance officers, Corporation leads.
+- **External Systems:** 
+    - **CCP ESI API:** Data source for wars, killmails, and entities.
+    - **Discord Webhook:** The primary notification and interaction layer.
+    - **Adam4EVE:** The source for structure ownership data.
+    - **SQLite:** Local persistent storage.
 
 ## C2 — Containers
-The system is deployed as a single Docker container:
-- **Application Container:** Runs the Python 3.11 runtime.
-- **Database Container (Embedded):** SQLite handles local persistence.
-- **External APIs:** RESTful communication with ESI, Discord, and Adam4EVE.
+- **EVE War Bot (App Container):** 
+    - **Language:** Python 3.11+
+    - **Framework:** Asyncio / HTTPX
+    - **Storage:** SQLite (aiosql._db)
+- **External APIs:** ESI, Discord, Adam4EVE.
 
 ## C3 — Components
-The application is divided into the following functional modules:
-- **WarWatcher:** Periodically polls ESI for new war declarations.
-- **EntityResolver:** Handles name resolution and ticker fetching with a caching layer.
-- **StructureAnalyzer:** Queries Adam4EVE for structure ownership data (Corp/Alliance).
-- **ReportGenerator:** Orchestrates the construction of the Discord embed (Timeline, Score, Allies, Kills, Structures).
-- **Notifier:** Manages asynchronous Discord webhook interaction, including rate-limiting and image uploads.
-- **StatsManager:** Handles monthly war summary calculations.
+- **WarWatcher:** Monitors `/wars/` and manages the "watermark" to detect new events.
+- **EsiClient:** A wrapper providing async requests with automatic retries and a TTL cache for entity data.
+- **StructureAnalyzer:** Logic to fetch and summarize structures from Adam4EVE, handling the logic for both Corp and Alliance wars.
+- **ReportGenerator:** Orchestrates the assembly of the Discord embed (Scorecards, Timeline, Allies, Killmails, Structures).
+- **DiscordNotifier:** Handles high-performance webhook delivery, image uploads, and rate-limit management.
+- **StoreManager:** Handles asynchronous database transactions.
 
 ## C4 — Code Structure
-- `app/main.py`: Orchestration, CLI, and main loop.
-- `app/esi.py`: Async client with retries and caching.
-- `app/source.py`: Data ingestion logic.
-- `app/report.py`: Embed construction and score calculation.
-- `app/store.py`: Async SQLite database interaction.
-- `app/structures.py`: Structure fetching and summary logic.
-- `app/models.py`: Data classes and type definitions.
+- `app/main.py`: Application lifecycle, CLI, and main loop.
+- `app/esi.py`: The core network layer with caching and retry logic.
+- `app/source.py`: Logic for war ingestion and party decomposition.
+- `app/report.py`: Formatting logic for scores and Discord embeds.
+- `app/store.py`: Database models and persistence.
+- `app/structures.py`: Specific logic for the Adam4EVE integration.
+- `app/models.py`: Unified data classes for all internal state.
