@@ -1,0 +1,13 @@
+# Python Dependencies - EVE War Bot v2
+# Optimized for Async and Concurrency
+
+# Core
+requests==2.32.3
+PyYAML==6.0.2
+Pillow==11.0.0
+ijson==3.3.0
+
+# v2.0 Additions
+httpx==0.27.0           # For Asynchronous HTTP requests
+aiosqlite==0.20.0       # For non-blocking SQLite operations
+asyncio                # Standard library for concurrency

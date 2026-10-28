@@ -1,0 +1,19 @@
+# EVE War Bot v2 Configuration
+
+poll_interval_min: 5
+max_new_per_cycle: 50
+batch_embeds: 5
+report_enabled: true
+live_updates: true
+report_recent_kills: 5
+report_kill_details_limit: 25
+report_max_killmail_pages: 1
+alliance_member_count_max_corps: 20
+structures_enabled: true
+structures_refresh_hours: 24
+log_level: "INFO"
+esi_base_url: "https://esi.evetech.net"
+esi_compatibility_date: "2025-08-26"
+structures_url: "https://data.everef.net/structures/structures-latest.v2.json"
+sqlite_path: "data/wars.db"
+heartbeat_file: "heartbeat.txt"
