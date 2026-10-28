@@ -3,6 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, List
 
+class NotifyError(Exception):
+    """Exception raised for errors during Discord notification."""
+    pass
+
+class WebhookInvalid(Exception):
+    """Exception raised when the Discord webhook URL is invalid."""
+    pass
+
 @dataclass
 class Party:
     name: str
