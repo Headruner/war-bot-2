@@ -113,6 +113,9 @@ async def build_report(esi: EsiClient, war_id: int, recent_kills: int = 5,
         "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
 
+def is_over(war: Dict) -> bool:
+    return bool(war.get("finished") or war.get("retracted"))
+
 def _side_id(side: Dict) -> tuple[Optional[int], str]:
     if side.get("alliance_id"):
         return side["alliance_id"], "alliance"

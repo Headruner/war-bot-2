@@ -8,6 +8,11 @@ from .esi import EsiClient
 
 log = logging.getLogger(__name__)
 
+def make_structures(s: Dict, creds: Dict, store: WarStore) -> StructureIndex:
+    # We can use a default user agent or try to build one from creds
+    user_agent = f"eve-war-bot ({creds.get('esi', {}).get('contact', 'no-contact')})"
+    return StructureIndex(store, s.get("structures_url"), user_agent, s.get("structures_refresh_hours", 24))
+
 class StructureIndex:
     def __init__(self, db, structures_url: str, user_agent: str, refresh_hours: int = 24):
         self.db = db
