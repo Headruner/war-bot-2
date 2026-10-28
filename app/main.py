@@ -21,6 +21,7 @@ from .store import WarStore
 from .structures import StructureIndex, make_structures
 
 PROJECT_URL = "https://github.com/Headruner/eve-war-bot-2"
+__version__ = "2.0.0"
 
 log = logging.getLogger("eve_war_bot")
 _stop = asyncio.Event()
