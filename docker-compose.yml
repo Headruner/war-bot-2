@@ -4,7 +4,7 @@ services:
     container_name: eve-war-bot-v2
     restart: always
     volumes:
-      - war_data:/app/data
+      - ./data:/app/data
 
 volumes:
   war_data:
