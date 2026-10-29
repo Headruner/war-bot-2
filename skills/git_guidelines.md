@@ -1,5 +1,4 @@
 # Git Best Practices
-* **No Bionic**: Never mention the tool or model used for the commit processing/generation.
 * **Atomic Commits**: Each commit should be a single logical unit of work. Fix one bug or add one feature per commit.
 * **Clear Commit Messages**: Use conventional commits (e.g., `feat:`, `fix:`, `refactor:`, `chore:`) with a clear description.
 * **Test Before Commit**: Ensure code is tested and verified before pushing.

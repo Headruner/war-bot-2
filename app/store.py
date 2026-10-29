@@ -12,8 +12,9 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 class WarStore:
-    def __init__(self, db_path: str):
-        self.db_path = db_path
+    def __init__(self, db_path: str = None):
+        # Force the path to /app/data/wars.db to bypass config issues
+        self.db_path = "/app/data/wars.db"
         self.db: Optional[aiosqlite.Connection] = None
 
     async def connect(self):
