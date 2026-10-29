@@ -22,8 +22,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Create a non-root user for security
-RUN useradd -m botuser
+# Create a non-root user for security. WORKDIR created /app as root and
+# COPY --chown does not change the existing directory, so hand /app and the
+# database directory to botuser explicitly (a fresh named volume inherits it).
+RUN useradd -m botuser && \
+    mkdir -p /app/data && \
+    chown botuser:botuser /app /app/data
 
 # Copy project files and set ownership to the non-root user
 COPY --chown=botuser:botuser . .
