@@ -1,5 +1,6 @@
 import asyncio
 import pytest
+import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock
 from app.store import WarStore
 from app.models import War, Party
@@ -11,29 +12,19 @@ MOCK_WAR_ID = 12345
 MOCK_WAR = War(
     war_id=MOCK_WAR_ID,
     declared_at="2025-01-01T00:00:00Z",
-    aggressor=Party(name="Aggressor Corp", type="corporation", entity_id=1, members=100, dotlan_url="...", ticker="ABC"),
-    defender=Party(name="Defender Corp", type="corporation", entity_id=2, members=100, dotlan_url="...", ticker="XYZ"),
+    aggressor=Party(name="Aggressor Corp", type="corporation", entity_id=1, members=100, dotlan_url="...", ticker="ABC", corporations=None),
+    defender=Party(name="Defender Corp", type="corporation", entity_id=2, members=100, dotlan_url="...", ticker="XYZ", corporations=None),
     status="open_for_allies",
     report_url="http://test.com"
 )
 
-@pytest.fixture
-def db_store():
-    # Use a real sqlite file in a temp directory
-    import os
-    import shutil
-    test_dir = "test_data"
-    if os.path.exists(test_dir):
-        shutil.rmtree(test_dir)
-    os.makedirs(test_dir)
-    
-    db_path = os.path.join(test_dir, "test_wars.db")
-    store = WarStore(db_path)
+@pytest_asyncio.fixture
+async def db_store(tmp_path):
+    # Real sqlite file in a per-test temp directory (never touches data/wars.db)
+    store = WarStore(tmp_path / "test_wars.db")
     await store.connect()
     yield store
-    # Cleanup
-    if os.path.exists(test_dir):
-        shutil.rmtree(test_dir)
+    await store.close()
 
 @pytest.fixture
 def mock_esi():
@@ -76,7 +67,7 @@ async def test_store_crud(db_store):
     
     # Test bootstrapped
     await db_store.set_bootstrapped()
-    assert await db_store.bootstrapped is True
+    assert await db_store.bootstrapped() is True
     
     # Test marks
     await db_store.mark_marker(MOCK_WAR_ID, "done")

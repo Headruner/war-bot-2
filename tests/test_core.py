@@ -52,19 +52,16 @@ async def test_structure_summary_logic():
     mock_db = MagicMock()
     # Mock ESI
     mock_esi = MagicMock()
-    mock_esi.alliance_corporations = asyncio.Future()
-    mock_esi.corporation = asyncio.Future()
-    
-    # Mock return values
-    mock_esi.alliance_corporations.set_result([1, 2])
-    mock_esi.corporation.set_result({"ticker": "CORP1", "member_count": 100})
+    mock_esi.alliance_corporations = AsyncMock(return_value=[1, 2])
+    mock_esi.corporation = AsyncMock(return_value={"ticker": "CORP1", "member_count": 100})
     
     index = StructureIndex(mock_db, "http://test", "Test_UA", 24)
     party = MagicMock(type="alliance", entity_id=99010320)
+    party.name = "99010320"  # MagicMock(name=...) sets the mock's repr, not .name
     
     summary = await index.summarize(mock_esi, party)
     assert summary["name"] == "99010320"
     assert summary["count"] == 2
     assert "corporations" in summary
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
