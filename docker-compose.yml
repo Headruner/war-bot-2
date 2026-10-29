@@ -5,6 +5,7 @@ services:
     restart: always
     volumes:
       - ./data:/app/data
+      - ./config:/app/config:ro
 
 volumes:
   war_data:
