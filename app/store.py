@@ -13,8 +13,9 @@ log = logging.getLogger(__name__)
 
 class WarStore:
     def __init__(self, db_path: str = None):
-        # Force the path to /app/data/wars.db to bypass config issues
-        self.db_path = "/app/data/wars.db"
+        # Use absolute path relative to the script location to bypass config/env issues
+        # This ensures it always points to /app/data/wars.db
+        self.db_path = Path(__file__).parent.parent / "data" / "wars.db"
         self.db: Optional[aiosqlite.Connection] = None
 
     async def connect(self):
