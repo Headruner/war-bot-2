@@ -1,80 +1,131 @@
 """Rich Discord embed builder."""
 from __future__ import annotations
-import json
-from datetime import datetime
-from typing import List, Dict, Any, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
-def build_embed(war: Any, s: Dict, banner_fname: Optional[str], 
-                 report: Optional[Dict], 
-                 structures: Optional[Dict] = None) -> Dict:
-    
-    # Determine colors
-    color = 12597547 # Red default
-    if war.status == "mutual":
-        color = 15158332 # Purple
-    elif war.status == "open_for_allies":
-        color = 16776960 # Orange
-    
-    # Build fields
-    fields = []
+from .source import parse_esi_time
+
+COLOR_DEFAULT = 0xC0392B   # red
+COLOR_MUTUAL = 0x9B59B6    # purple
+COLOR_ALLIES = 0xF39C12    # orange
+
+TITLE_LIMIT = 256
+FIELD_LIMIT = 1024
+MAX_EMBEDS_PER_MESSAGE = 10
+
+STATUS_TEXT = {
+    "mutual": "Mutual war",
+    "open_for_allies": "Open for allies",
+    "none": "War declared",
+}
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _when(value: Optional[str]) -> Optional[str]:
+    """ESI timestamp -> Discord timestamp tag (shown in each reader's local time)."""
+    dt = parse_esi_time(value)
+    return f"<t:{int(dt.timestamp())}:f>" if dt else None
+
+
+def _isk(value: Optional[float]) -> str:
+    v = float(value or 0)
+    for unit, size in (("t", 1e12), ("b", 1e9), ("m", 1e6), ("k", 1e3)):
+        if v >= size:
+            return f"{v / size:.1f}{unit}"
+    return f"{v:.0f}"
+
+
+def _logo(party: Any, size: int = 128) -> Optional[str]:
+    if not getattr(party, "entity_id", None):
+        return None
+    kind = "alliances" if party.type == "alliance" else "corporations"
+    return f"https://images.evetech.net/{kind}/{party.entity_id}/logo?size={size}"
+
+
+def _party_line(party: Any) -> str:
+    line = f"[{party.name}]({party.dotlan_url})"
+    if party.ticker:
+        line += f" [{party.ticker}]"
+    extra = []
+    if party.members is not None:
+        extra.append(f"{party.members:,} members")
+    if party.corporations:
+        extra.append(f"{party.corporations} corps")
+    if extra:
+        line += " · " + ", ".join(extra)
+    return line
+
+
+def build_embed(war: Any, s: Dict, banner_fname: Optional[str] = None,
+                report: Optional[Dict] = None) -> Dict:
+    color = {"mutual": COLOR_MUTUAL, "open_for_allies": COLOR_ALLIES}.get(war.status, COLOR_DEFAULT)
+    report = report or {}
+
+    fields: List[Dict] = [
+        {"name": "🔴 Aggressor", "value": _clip(_party_line(war.aggressor), FIELD_LIMIT)},
+        {"name": "🔵 Defender", "value": _clip(_party_line(war.defender), FIELD_LIMIT)},
+    ]
+
+    timeline = [("Declared", war.declared_at or report.get("declared")),
+                ("Fighting starts", report.get("started")),
+                ("Retracted", report.get("retracted")),
+                ("Finished", report.get("finished"))]
+    lines = [f"{label}: {_when(value)}" for label, value in timeline if _when(value)]
+    if lines:
+        fields.append({"name": "🕒 Timeline", "value": "\n".join(lines)})
+
     if report:
-        # Timeline
-        fields.append({"name": "🕒 Timeline", "value": f"Declared: {war.declared}\nStarts: {war.started}\nFinished: {war.finished}"})
-        
-        # Scorecard
-        ag = report.get("aggressor", {})
-        df = report.get("defender", {})
-        score_text = (f"🔴 Aggressor: {ag.get('ships_killed')} kills, {ag.get('isk_destroyed'):,.0f} ISK\n"
-                       f"🔵 Defender: {df.get('ships_killed')} kills, {df.get('isk_destroyed'):,.0f} ISK\n"
-                       f"Efficiency: {ag.get('efficiency')}%")
-        fields.append({"name": "⚔ Scorecard", "value": score_text})
-        
-        # Allies
-        allies_list = ", ".join([a["name"] for a in report.get("allies", [])])
-        fields.append({"name": "🤝 Allies", "value": allies_list if allies_list else "None"})
-        
-        # Hot Systems
-        hot_sys = ", ".join([sys[0] for sys in report.get("top_systems", [])])
-        fields.append({"name": "📍 Hot Systems", "value": hot_sys if hot_sys else "N/A"})
-        
-        # Links
-        links = f"zKillboard war: {report.get('zkill_war_url')}"
-        fields.append({"name": "🔗 Links", "value": links})
+        ag, df = report.get("aggressor", {}), report.get("defender", {})
+        if report.get("kills_total") or ag.get("ships_killed") or df.get("ships_killed"):
+            eff = f" ({ag['efficiency']}%)" if ag.get("efficiency") is not None else ""
+            fields.append({"name": "⚔ Score", "value": (
+                f"Aggressor: {ag.get('ships_killed', 0)} kills, {_isk(ag.get('isk_destroyed'))} ISK{eff}\n"
+                f"Defender: {df.get('ships_killed', 0)} kills, {_isk(df.get('isk_destroyed'))} ISK")})
 
-    # Structure Summary
-    if structures and "structure_summary" in structures:
-        summary = structures["structure_summary"]
-        if summary.get("name") and summary.get("count"):
-            fields.append({"name": "🏗 Structures", "value": f"{summary['name']}: {summary['count']}\n{summary.get('corporations', 'N/A')}"})
+        allies = ", ".join(a["name"] for a in report.get("allies", []))
+        if allies:
+            fields.append({"name": "🤝 Allies", "value": _clip(allies, FIELD_LIMIT)})
 
-    # Construct Embed
-    embed = {
-        "title": f"⚔ {war.aggressor.name} → {war.defender.name}",
+        hot = ", ".join(name for name, _ in report.get("top_systems", []))
+        if hot:
+            fields.append({"name": "📍 Hot systems", "value": _clip(hot, FIELD_LIMIT)})
+
+        kills = [f"[{k['ship']}]({k['zkill_url']}) – {k['victim'] or k['victim_corp']} in {k['system']}"
+                 for k in report.get("recent_kills", [])]
+        if kills:
+            fields.append({"name": "💥 Recent kills", "value": _clip("\n".join(kills), FIELD_LIMIT)})
+
+        if report.get("zkill_war_url"):
+            fields.append({"name": "🔗 Links", "value": f"[zKillboard]({report['zkill_war_url']})"})
+
+    author = {"name": _clip(f"{war.aggressor.name}" + (f" [{war.aggressor.ticker}]" if war.aggressor.ticker else ""), TITLE_LIMIT),
+              "url": war.aggressor.dotlan_url}
+    if _logo(war.aggressor, 64):
+        author["icon_url"] = _logo(war.aggressor, 64)
+
+    embed: Dict[str, Any] = {
+        "title": _clip(f"⚔ {war.aggressor.name} → {war.defender.name}", TITLE_LIMIT),
         "url": war.report_url,
         "color": color,
-        "author": {
-            "name": f"{war.aggressor.name} ({war.aggressor.ticker})",
-            "url": f"https://evemaps.dotlan.net/{war.aggressor.type}/{war.aggressor.name}",
-            "icon_url": f"https://images.evetech.net/{war.aggressor.entity_id}/logo?size=64"
-        },
-        "thumbnail": {
-            "url": f"https://images.evetech.net/{war.defender.entity_id}/logo?size=128"
-        },
-        "description": f"Status: {war.status}",
+        "author": author,
+        "description": STATUS_TEXT.get(war.status, war.status),
         "fields": fields,
-        "image": {"url": f"attachment://{banner_fname}"} if banner_fname else None,
         "footer": {"text": f"Source: ESI · War #{war.war_id}"},
-        "timestamp": datetime.now().isoformat()
+        "timestamp": war.declared_at or datetime.now(timezone.utc).isoformat(),
     }
-    
+    if _logo(war.defender):
+        embed["thumbnail"] = {"url": _logo(war.defender)}
+    if banner_fname:
+        embed["image"] = {"url": f"attachment://{banner_fname}"}
     return embed
 
+
 def build_payload(embeds: List[Dict], s: Dict, mention_role_id: Optional[str]) -> Dict:
-    content = ""
+    payload: Dict[str, Any] = {"embeds": embeds[:MAX_EMBEDS_PER_MESSAGE]}
     if mention_role_id:
-        content = f"<@&{mention_role_id}>"
-    
-    return {
-        "content": content,
-        "embeds": embeds
-    }
+        payload["content"] = f"<@&{mention_role_id}>"
+        payload["allowed_mentions"] = {"roles": [str(mention_role_id)]}
+    return payload
