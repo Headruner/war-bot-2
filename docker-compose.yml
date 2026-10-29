@@ -5,11 +5,6 @@ services:
     restart: always
     volumes:
       - war_data:/app/data
-    deploy:
-      resources:
-        limits:
-          memory: 0.8G
-          cpus: '2.0'
 
 volumes:
   war_data:
