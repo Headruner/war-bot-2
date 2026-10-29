@@ -158,8 +158,28 @@ async def collect_new_wars(s: Dict, store: WarStore, source: EsiWarSource) -> in
     return new
 
 
+async def structure_summaries(esi: EsiClient, structures: StructureIndex, war) -> Optional[Dict]:
+    """Public structure counts for both sides, with type and corp names resolved."""
+    if not structures.loaded:
+        return None
+    result = {"aggressor": await structures.summarize(esi, war.aggressor),
+              "defender": await structures.summarize(esi, war.defender)}
+    ids = set()
+    for summary in result.values():
+        if summary:
+            ids.update(int(t) for t in summary["by_type"])
+            ids.update(int(c) for c, _ in summary["corps"])
+    try:
+        result["names"] = {i: n for i, (n, _) in (await esi.names(ids)).items()}
+    except EsiError as e:
+        log.debug("structure name lookup failed: %s", e)
+        result["names"] = {}
+    return result
+
+
 async def post_pending(s: Dict, creds: Dict, store: WarStore, notifier: DiscordNotifier,
-                       esi: EsiClient, source: EsiWarSource) -> int:
+                       esi: EsiClient, source: EsiWarSource,
+                       structures: Optional[StructureIndex] = None) -> int:
     """Build embeds for pending wars and post them in batches. Returns wars posted."""
     ready: List[Tuple[int, Dict]] = []
     for wid in await store.pending_ids(limit=s.get("max_new_per_cycle", 50)):
@@ -180,8 +200,9 @@ async def post_pending(s: Dict, creds: Dict, store: WarStore, notifier: DiscordN
                                         s.get("report_max_killmail_pages", 1))
             if report:
                 await store.save_report(wid, report)
+        struct = await structure_summaries(esi, structures, war) if structures else None
         try:
-            ready.append((wid, build_embed(war, s, None, report)))
+            ready.append((wid, build_embed(war, s, None, report, structures=struct)))
         except Exception as e:  # one bad war must not block the others
             log.exception("War %s: could not build embed", wid)
             await store.mark_failed_attempt([wid], f"embed: {e}")
@@ -212,7 +233,7 @@ async def run_cycle(s: Dict, creds: Dict, store: WarStore, notifier: DiscordNoti
     await collect_new_wars(s, store, source)
     if structures:
         await structures.refresh_if_due()
-    await post_pending(s, creds, store, notifier, esi, source)
+    await post_pending(s, creds, store, notifier, esi, source, structures)
 
 
 async def _sleep(seconds: float) -> None:

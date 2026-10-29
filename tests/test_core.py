@@ -1,5 +1,6 @@
 import pytest
 import asyncio
+from unittest.mock import AsyncMock, MagicMock
 import httpx
 import os
 from app.esi import EsiClient
@@ -45,23 +46,25 @@ async def test_discord_webhook_connectivity():
 
 @pytest.mark.asyncio
 async def test_structure_summary_logic():
-    """Test that the structure summary can be generated from dummy data."""
-    from app.structures import StructureIndex
-    
-    # Mock DB
-    mock_db = MagicMock()
-    # Mock ESI
+    """Alliance summary counts public structures of every member corporation."""
+    import io, json
+    from app.structures import StructureIndex, build_index
+
+    dataset = {
+        "1": {"structure_id": 1, "owner_id": 1, "type_id": 35832},
+        "2": {"structure_id": 2, "owner_id": 2, "type_id": 35825},
+        "3": {"structure_id": 3, "owner_id": 2, "type_id": 35825},
+        "4": {"structure_id": 4, "is_public_structure": False},   # no owner: ignored
+    }
+    index = StructureIndex(MagicMock(), "http://test", "Test_UA", 24)
+    index.index = build_index(io.BytesIO(json.dumps(dataset).encode()))
+
     mock_esi = MagicMock()
-    mock_esi.alliance_corporations = AsyncMock(return_value=[1, 2])
-    mock_esi.corporation = AsyncMock(return_value={"ticker": "CORP1", "member_count": 100})
-    
-    index = StructureIndex(mock_db, "http://test", "Test_UA", 24)
+    mock_esi.alliance_corporations = AsyncMock(return_value=[1, 2, 3])
     party = MagicMock(type="alliance", entity_id=99010320)
-    party.name = "99010320"  # MagicMock(name=...) sets the mock's repr, not .name
-    
+
     summary = await index.summarize(mock_esi, party)
-    assert summary["name"] == "99010320"
-    assert summary["count"] == 2
-    assert "corporations" in summary
-import pytest
-from unittest.mock import AsyncMock, MagicMock
+    assert summary["total"] == 3
+    assert summary["by_type"] == {35832: 1, 35825: 2}
+    assert summary["corps"] == [(2, 2), (1, 1)]
+    assert summary["corp_count"] == 3

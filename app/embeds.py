@@ -59,8 +59,23 @@ def _party_line(party: Any) -> str:
     return line
 
 
+def _structure_line(label: str, summary: Optional[Dict], names: Dict) -> Optional[str]:
+    if summary is None:
+        return None
+    if not summary.get("total"):
+        return f"{label}: no public structures known"
+    by_type = sorted(summary["by_type"].items(), key=lambda kv: -kv[1])
+    types = ", ".join(f"{n}× {names.get(int(t), t)}" for t, n in by_type)
+    line = f"{label}: **{summary['total']}** ({types})"
+    if summary.get("corp_count", 1) > 1 and summary.get("corps"):
+        corps = " · ".join(f"{names.get(int(c), c)}: {n}" for c, n in summary["corps"])
+        more = summary.get("corps_with_structures", 0) - len(summary["corps"])
+        line += f"\n↳ {corps}" + (f" (+{more} more corps)" if more > 0 else "")
+    return line
+
+
 def build_embed(war: Any, s: Dict, banner_fname: Optional[str] = None,
-                report: Optional[Dict] = None) -> Dict:
+                report: Optional[Dict] = None, structures: Optional[Dict] = None) -> Dict:
     color = {"mutual": COLOR_MUTUAL, "open_for_allies": COLOR_ALLIES}.get(war.status, COLOR_DEFAULT)
     report = report or {}
 
@@ -98,6 +113,14 @@ def build_embed(war: Any, s: Dict, banner_fname: Optional[str] = None,
         if kills:
             fields.append({"name": "💥 Recent kills", "value": _clip("\n".join(kills), FIELD_LIMIT)})
 
+    if structures:
+        names = structures.get("names", {})
+        lines = [line for line in (_structure_line("Aggressor", structures.get("aggressor"), names),
+                                   _structure_line("Defender", structures.get("defender"), names)) if line]
+        if lines:
+            fields.append({"name": "🏗 Public structures", "value": _clip("\n".join(lines), FIELD_LIMIT)})
+
+    if report:
         if report.get("zkill_war_url"):
             fields.append({"name": "🔗 Links", "value": f"[zKillboard]({report['zkill_war_url']})"})
 

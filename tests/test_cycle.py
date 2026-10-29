@@ -218,3 +218,26 @@ def test_credentials_nested_layout():
     assert creds["contact"] == "me@example.com"
     assert creds["mention_role_id"] == ""
     assert normalize_credentials({"webhook_url": "flat"})["webhook_url"] == "flat"
+
+
+@pytest.mark.asyncio
+async def test_post_includes_public_structures(store):
+    from collections import Counter
+    from app.structures import StructureIndex
+    import fake_esi
+    fake_esi.NAMES.setdefault(35832, ("Astrahus", "inventory_type"))
+    fake_esi.NAMES.setdefault(35825, ("Raitaru", "inventory_type"))
+
+    structures = StructureIndex(None, "http://unused", "ua")
+    structures.index = {98000001: Counter({35832: 2, 35825: 1})}   # corp of the aggressor alliance
+    structures.last_refresh = 9e18                                 # do not download in tests
+
+    esi = FakeEsi(hourly_wars([1]))
+    notifier = CapturingNotifier()
+    await bot.run_cycle(SETTINGS, {}, store, notifier, esi, EsiWarSource(esi), structures=structures)
+
+    fields = {f["name"]: f["value"] for f in notifier.payloads[0]["embeds"][0]["fields"]}
+    value = fields["🏗 Public structures"]
+    assert "Aggressor: **3** (2× Astrahus, 1× Raitaru)" in value
+    assert "Flag Corp One: 3" in value
+    assert "Defender: no public structures known" in value
