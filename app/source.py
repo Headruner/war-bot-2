@@ -10,20 +10,31 @@ Fetches new war IDs and builds detailed War objects containing:
 """
 from __future__ import annotations
 import logging
-from typing import List, Dict, Any, Optional
+from datetime import datetime
+from typing import List, Dict, Optional
 from .esi import EsiClient, EsiError
 from .models import Party, War
 
 log = logging.getLogger(__name__)
+
 
 def _side(raw: Dict) -> tuple[Optional[int], str]:
     if raw.get("alliance_id"):
         return raw["alliance_id"], "alliance"
     return raw.get("corporation_id"), "corporation"
 
+
 def dotlan_link(kind: str, name: str) -> str:
     seg = "alliance" if kind == "alliance" else "corp"
     return f"https://evemaps.dotlan.net/{seg}/{name.replace(' ', '_')}"
+
+
+def parse_esi_time(value: Optional[str]) -> Optional[datetime]:
+    """Parse an ESI timestamp such as 2026-10-28T21:28:00Z (Python 3.10 safe)."""
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
 
 class EsiWarSource:
     def __init__(self, esi: EsiClient, alliance_member_count_max_corps: int = 20):
@@ -35,7 +46,16 @@ class EsiWarSource:
         if not isinstance(ids, list):
             log.warning("Unexpected /wars/ response format")
             return []
-        return sorted([int(i) for i in ids])
+        return sorted(int(i) for i in ids)
+
+    async def declared(self, war_id: int) -> Optional[datetime]:
+        """Declaration time of a war, or None if ESI does not know it."""
+        try:
+            return parse_esi_time((await self.esi.war(war_id)).get("declared"))
+        except EsiError as e:
+            if e.not_found:
+                return None
+            raise
 
     async def _party(self, raw: Dict, names: Dict) -> Party:
         eid, kind = _side(raw)
@@ -43,7 +63,7 @@ class EsiWarSource:
         ticker = None
         members = None
         corps = None
-        
+
         try:
             if kind == "corporation" and eid:
                 data = await self.esi.corporation(eid)
@@ -55,35 +75,44 @@ class EsiWarSource:
                 corp_ids = await self.esi.alliance_corporations(eid) or []
                 corps = len(corp_ids)
                 if 0 < corps <= self.max_corps:
-                    members = sum(int(await self.esi.corporation(c).get("member_count") or 0) for c in corp_ids)
+                    total = 0
+                    for corp_id in corp_ids:
+                        total += int((await self.esi.corporation(corp_id)).get("member_count") or 0)
+                    members = total
         except EsiError as e:
-            log.debug("Optional detail fetch failed for %s: %s", kind, e)
-            
+            log.debug("Optional detail fetch failed for %s %s: %s", kind, eid, e)
+
         return Party(
-            name=name, 
-            type=kind, 
-            entity_id=eid, 
+            name=name,
+            type=kind,
+            entity_id=eid,
             members=members,
-            dotlan_url=dotlan_link(kind, name), 
-            ticker=ticker, 
-            corporations=corps
+            dotlan_url=dotlan_link(kind, name),
+            ticker=ticker,
+            corporations=corps,
         )
 
     async def war(self, war_id: int) -> Optional[War]:
+        """Build a War from ESI.
+
+        Returns None if ESI does not know the war (404). Transient errors raise
+        EsiError so the caller can retry on the next cycle instead of losing it.
+        """
         try:
             d = await self.esi.war(war_id)
-        except Exception as e:
-            log.warning("War %s unavailable: %s", war_id, e)
-            return None
-            
-        a_id, a_type = _side(d.get("aggressor", {}))
-        d_id, d_type = _side(d.get("defender", {}))
-        
+        except EsiError as e:
+            if e.not_found:
+                log.warning("War %s not found on ESI", war_id)
+                return None
+            raise
+
+        a_id, _ = _side(d.get("aggressor", {}))
+        d_id, _ = _side(d.get("defender", {}))
         names = await self.esi.names([a_id, d_id])
-        
+
         status = ("mutual" if d.get("mutual") else
                   "open_for_allies" if d.get("open_for_allies") else "none")
-        
+
         return War(
             war_id=int(d.get("id", war_id)),
             declared_at=d.get("declared"),
