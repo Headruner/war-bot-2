@@ -5,37 +5,44 @@ import json
 import logging
 import os
 import sqlite3
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+# Project root (/app inside the container). Relative database paths are
+# anchored here so "data/wars.db" works regardless of the working directory.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_DB_PATH = "data/wars.db"
+
+
+def resolve_db_path(db_path: Union[str, os.PathLike, None] = None) -> Path:
+    """Return an absolute database path; relative paths resolve against PROJECT_ROOT."""
+    path = Path(db_path or DEFAULT_DB_PATH).expanduser()
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
 class WarStore:
-    def __init__(self, db_path: str = None):
-        # Use absolute path relative to the script location to bypass config/env issues
-        # This ensures it always points to /app/data/wars.db
-        self.db_path = Path(__file__).parent.parent / "data" / "wars.db"
+    def __init__(self, db_path: Union[str, os.PathLike, None] = None):
+        self.db_path = resolve_db_path(db_path)
         self.db: Optional[aiosqlite.Connection] = None
 
     async def connect(self):
-        import os
-        db_path = Path(self.db_path)
-        
-        log.info("DEBUG: Using database path: %s", db_path)
-        
-        if not db_path.parent.exists():
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-        else:
-            # Ensure directory is writable by the current user
-            # This can help if the directory was created by root but we are running as botuser
-            try:
-                os.chmod(db_path.parent, 0o777)
-            except Exception as e:
-                log.warning("Could not chmod %s: %s", db_path.parent, e)
+        db_dir = self.db_path.parent
+        log.info("Using database: %s", self.db_path)
+        db_dir.mkdir(parents=True, exist_ok=True)
+
+        # SQLite needs write access to the directory (journal files), not just the file.
+        if not os.access(db_dir, os.W_OK | os.X_OK):
+            uid = os.getuid() if hasattr(os, "getuid") else "n/a"
+            raise PermissionError(
+                f"Database directory {db_dir} is not writable by uid {uid}; "
+                "check ownership of the mounted data directory."
+            )
 
         try:
-            self.db = await aiosqlite.connect(str(db_path))
+            self.db = await aiosqlite.connect(str(self.db_path))
             await self.db.execute("""
                 CREATE TABLE IF NOT EXISTS wars (
                     war_id INTEGER PRIMARY KEY,
@@ -54,10 +61,9 @@ class WarStore:
                 )
             """)
             await self.db.commit()
-        except sqlite3.OperationalError as e:
-            if "unable to open database file" in str(e):
-                log.error("Failed to open database at %s. Please ensure the directory is writable.", db_path)
-            raise e
+        except sqlite3.OperationalError:
+            log.error("Failed to open database at %s", self.db_path)
+            raise
 
     async def close(self):
         if self.db:

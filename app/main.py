@@ -158,8 +158,7 @@ async def main():
         return
 
     print(f"DEBUG: Loaded settings: {s}")
-    # Hardcoding path to bypass config issues
-    store = WarStore("/app/data/wars.db")
+    store = WarStore(s.get("sqlite_path"))
     await store.connect()
     
     notifier = DiscordNotifier(creds.get("webhook_url", ""), s.get("min_seconds_between_posts", 2),
