@@ -35,9 +35,9 @@ COPY --chown=botuser:botuser . .
 # Switch to the non-root user
 USER botuser
 
-# Healthcheck
-HEALTHCHECK --interval=60s --timeout=30s --retries=3 \
-  CMD [python, "-c", "import json; print(json.dumps({'status': 'ok'}))"]
+# Healthcheck: exec form must be valid JSON; verify the database is readable
+HEALTHCHECK --interval=60s --timeout=30s --start-period=30s --retries=3 \
+  CMD ["python", "-c", "import sqlite3; sqlite3.connect('file:/app/data/wars.db?mode=ro', uri=True).execute('SELECT 1 FROM meta LIMIT 1')"]
 
 # Start the app
 CMD ["python", "-m", "app.main"]
