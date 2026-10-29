@@ -4,10 +4,12 @@ services:
     container_name: eve-war-bot-v2
     restart: always
     volumes:
-      # This ensures your war history and settings are saved on the VM
-      - ./data:/app/data
+      - war_data:/app/data
     deploy:
       resources:
         limits:
           memory: 0.1G
           cpus: '1.0'
+
+volumes:
+  war_data:
