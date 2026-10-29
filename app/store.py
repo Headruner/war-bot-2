@@ -20,6 +20,8 @@ class WarStore:
         import os
         db_path = Path(self.db_path)
         
+        log.info("DEBUG: Using database path: %s", db_path)
+        
         if not db_path.parent.exists():
             db_path.parent.mkdir(parents=True, exist_ok=True)
         else:
