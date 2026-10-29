@@ -6,7 +6,7 @@ import logging
 import os
 import sqlite3
 from typing import Dict, List, Optional, Any, Union
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -148,7 +148,8 @@ class WarStore:
         return v == "true"
 
     async def set_bootstrapped(self):
-        await self.set_meta("bootstrapped_at", datetime.now().isoformat())
+        await self.set_meta("bootstrapped", "true")
+        await self.set_meta("bootstrapped_at", datetime.now(timezone.utc).isoformat())
 
     async def mark_marker(self, war_id: int, status: str):
         await self.db.execute("INSERT OR REPLACE INTO wars (war_id, status) VALUES (?, ?)", (war_id, status))

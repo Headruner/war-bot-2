@@ -45,7 +45,7 @@ async def collect_new_wars(s: Dict, store: WarStore, source: EsiWarSource) -> in
     wm = int(wm) if wm is not None else 0
     
     if wm == 0:
-        if await store.bootstrapped:
+        if await store.bootstrapped():
             wm = await store.max_war_id() or ids[-1]
             log.info("Upgrade from 1.x: continuing after war %s", wm)
         elif s.get("bootstrap_silent"):
@@ -54,8 +54,8 @@ async def collect_new_wars(s: Dict, store: WarStore, source: EsiWarSource) -> in
         else:
             wm = 0
         await store.set_meta("watermark_war_id", str(wm))
-        if not await store.bootstrapped:
-            await store.set_meta("bootstrapped_at", datetime.now(timezone.utc).isoformat())
+        if not await store.bootstrapped():
+            await store.set_bootstrapped()
 
     candidates = [i for i in ids if i > wm and not await store.has(i)]
     todo = candidates[: s.get("max_new_per_cycle", 50)]
