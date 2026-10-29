@@ -66,7 +66,7 @@ async def collect_new_wars(s: Dict, store: WarStore, source: EsiWarSource) -> in
         try:
             w = await source.war(wid)
             if w is None:
-                await store.add_marker(wid, "skipped")
+                await store.mark_marker(wid, "skipped")
             else:
                 # Filter logic
                 count = await store.add_if_new(w, "pending" if w.status in s.get("statuses", []) else "filtered")
