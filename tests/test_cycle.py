@@ -221,23 +221,43 @@ def test_credentials_nested_layout():
 
 
 @pytest.mark.asyncio
-async def test_post_includes_public_structures(store):
-    from collections import Counter
-    from app.structures import StructureIndex
+async def test_post_lists_highsec_structures_with_system(store):
+    from app.structures import Structure, StructureIndex
     import fake_esi
     fake_esi.NAMES.setdefault(35832, ("Astrahus", "inventory_type"))
     fake_esi.NAMES.setdefault(35825, ("Raitaru", "inventory_type"))
 
+    def st(i, name, type_id, system):
+        return Structure(i, name, type_id, system, 98000001)
+
     structures = StructureIndex(None, "http://unused", "ua")
-    structures.index = {98000001: Counter({35832: 2, 35825: 1})}   # corp of the aggressor alliance
-    structures.last_refresh = 9e18                                 # do not download in tests
+    structures.index = {98000001: [                       # corp of the aggressor alliance
+        st(1, "Jita - Trade Hub", 35832, 30000142),
+        st(2, "Ahbazon - Edge", 35825, 30045328),
+        st(3, "Tama - Lowsec Base", 35832, 30002813),
+        st(4, "1DQ1-A - Nullsec Keep", 35832, 30004759),
+    ]}
+    structures.last_refresh = 9e18                       # do not download in tests
 
     esi = FakeEsi(hourly_wars([1]))
     notifier = CapturingNotifier()
     await bot.run_cycle(SETTINGS, {}, store, notifier, esi, EsiWarSource(esi), structures=structures)
 
     fields = {f["name"]: f["value"] for f in notifier.payloads[0]["embeds"][0]["fields"]}
-    value = fields["🏗 Public structures"]
-    assert "Aggressor: **3** (2× Astrahus, 1× Raitaru)" in value
-    assert "Flag Corp One: 3" in value
-    assert "Defender: no public structures known" in value
+    agg = fields["🏗 Aggressor structures"]
+    assert "**4** public: 3× Astrahus, 1× Raitaru" in agg
+    assert "High-sec (2):" in agg
+    assert "• Ahbazon (0.5) – Edge [Raitaru]" in agg
+    assert "• Jita (0.9) – Trade Hub [Astrahus]" in agg
+    assert "Tama" not in agg and "1DQ1-A" not in agg
+    assert fields["🏗 Defender structures"] == "No public structures known"
+
+
+def test_structure_field_fits_discord_limit():
+    from app.embeds import FIELD_LIMIT, _structure_value
+    summary = {"total": 300, "by_type": {35832: 300}, "corps": [], "corp_count": 1,
+               "highsec": [{"system": f"System{i:03}", "security": 0.9, "name": "X" * 20, "type_id": 35832}
+                           for i in range(300)]}
+    value = _structure_value(summary, {35832: "Astrahus"})
+    assert len(value) <= FIELD_LIMIT
+    assert value.splitlines()[-1].startswith("…+")

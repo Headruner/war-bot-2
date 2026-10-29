@@ -16,6 +16,15 @@ NAMES = {
 }
 
 
+SYSTEMS = {
+    30000142: {"name": "Jita", "security_status": 0.9459},
+    30002187: {"name": "Amarr", "security_status": 1.0},
+    30045328: {"name": "Ahbazon", "security_status": 0.4577},   # rounds to 0.5: high-sec
+    30002813: {"name": "Tama", "security_status": 0.3},
+    30004759: {"name": "1DQ1-A", "security_status": -0.38},
+}
+
+
 def esi_time(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -72,6 +81,9 @@ class FakeEsi:
                 if km["killmail_id"] == km_id:
                     return dict(km)
         raise EsiError("HTTP 404", 404)
+
+    async def system(self, system_id: int) -> Dict:
+        return SYSTEMS[system_id]
 
     async def close(self) -> None:
         pass

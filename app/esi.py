@@ -35,6 +35,7 @@ class EsiClient:
         self.compatibility_date = compatibility_date
         self.retries = max(1, retries)
         self._names: Dict[int, Tuple[str, str]] = {}
+        self._systems: Dict[int, Dict] = {}
         self._client: Optional[httpx.AsyncClient] = None
 
     def _http(self) -> httpx.AsyncClient:
@@ -94,6 +95,12 @@ class EsiClient:
 
     async def alliance_corporations(self, alliance_id: int) -> List[int]:
         return await self._request("GET", f"alliances/{alliance_id}/corporations/")
+
+    async def system(self, system_id: int) -> Dict:
+        """Solar system (name, security_status, ...); static data, cached forever."""
+        if system_id not in self._systems:
+            self._systems[system_id] = await self._request("GET", f"universe/systems/{system_id}/")
+        return self._systems[system_id]
 
     async def names(self, ids: Iterable[Optional[int]]) -> Dict[int, Tuple[str, str]]:
         """Resolve IDs to ``{id: (name, category)}``. Unknown IDs are left out."""

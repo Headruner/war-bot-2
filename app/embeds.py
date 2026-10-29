@@ -59,19 +59,36 @@ def _party_line(party: Any) -> str:
     return line
 
 
-def _structure_line(label: str, summary: Optional[Dict], names: Dict) -> Optional[str]:
-    if summary is None:
-        return None
+def _lines_within(lines: List[str], limit: int) -> str:
+    """Join lines, dropping the tail with a '+N more' note so the field fits."""
+    out: List[str] = []
+    for i, line in enumerate(lines):
+        rest = len(lines) - i
+        candidate = "\n".join(out + [line])
+        if len(candidate) + (len(f"\n…+{rest - 1} more") if rest > 1 else 0) > limit:
+            out.append(f"…+{rest} more")
+            break
+        out.append(line)
+    return "\n".join(out)
+
+
+def _structure_value(summary: Dict, names: Dict) -> str:
     if not summary.get("total"):
-        return f"{label}: no public structures known"
+        return "No public structures known"
     by_type = sorted(summary["by_type"].items(), key=lambda kv: -kv[1])
-    types = ", ".join(f"{n}× {names.get(int(t), t)}" for t, n in by_type)
-    line = f"{label}: **{summary['total']}** ({types})"
+    lines = [f"**{summary['total']}** public: " + ", ".join(f"{n}× {names.get(int(t), t)}" for t, n in by_type)]
     if summary.get("corp_count", 1) > 1 and summary.get("corps"):
         corps = " · ".join(f"{names.get(int(c), c)}: {n}" for c, n in summary["corps"])
         more = summary.get("corps_with_structures", 0) - len(summary["corps"])
-        line += f"\n↳ {corps}" + (f" (+{more} more corps)" if more > 0 else "")
-    return line
+        lines.append(f"↳ {corps}" + (f" (+{more} more corps)" if more > 0 else ""))
+    highsec = summary.get("highsec") or []
+    if highsec:
+        lines.append(f"__High-sec ({len(highsec)}):__")
+        lines += [f"• {h['system']} ({h['security']}) – {h['name']} [{names.get(int(h['type_id']), h['type_id'])}]"
+                  for h in highsec]
+    else:
+        lines.append("High-sec: none")
+    return _lines_within(lines, FIELD_LIMIT)
 
 
 def build_embed(war: Any, s: Dict, banner_fname: Optional[str] = None,
@@ -115,10 +132,9 @@ def build_embed(war: Any, s: Dict, banner_fname: Optional[str] = None,
 
     if structures:
         names = structures.get("names", {})
-        lines = [line for line in (_structure_line("Aggressor", structures.get("aggressor"), names),
-                                   _structure_line("Defender", structures.get("defender"), names)) if line]
-        if lines:
-            fields.append({"name": "🏗 Public structures", "value": _clip("\n".join(lines), FIELD_LIMIT)})
+        for side, label in (("aggressor", "🏗 Aggressor structures"), ("defender", "🏗 Defender structures")):
+            if structures.get(side) is not None:
+                fields.append({"name": label, "value": _structure_value(structures[side], names)})
 
     if report:
         if report.get("zkill_war_url"):

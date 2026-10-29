@@ -25,6 +25,9 @@ __version__ = "2.0.0"
 log = logging.getLogger("eve_war_bot")
 _stop = asyncio.Event()
 
+# EVE shows security rounded to one decimal; 0.45 and up is high-sec
+HIGHSEC_MIN = 0.45
+
 # Clean-database bootstrap: newest IDs to inspect at most, and stop after this
 # many consecutive wars declared before the window (IDs are not date-ordered:
 # ESI re-issues old wars under new IDs).
@@ -158,6 +161,27 @@ async def collect_new_wars(s: Dict, store: WarStore, source: EsiWarSource) -> in
     return new
 
 
+async def highsec_structures(esi: EsiClient, structures) -> List[Dict]:
+    """High-sec structures as {system, security, name, type_id}, sorted by system."""
+    out = []
+    for st in structures:
+        if not st.system_id:
+            continue
+        try:
+            system = await esi.system(st.system_id)
+        except EsiError as e:
+            log.debug("system %s lookup failed: %s", st.system_id, e)
+            continue
+        security = float(system.get("security_status", -1))
+        if security < HIGHSEC_MIN:
+            continue
+        sys_name = system.get("name", str(st.system_id))
+        # dataset names are "System - Structure"; keep only the structure part
+        name = st.name.split(" - ", 1)[1] if st.name.startswith(f"{sys_name} - ") else st.name
+        out.append({"system": sys_name, "security": round(security, 1), "name": name, "type_id": st.type_id})
+    return sorted(out, key=lambda x: (x["system"], x["name"]))
+
+
 async def structure_summaries(esi: EsiClient, structures: StructureIndex, war) -> Optional[Dict]:
     """Public structure counts for both sides, with type and corp names resolved."""
     if not structures.loaded:
@@ -169,6 +193,7 @@ async def structure_summaries(esi: EsiClient, structures: StructureIndex, war) -
         if summary:
             ids.update(int(t) for t in summary["by_type"])
             ids.update(int(c) for c, _ in summary["corps"])
+            summary["highsec"] = await highsec_structures(esi, summary["structures"])
     try:
         result["names"] = {i: n for i, (n, _) in (await esi.names(ids)).items()}
     except EsiError as e:
