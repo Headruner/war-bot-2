@@ -157,6 +157,7 @@ async def main():
         logging.info("Configuration OK.")
         return
 
+    print(f"DEBUG: Loaded settings: {s}")
     store = WarStore(s.get("sqlite_path"))
     await store.connect()
     
