@@ -71,6 +71,9 @@ docker compose logs -f
 | `report_enabled` | Toggle the detailed war report in messages. | true |
 | `live_updates` | Toggle automatic editing of Discord messages. | true |
 | `dry_run` | If true, logs payloads instead of sending to Discord. | false |
+| `statuses` | Only post these war types (`none`, `mutual`, `open_for_allies`). Unset posts all wars. | all |
+| `bootstrap_hours` | On a clean database, also post wars declared in the last N hours (0 = only new ones). | 24 |
+| `max_war_age_hours` | Do not post new war IDs declared longer ago than this (ESI re-issues old wars under new IDs). | 48 |
 
 ---
 

@@ -29,6 +29,8 @@ def load_settings() -> Dict[str, Any]:
             "esi_compatibility_date": "2025-08-26",
             "structures_url": "https://data.everef.net/structures/structures-latest.v2.json",
             "sqlite_path": "data/wars.db",
+            "bootstrap_hours": 24,
+            "max_war_age_hours": 48,
             "heartbeat_file": "heartbeat.txt"
         }
     with open(config_path, "r") as f:

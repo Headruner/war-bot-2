@@ -18,3 +18,10 @@ esi_compatibility_date: "2025-08-26"
 structures_url: "https://data.everef.net/structures/structures-latest.v2.json"
 sqlite_path: "data/wars.db"
 heartbeat_file: "heartbeat.txt"
+
+# On a clean database, post wars declared in the last N hours (0 = only new ones)
+bootstrap_hours: 24
+# Skip "new" war IDs declared longer ago than this (ESI re-issues old wars)
+max_war_age_hours: 48
+# Only post these war types (none, mutual, open_for_allies). Leave unset to post all.
+# statuses: ["mutual", "open_for_allies"]

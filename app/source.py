@@ -10,6 +10,7 @@ Fetches new war IDs and builds detailed War objects containing:
 """
 from __future__ import annotations
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Dict, Optional
 from .esi import EsiClient, EsiError
@@ -27,6 +28,19 @@ def _side(raw: Dict) -> tuple[Optional[int], str]:
 def dotlan_link(kind: str, name: str) -> str:
     seg = "alliance" if kind == "alliance" else "corp"
     return f"https://evemaps.dotlan.net/{seg}/{name.replace(' ', '_')}"
+
+
+def war_status(d: Dict) -> str:
+    return "mutual" if d.get("mutual") else "open_for_allies" if d.get("open_for_allies") else "none"
+
+
+@dataclass
+class WarHeader:
+    """The cheap part of a war (one ESI call), enough to decide whether to post it."""
+    war_id: int
+    declared: Optional[datetime]
+    status: str
+    ended: bool
 
 
 def parse_esi_time(value: Optional[str]) -> Optional[datetime]:
@@ -48,14 +62,20 @@ class EsiWarSource:
             return []
         return sorted(int(i) for i in ids)
 
-    async def declared(self, war_id: int) -> Optional[datetime]:
-        """Declaration time of a war, or None if ESI does not know it."""
+    async def header(self, war_id: int) -> Optional[WarHeader]:
+        """Declaration time and type of a war, or None if ESI does not know it."""
         try:
-            return parse_esi_time((await self.esi.war(war_id)).get("declared"))
+            d = await self.esi.war(war_id)
         except EsiError as e:
             if e.not_found:
                 return None
             raise
+        return WarHeader(
+            war_id=int(d.get("id", war_id)),
+            declared=parse_esi_time(d.get("declared")),
+            status=war_status(d),
+            ended=bool(d.get("finished") or d.get("retracted")),
+        )
 
     async def _party(self, raw: Dict, names: Dict) -> Party:
         eid, kind = _side(raw)
@@ -110,8 +130,7 @@ class EsiWarSource:
         d_id, _ = _side(d.get("defender", {}))
         names = await self.esi.names([a_id, d_id])
 
-        status = ("mutual" if d.get("mutual") else
-                  "open_for_allies" if d.get("open_for_allies") else "none")
+        status = war_status(d)
 
         return War(
             war_id=int(d.get("id", war_id)),

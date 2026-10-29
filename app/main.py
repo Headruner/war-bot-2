@@ -5,7 +5,7 @@ import logging
 import signal
 import sys
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -15,7 +15,7 @@ from .discord_notifier import DiscordNotifier, WebhookInvalid, NotifyError
 from .embeds import MAX_EMBEDS_PER_MESSAGE, build_embed, build_payload
 from .esi import EsiClient, EsiError
 from .report import build_report
-from .source import EsiWarSource
+from .source import EsiWarSource, WarHeader
 from .store import WarStore
 from .structures import StructureIndex, make_structures
 
@@ -24,6 +24,16 @@ __version__ = "2.0.0"
 
 log = logging.getLogger("eve_war_bot")
 _stop = asyncio.Event()
+
+# Clean-database bootstrap: newest IDs to inspect at most, and stop after this
+# many consecutive wars declared before the window (IDs are not date-ordered:
+# ESI re-issues old wars under new IDs).
+BOOTSTRAP_MAX_LOOKUPS = 300
+BOOTSTRAP_STOP_AFTER_OLD = 25
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def user_agent(creds: Dict) -> str:
@@ -42,44 +52,101 @@ def wanted(s: Dict, status: str) -> bool:
     return not statuses or status in statuses
 
 
+def classify(s: Dict, header: WarHeader, max_age_hours: float) -> str:
+    """'pending' (post it), 'filtered' (type not wanted) or 'stale' (declared too long ago).
+
+    A new war ID is not always a new war: ESI re-issues old wars under new IDs
+    (often already retracted), so the declaration time decides.
+    """
+    if max_age_hours > 0 and header.declared and header.declared < _utcnow() - timedelta(hours=max_age_hours):
+        return "stale"
+    return "pending" if wanted(s, header.status) else "filtered"
+
+
+async def bootstrap(s: Dict, store: WarStore, source: EsiWarSource, ids: List[int], hours: float) -> int:
+    """Queue wars declared in the last `hours` on a clean database; return the new watermark.
+
+    Walks down from the newest ID and classifies each war by its declaration
+    time, stopping after a run of older wars. hours <= 0 queues nothing.
+    """
+    queued = older_run = 0
+    if hours > 0:
+        for wid in reversed(ids[-BOOTSTRAP_MAX_LOOKUPS:]):
+            if _stop.is_set():
+                break
+            if await store.has(wid):
+                continue
+            header = await source.header(wid)
+            if header is None:
+                await store.mark_marker(wid, "skipped")
+                continue
+            status = classify(s, header, hours)
+            await store.add_if_new(header, status)
+            queued += status == "pending"
+            older_run = older_run + 1 if status == "stale" else 0
+            if older_run >= BOOTSTRAP_STOP_AFTER_OLD:
+                break
+    log.info("Bootstrap: %d war(s) declared in the last %gh queued for posting", queued, hours)
+    return ids[-1]
+
+
+async def resolve_watermark(s: Dict, store: WarStore, source: EsiWarSource, ids: List[int]) -> int:
+    """Return the highest war ID already handled, bootstrapping or healing it if needed."""
+    newest = ids[-1]
+    raw = await store.get_meta("watermark_war_id")
+    wm = int(raw) if raw else 0
+
+    if wm > newest:
+        # ESI never issues IDs above its newest war: this is stale or test data
+        purged = await store.purge_wars_above(newest)
+        log.warning("Stored watermark %s is ahead of the newest ESI war %s (stale or test data); "
+                    "removed %d bogus row(s), bootstrapping again", wm, newest, purged)
+        wm = 0
+    if wm:
+        return wm
+
+    last = await store.max_war_id()
+    if await store.bootstrapped() and 0 < last <= newest:
+        wm = last
+        log.info("Continuing after the last stored war %s", wm)
+    else:
+        hours = 0.0 if s.get("bootstrap_silent") else float(s.get("bootstrap_hours", 24))
+        wm = await bootstrap(s, store, source, ids, hours)
+    await store.set_meta("watermark_war_id", str(wm))
+    await store.set_bootstrapped()
+    return wm
+
+
 async def collect_new_wars(s: Dict, store: WarStore, source: EsiWarSource) -> int:
     ids = await source.newest_war_ids()
     if not ids:
         log.warning("ESI returned no war IDs")
         return 0
 
-    wm = await store.get_meta("watermark_war_id")
-    wm = int(wm) if wm is not None else 0
-
-    if wm == 0:
-        if await store.bootstrapped():
-            wm = await store.max_war_id() or ids[-1]
-            log.info("Upgrade from 1.x: continuing after war %s", wm)
-        elif s.get("bootstrap_silent"):
-            wm = ids[-1]
-            log.info("Bootstrap: newest war ID is %s - wars declared from now on will be posted.", wm)
-        else:
-            wm = 0
-        await store.set_meta("watermark_war_id", str(wm))
-        if not await store.bootstrapped():
-            await store.set_bootstrapped()
+    wm = await resolve_watermark(s, store, source, ids)
 
     candidates = [i for i in ids if i > wm and not await store.has(i)]
     todo = candidates[: s.get("max_new_per_cycle", 50)]
+    max_age = float(s.get("max_war_age_hours", 48))
     new, done = 0, 0
 
     for wid in todo:
         if _stop.is_set():
             break
         try:
-            w = await source.war(wid)
+            header = await source.header(wid)
         except EsiError as e:
             log.warning("Could not read war %s from ESI (%s) - retry next cycle", wid, e)
             break
-        if w is None:
+        if header is None:
             await store.mark_marker(wid, "skipped")
         else:
-            new += await store.add_if_new(w, "pending" if wanted(s, w.status) else "filtered")
+            status = classify(s, header, max_age)
+            if status == "stale":
+                log.info("War %s was declared %s - re-issued old war, not posting", wid, header.declared)
+            added = await store.add_if_new(header, status)
+            if status == "pending":
+                new += added
         done += 1
 
     if done:
