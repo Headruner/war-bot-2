@@ -43,4 +43,20 @@ def load_credentials(required: bool = True) -> Dict[str, Any]:
             raise ConfigError("config/credentials.json not found.")
         return {}
     with open(path, "r") as f:
-        return json.load(f)
+        return normalize_credentials(json.load(f))
+
+
+def normalize_credentials(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Accept both the nested layout of credentials.example.json
+    ({"discord": {"webhook_url", "mention_role_id"}, "esi": {"contact"}})
+    and flat keys; the rest of the app reads the flat keys."""
+    creds = dict(raw)
+    discord = raw.get("discord") or {}
+    esi = raw.get("esi") or {}
+    creds.setdefault("webhook_url", discord.get("webhook_url", ""))
+    creds.setdefault("mention_role_id", discord.get("mention_role_id", ""))
+    creds.setdefault("contact", esi.get("contact", ""))
+    # Placeholder values from the example file mean "not set"
+    if str(creds.get("mention_role_id", "")).upper().startswith("OPTIONAL"):
+        creds["mention_role_id"] = ""
+    return creds

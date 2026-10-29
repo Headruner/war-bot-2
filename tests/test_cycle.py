@@ -207,3 +207,14 @@ async def test_ids_not_in_date_order_and_reissued_wars(store):
     await cycle(SETTINGS, store, esi, notifier)
     assert notifier.war_ids()[-1] == FIRST_ID + 8
     assert FIRST_ID + 7 not in notifier.war_ids()
+
+
+def test_credentials_nested_layout():
+    from app.config import normalize_credentials
+    creds = normalize_credentials({"discord": {"webhook_url": "https://discord.com/api/webhooks/1/x",
+                                               "mention_role_id": "OPTIONAL_ROLE_ID"},
+                                   "esi": {"contact": "me@example.com"}})
+    assert creds["webhook_url"] == "https://discord.com/api/webhooks/1/x"
+    assert creds["contact"] == "me@example.com"
+    assert creds["mention_role_id"] == ""
+    assert normalize_credentials({"webhook_url": "flat"})["webhook_url"] == "flat"
