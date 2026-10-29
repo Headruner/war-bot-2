@@ -5,3 +5,13 @@ __pycache__/
 .vscode/
 .idea/
 *.log
+
+# Runtime sqlite database (mounted into the container)
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# Test artifacts
+test_data/
+.pytest_cache/
