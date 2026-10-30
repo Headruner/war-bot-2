@@ -112,7 +112,7 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
 | Remove container (data stays in `.\data`) | `docker compose down` |
 | Backup tokens | Characters > Export JSON, or `docker exec evedm evedm export --out /app/data/backup.json` |
 | Backup DB | `docker compose stop`, copy `data\evedm.sqlite3`, `docker compose start` |
-| Update after code change | `git pull` then `docker compose up -d --build` |
+| Update after code change | `powershell -ExecutionPolicy Bypass -File .\scripts\update.ps1` (push, rebuild, restart, health check; `-NoPush` to skip the push) or `docker compose up -d --build` |
 | War watcher settings | edit `config\wars.yaml`, then `docker compose restart` (mounted read-only, no rebuild) |
 | Wars from the console | `docker exec evedm evedm wars list`, `docker exec evedm evedm wars stats --months 12` |
 
