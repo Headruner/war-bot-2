@@ -208,6 +208,59 @@ def cmd_users(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_wars(args: argparse.Namespace) -> int:
+    from .db import Database
+    from .universe import GateGraph
+    from .wars.config import load_wars_settings
+    from .wars.service import WarService
+    from .wars.store import WarStore
+
+    s = _settings(args)
+    ws = load_wars_settings(args.wars_config)
+    if args.action == "check":
+        print(json.dumps(ws.summary(), indent=2))
+        return 0
+    db = Database(s.db_path, s.sqlite_journal)
+    try:
+        if args.action == "stats":
+            for row in WarStore(db).monthly(args.months):
+                print(json.dumps(row))
+        elif args.action == "list":
+            for w in WarStore(db).summaries(args.limit):
+                targets = ", ".join(t["name"] for t in w.get("targets", []))
+                print(
+                    f"#{w['war_id']} {w['declared']} {w['type']:<15} {w['aggressor']['name']} -> "
+                    f"{w['defender']['name']}" + (f"  [{targets}]" if targets else "")
+                )
+        elif args.action == "run":
+            ws.enabled = True
+            svc = WarService.create(ws, s, db, GateGraph.load(s.universe_file))
+
+            async def run() -> None:
+                try:
+                    if args.once:
+                        await svc.run_cycle()
+                    else:
+                        svc.start()
+                        await asyncio.Event().wait()
+                finally:
+                    await svc.stop()
+
+            from .wars.esi import WarEsiError
+
+            try:
+                asyncio.run(run())
+            except KeyboardInterrupt:
+                pass
+            except WarEsiError as exc:
+                print(f"evedm: ESI unavailable: {exc}", file=sys.stderr)
+                return 1
+            print(json.dumps(svc.store.stats()))
+    finally:
+        db.close()
+    return 0
+
+
 def cmd_launches(args: argparse.Namespace) -> int:
     from .db import Database
 
@@ -265,6 +318,14 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("action", choices=["init", "seed-demo"])
     sp.add_argument("--force", action="store_true")
     sp.set_defaults(fn=cmd_db)
+
+    sp = sub.add_parser("wars", help="war watcher: run a cycle, list wars, monthly stats, show settings")
+    sp.add_argument("action", choices=["run", "list", "stats", "check"])
+    sp.add_argument("--once", action="store_true", help="run: one cycle, then exit")
+    sp.add_argument("--months", type=int, default=12, help="stats: months to show")
+    sp.add_argument("--limit", type=int, default=20, help="list: wars to show")
+    sp.add_argument("--wars-config", help="wars YAML (default: $EVEDM_WARS_CONFIG or config/wars.yaml)")
+    sp.set_defaults(fn=cmd_wars)
 
     sp = sub.add_parser("universe", help="build the universe file from CCP static data")
     sp.add_argument("action", choices=["build", "fetch"])

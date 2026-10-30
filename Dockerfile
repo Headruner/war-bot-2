@@ -46,6 +46,8 @@ RUN groupadd --gid 10001 evedm \
  && chown 10001:10001 /app/data
 COPY --from=build /opt/evedm /opt/evedm
 COPY config/evedm.example.yaml /app/config/evedm.yaml
+# war watcher settings (separate file; mount your own over it or use EVEDM_WARS_* variables)
+COPY config/wars.yaml /app/config/wars.yaml
 WORKDIR /app
 USER 10001:10001
 # verify dependencies and bundled resources inside the final image

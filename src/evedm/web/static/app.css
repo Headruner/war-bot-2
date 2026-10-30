@@ -182,8 +182,31 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
 }
 
 /* accounts */
-.badge { display: inline-block; margin-left: 8px; padding: 0 6px; border-radius: 6px; font-size: 12px; vertical-align: 1px; }
-.badge.main { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.badge.main { margin-left: 8px; background: var(--accent); color: var(--accent-ink); vertical-align: 1px; }
 .card.account { margin-top: 16px; }
 .card.account h2 { margin: 0 0 6px; font-size: 16px; }
 .btn[disabled] { opacity: .45; cursor: not-allowed; }
+
+/* wars page */
+.wars { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.war-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.war-title { font-weight: 700; font-size: 16px; color: var(--text); }
+.war-head .when { margin-left: auto; }
+.badge.war-none { background: #3a1620; color: var(--bad); }
+.badge.war-mutual { background: #2a2140; color: #d9c8ff; }
+.badge.war-open_for_allies { background: #3b2a12; color: var(--warn); }
+.parties { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px; }
+.party { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.party img { border-radius: 6px; flex: none; background: var(--panel-2); }
+.targets { margin: 8px 0 4px; }
+.target-chip { display: inline-flex; gap: 4px; align-items: center; font-size: 13.5px; padding: 4px 10px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--text); }
+.target-chip:hover { border-color: var(--accent); text-decoration: none; }
+.structs { margin-top: 6px; font-size: 13.5px; }
+.structs summary { cursor: pointer; color: var(--muted); }
+.structs ul { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-direction: column; gap: 4px; }
+.links { margin-top: 6px; }
+#more { margin-top: 12px; }
+.wars-page select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 8px; font: inherit; margin-left: 4px; }
+@media (max-width: 640px) { .parties { grid-template-columns: 1fr; } .war-head .when { margin-left: 0; } }

@@ -10,6 +10,7 @@ services:
       - "${EVEDM_PUBLISH:-127.0.0.1:8080}:8080"
     volumes:
       - evedm-data:/app/data
+      - ../config/wars.yaml:/app/config/wars.yaml:ro   # war watcher settings
     deploy:
       resources:
         limits:

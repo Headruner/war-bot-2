@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Wars · EVE Distance Meter{% endblock %}
+{% block content %}
+<div class="page wars-page">
+  <h1>Wars</h1>
+  <p class="small">New war declarations from ESI with public structures of both sides. Pick a system to rank your
+    characters by jumps to it.</p>
+  <div class="toolbar">
+    <label class="small">Type
+      <select id="war-type">
+        <option value="">all</option>
+        <option value="none">war declared</option>
+        <option value="mutual">mutual</option>
+        <option value="open_for_allies">open for allies</option>
+      </select>
+    </label>
+    <label class="small"><input id="only-targets" type="checkbox"> only wars with systems to rank</label>
+    <button id="reload" class="btn" type="button">Reload</button>
+    <span id="watcher" class="small"></span>
+  </div>
+  <ul id="wars" class="wars"></ul>
+  <p id="empty" class="small" hidden>No wars yet. The watcher checks ESI every few minutes.</p>
+  <button id="more" class="btn" type="button" hidden>Older wars</button>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/map.js?v={{ version }}"></script>
+<script src="/static/wars.js?v={{ version }}"></script>
+{% endblock %}

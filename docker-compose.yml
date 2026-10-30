@@ -12,6 +12,7 @@ services:
       - "8080:8080"
     volumes:
       - ./data:/app/data
+      - ./config/wars.yaml:/app/config/wars.yaml:ro   # war watcher settings, edit without rebuilding
     deploy:
       resources:
         limits:

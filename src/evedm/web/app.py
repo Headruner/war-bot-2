@@ -33,6 +33,9 @@ from ..resolver import TargetResolver
 from ..selfcheck import check
 from ..sso import AuthService, SsoError
 from ..universe import GateGraph
+from ..wars.config import WarsSettings, load_wars_settings
+from ..wars.demo import seed_demo_wars
+from ..wars.service import WarService
 
 log = logging.getLogger("evedm.web")
 HERE = Path(__file__).parent
@@ -51,6 +54,7 @@ class Services:
     http: httpx.AsyncClient
     launch: LaunchRecorder
     started: float
+    wars: WarService | None = None
 
 
 class RequestCounter:
@@ -99,8 +103,21 @@ def build_services(settings: Settings) -> Services:
     return Services(settings, db, graph, TargetResolver(graph), chars, ranking, auth, esi, http, launch, time.time())
 
 
-def create_app(settings: Settings) -> FastAPI:
+def build_wars(settings: Settings, ws: WarsSettings, svc: Services) -> WarService | None:
+    """The war watcher (eve-war-bot-2 logic) when enabled in its own config file; demo mode shows sample wars."""
+    if not ws.enabled:
+        return None
+    wars = WarService.create(ws, settings, svc.db, svc.graph)
+    if settings.demo:
+        n = seed_demo_wars(wars.store, svc.graph)
+        if n:
+            log.info("seeded %s demo wars", n)
+    return wars
+
+
+def create_app(settings: Settings, wars_settings: WarsSettings | None = None) -> FastAPI:
     settings.validate_for_serve()
+    ws = wars_settings if wars_settings is not None else load_wars_settings()
     startup = check(settings)  # dependencies + fully qualified, verified resource paths
     if not startup.ok:
         raise ConfigError("startup check failed: " + "; ".join(startup.problems))
@@ -115,12 +132,22 @@ def create_app(settings: Settings) -> FastAPI:
         trim_memory()
         holder["svc"] = svc
         app.state.svc = svc
+        svc.wars = build_wars(settings, ws, svc)
         svc.launch.start(
-            {"universe": svc.graph.build, "systems": len(svc.graph.ids), "journal_mode": svc.db.journal_mode}
+            {
+                "universe": svc.graph.build,
+                "systems": len(svc.graph.ids),
+                "journal_mode": svc.db.journal_mode,
+                "wars": ws.summary(),
+            }
         )
+        if svc.wars is not None and not settings.demo:
+            svc.wars.start()
         try:
             yield
         finally:
+            if svc.wars is not None:
+                await svc.wars.stop()
             svc.launch.stop()
             await svc.http.aclose()
             svc.db.close()
@@ -190,7 +217,7 @@ def create_app(settings: Settings) -> FastAPI:
             "sso_ready": svc.auth is not None,
             "universe": svc.graph.build,
             "session_days": settings.web.session_days,
-            "wars_enabled": getattr(svc, "wars", None) is not None,
+            "wars_enabled": svc.wars is not None,
         }
         return templates.TemplateResponse(request, name, base | ctx)
 
@@ -212,6 +239,14 @@ def create_app(settings: Settings) -> FastAPI:
             error=request.query_params.get("error"),
             welcome=request.query_params.get("welcome"),
         )
+
+    @app.get("/wars", response_class=HTMLResponse)
+    async def wars_page(request: Request) -> Response:
+        if user_of(request) is None:
+            return RedirectResponse("/login", status_code=303)
+        if svc_of(request).wars is None:
+            raise HTTPException(status_code=404, detail="the war watcher is disabled (config/wars.yaml)")
+        return page(request, "wars.html")
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request) -> Response:
@@ -289,6 +324,9 @@ def create_app(settings: Settings) -> FastAPI:
                 "uptime_s": round(time.time() - svc.started),
                 "requests": svc.launch.requests,
                 "esi": svc.esi.stats if svc.esi else None,
+                "wars": None
+                if svc.wars is None
+                else {k: v for k, v in svc.wars.status().items() if k in ("running", "cycles", "last_error")},
             }
         )
 
@@ -364,6 +402,28 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(status_code=400, detail="the main cannot be removed; delete the account instead")
         await svc.chars.remove(character_id, uid)
         return JSONResponse({"ok": True})
+
+    # ------------------------------------------------------------------ API: wars
+    def wars_of(request: Request) -> WarService:
+        require_user(request)
+        wars = svc_of(request).wars
+        if wars is None:
+            raise HTTPException(status_code=404, detail="the war watcher is disabled (config/wars.yaml)")
+        return wars
+
+    @app.get("/api/wars")
+    async def list_wars(request: Request, limit: int = 50, offset: int = 0, type: str = "") -> JSONResponse:  # noqa: A002
+        wars = wars_of(request)
+        limit = max(1, min(limit, wars.s.page_limit))
+        items = wars.store.summaries(limit, max(0, offset), type or None)
+        return JSONResponse({"wars": items, "status": wars.status()})
+
+    @app.get("/api/wars/{war_id}")
+    async def get_war(request: Request, war_id: int) -> JSONResponse:
+        item = wars_of(request).store.get_summary(war_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="unknown war")
+        return JSONResponse(item)
 
     # ------------------------------------------------------------------ API: account
     @app.get("/api/me")

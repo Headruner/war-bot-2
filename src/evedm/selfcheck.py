@@ -31,8 +31,8 @@ RUNTIME_DISTRIBUTIONS = [
 if sys.platform != "win32":
     RUNTIME_DISTRIBUTIONS.append("uvloop")
 
-STATIC_FILES = ["app.css", "map.js", "rank.js", "characters.js", "favicon.svg"]
-TEMPLATES = ["base.html", "index.html", "characters.html", "login.html"]
+STATIC_FILES = ["app.css", "map.js", "rank.js", "characters.js", "wars.js", "favicon.svg"]
+TEMPLATES = ["base.html", "index.html", "characters.html", "login.html", "wars.html"]
 
 
 @dataclass
@@ -91,6 +91,15 @@ def check(settings: Settings, data: bool = True) -> CheckReport:
         rep.paths["config_file"] = str(cfg_path)
         if not cfg_path.is_file():
             rep.problems.append(f"EVEDM_CONFIG points to a missing file: {cfg_path}")
+
+    from .wars.config import default_path
+
+    wars_cfg = default_path()
+    if wars_cfg is not None:
+        wars_path = wars_cfg.resolve()
+        rep.paths["wars_config"] = str(wars_path) + ("" if wars_path.is_file() else " (absent: wars disabled)")
+        if os.environ.get("EVEDM_WARS_CONFIG") and not wars_path.is_file():
+            rep.problems.append(f"EVEDM_WARS_CONFIG points to a missing file: {wars_path}")
 
     if data:
         data_dir = settings.data_dir.resolve()

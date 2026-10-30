@@ -67,6 +67,7 @@ def evedm_env(data_dir: Path, fake_base: str, port: int, **extra: str) -> dict[s
             "EVEDM_PORT": str(port),
             "EVEDM_HOST": "127.0.0.1",
             "EVEDM_WEB_AUTH": "sso",
+            "EVEDM_WARS_ENABLED": "0",  # the war watcher has its own tests; no network from these processes
             "PYTHONUNBUFFERED": "1",
         }
     )
