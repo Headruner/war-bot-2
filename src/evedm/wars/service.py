@@ -4,6 +4,7 @@ page and (optionally) post them to Discord. The polling logic is the one of eve-
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from datetime import UTC, datetime, timedelta
@@ -11,6 +12,7 @@ from typing import Any
 
 from .. import __version__
 from ..config import Settings
+from ..crypto import redact
 from ..db import Database
 from ..universe import GateGraph
 from .config import WarsSettings
@@ -35,8 +37,10 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def public_base(settings: Settings) -> str | None:
-    """The address users open the site at, derived from the SSO callback (…/sso/callback)."""
+def public_base(settings: Settings, ws: WarsSettings | None = None) -> str | None:
+    """The address users open the site at: wars.public_url, else derived from the SSO callback (…/sso/callback)."""
+    if ws is not None and ws.public_url:
+        return ws.public_url.rstrip("/")
     url = settings.eve.callback_url
     return url[: -len("/sso/callback")] if url.endswith("/sso/callback") else None
 
@@ -83,7 +87,7 @@ class WarService:
             structures = StructureIndex(
                 graph, ws.structures_url, user_agent, ws.structures_refresh_hours, transport=kw.get("transport")
             )
-        base = public_base(settings)
+        base = public_base(settings, ws)
         return cls(
             ws, db, graph, esi, notifier=notifier, structures=structures, page_url=f"{base}/wars" if base else None
         )
@@ -217,7 +221,8 @@ class WarService:
                 entry = out.setdefault(sysinfo["id"], sysinfo | {"why": []})
                 entry["why"].append(f"{sysinfo['structures']} {side} structure(s)")
         for name, kills in (report or {}).get("top_systems", []):
-            idx = self.g.find(str(name))
+            name = str(name)
+            idx = self.g.index.get(int(name)) if name.isdigit() else self.g.find(name)  # unresolved name = ID
             if idx is None:
                 continue
             d = self.g.describe(idx)
@@ -284,7 +289,7 @@ class WarService:
                 summary = self.summary(war, report, structures)
             except Exception as e:  # one bad war must not block the others
                 log.exception("war %s: could not build the summary", wid)
-                self.store.mark_failed_attempt([wid], f"summary: {e}")
+                self.store.mark_failed_attempt([wid], f"summary: {e!r}")
                 continue
             if self.notifier is None:
                 self.store.save_summary(wid, summary, "ready")
@@ -338,13 +343,13 @@ class WarService:
                     await self.run_cycle()
                     self.state["last_error"] = None
                 except WebhookInvalid as e:
-                    self.state["last_error"] = f"Discord webhook invalid: {e}"
+                    self.state["last_error"] = redact(f"Discord webhook invalid: {e}")
                     log.critical("Discord webhook invalid: %s - fix the wars config and restart", e)
                 except WarEsiError as e:
-                    self.state["last_error"] = f"ESI: {e}"
+                    self.state["last_error"] = redact(f"ESI: {e}")
                     log.error("ESI error: %s", e)
                 except Exception as e:
-                    self.state["last_error"] = repr(e)
+                    self.state["last_error"] = redact(repr(e))
                     log.exception("war cycle failed")
                 self.state["cycles"] += 1
                 self.state["last_cycle_at"] = time.time()
@@ -364,9 +369,11 @@ class WarService:
         self._stop.set()
         if self._task is not None:
             try:
-                await asyncio.wait_for(self._task, timeout=10)
+                await asyncio.wait_for(asyncio.shield(self._task), timeout=10)
             except TimeoutError:
-                self._task.cancel()
+                self._task.cancel()  # a cycle stuck in ESI retries: cancel it and wait for it to unwind
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._task
             self._task = None
         await self.esi.close()
 

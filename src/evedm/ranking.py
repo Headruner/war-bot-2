@@ -31,18 +31,23 @@ class LiveProvider:
     async def fetch(self, character: CharacterRow) -> dict[str, Any]:
         token = await self.chars.access_token(character.character_id, character.owner_id)
         state = await self.esi.character_state(character.character_id, token, character.scopes)
-        loc, ship, online = state.get("location") or {}, state.get("ship") or {}, state.get("online") or {}
-        return {
-            "solar_system_id": loc.get("solar_system_id"),
-            "station_id": loc.get("station_id"),
-            "structure_id": loc.get("structure_id"),
-            "ship_type_id": ship.get("ship_type_id"),
-            "ship_item_id": ship.get("ship_item_id"),
-            "ship_name": ship.get("ship_name"),
-            "online": None if not online else int(bool(online.get("online"))),
-            "last_login": online.get("last_login"),
-            "last_logout": online.get("last_logout"),
-        }
+        # Only the parts this link may read: the snapshot is shared by every main that links the character,
+        # so a link without the ship scope must not blank out the ship another main's link fetched.
+        out: dict[str, Any] = {}
+        if "location" in state:
+            loc = state["location"] or {}
+            out |= {k: loc.get(k) for k in ("solar_system_id", "station_id", "structure_id")}
+        if "ship" in state:
+            ship = state["ship"] or {}
+            out |= {k: ship.get(k) for k in ("ship_type_id", "ship_item_id", "ship_name")}
+        if "online" in state:
+            online = state["online"] or {}
+            out |= {
+                "online": None if not online else int(bool(online.get("online"))),
+                "last_login": online.get("last_login"),
+                "last_logout": online.get("last_logout"),
+            }
+        return out
 
 
 class DemoProvider:
@@ -214,7 +219,8 @@ class RankingService:
                 "name": c.name,
                 "tags": c.tags,
                 "status": c.status,
-                "error": errors.get(c.character_id) or (s["error"] if s else None),
+                # this main's own refresh result wins over the shared snapshot (another main's link may fail)
+                "error": errors[c.character_id] if c.character_id in errors else (s["error"] if s else None),
                 "jumps": None,
                 "reachable": False,
                 "system": None,

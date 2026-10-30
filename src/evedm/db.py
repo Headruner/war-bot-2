@@ -401,16 +401,28 @@ class Database:
             c.execute("DELETE FROM snapshots WHERE character_id NOT IN (SELECT character_id FROM characters)")
 
     def reassign_owner(self, from_owner: int, to_owner: int) -> int:
-        """Move every link of one owner to another (e.g. legacy owner 0 -> a main). Existing links win."""
+        """Move the links of one owner to another (legacy owner 0 -> a main). Existing links of the receiving
+        main win; demo characters stay where they are. Returns the number of characters moved."""
         with self.tx() as c:
             c.execute(
-                "DELETE FROM characters WHERE owner_id=? AND character_id IN "
+                "DELETE FROM characters WHERE owner_id=? AND demo=0 AND character_id IN "
                 "(SELECT character_id FROM characters WHERE owner_id=?)",
                 (from_owner, to_owner),
             )
             c.execute("PRAGMA defer_foreign_keys=ON")
-            n = c.execute("UPDATE characters SET owner_id=? WHERE owner_id=?", (to_owner, from_owner)).rowcount
-            c.execute("UPDATE tokens SET owner_id=? WHERE owner_id=?", (to_owner, from_owner))
+            c.execute(
+                "UPDATE tokens SET owner_id=? WHERE owner_id=? AND character_id IN "
+                "(SELECT character_id FROM characters WHERE owner_id=? AND demo=0)",
+                (to_owner, from_owner, from_owner),
+            )
+            n = c.execute(
+                "UPDATE characters SET owner_id=? WHERE owner_id=? AND demo=0", (to_owner, from_owner)
+            ).rowcount
+            c.execute(
+                "INSERT OR IGNORE INTO target_history(owner_id, solar_system_id, used_at) "
+                "SELECT ?, solar_system_id, used_at FROM target_history WHERE owner_id=?",
+                (to_owner, from_owner),
+            )
             return n
 
     # -- tokens -------------------------------------------------------------------------------

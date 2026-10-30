@@ -7,6 +7,7 @@ import logging
 import time
 from typing import Any
 
+from ..crypto import redact
 from ..db import Database
 
 log = logging.getLogger("evedm.wars.store")
@@ -90,9 +91,17 @@ class WarStore:
                 c.execute(
                     "UPDATE wars SET attempts=attempts+1, last_error=?, "
                     "status=CASE WHEN attempts+1>=? THEN 'failed' ELSE status END, updated_at=? WHERE war_id=?",
-                    (error_msg[:500], max_attempts, time.time(), wid),
+                    (redact(error_msg)[:500], max_attempts, time.time(), wid),
                 )
         log.error("failed to post war(s) %s: %s", war_ids, error_msg)
+
+    def purge_demo(self, war_ids: list[int]) -> int:
+        """Remove the sample wars of demo mode when the same database is used live."""
+        marks = ",".join("?" * len(war_ids))
+        return self.db.execute(
+            f"DELETE FROM wars WHERE war_id IN ({marks}) AND summary_json LIKE '%\"demo\":true%'",  # noqa: S608
+            tuple(war_ids),
+        )
 
     def purge_wars_above(self, war_id: int) -> int:
         """Delete rows with IDs ESI has never issued (e.g. test data). Returns the count."""

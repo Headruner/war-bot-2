@@ -139,3 +139,22 @@ def test_launch_records(db):
     db.finish_launch(lid, stopped_at="t2", rss_mb_peak=60.0, requests=3)
     row = db.launches()[0]
     assert row["requests"] == 3 and row["rss_mb_peak"] == 60.0
+
+
+def test_env_defaults_apply_to_empty_variables(tmp_path, monkeypatch):
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text("eve:\n  callback_url: ${EVE_CALLBACK_URL:-http://localhost:8080/sso/callback}\n")
+    monkeypatch.setenv("EVE_CALLBACK_URL", "")  # a key left empty in .env
+    assert load_settings(cfg).eve.callback_url == "http://localhost:8080/sso/callback"
+    monkeypatch.setenv("EVE_CALLBACK_URL", "http://localhost:8081/sso/callback")
+    assert load_settings(cfg).eve.callback_url == "http://localhost:8081/sso/callback"
+
+
+def test_discord_webhook_tokens_are_redacted():
+    line = "Discord request failed for https://discord.com/api/webhooks/1234567890/AbC-def_123.xyz?wait=true"
+    out = redact(line)
+    assert "AbC-def_123" not in out and "webhooks/1234567890/<redacted>" in out
+    assert (
+        redact("https://discordapp.com/api/v10/webhooks/42/tok")
+        == "https://discordapp.com/api/v10/webhooks/42/<redacted>"
+    )

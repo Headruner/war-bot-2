@@ -3,7 +3,7 @@
 
 async function api(url) {
   const resp = await fetch(url, { credentials: "same-origin", headers: { "X-EVEDM": "1" } });
-  if (resp.status === 401) { location.href = "/login"; throw new Error("sign in required"); }
+  if (resp.status === 401) { location.href = "/login"; return new Promise(() => {}); }  // signed out: leave quietly
   if (!resp.ok) throw new Error(resp.statusText);
   return resp.json();
 }

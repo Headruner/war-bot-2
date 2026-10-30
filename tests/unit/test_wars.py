@@ -1,6 +1,9 @@
 """War watcher (merged eve-war-bot-2): polling, filtering, Discord posting, structures, Wars page and config."""
 
+import asyncio
 import json
+import os
+import time
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -352,3 +355,381 @@ def test_cli_wars_list_stats_check(tmp_path, monkeypatch, capsys, graph):
     assert json.loads(capsys.readouterr().out.splitlines()[0])["total"] == 3
     assert main(["wars", "check", "--wars-config", str(tmp_path / "none.yaml")]) == 0
     assert json.loads(capsys.readouterr().out)["enabled"] is False
+
+
+# --------------------------------------------------------------------------- more scenarios
+def killmail(km_id: int, system: int = 30002187) -> dict:
+    return {
+        "killmail_id": km_id,
+        "killmail_time": "2026-10-30T10:00:00Z",
+        "solar_system_id": system,
+        "victim": {"ship_type_id": 587, "character_id": 2112625428, "corporation_id": 98845884},
+    }
+
+
+async def test_hot_systems_are_targets_without_structure_data(db, graph):
+    wars = hourly_wars([1])
+    esi = FakeEsi(wars, killmails={FIRST_ID: [killmail(1), killmail(2), killmail(3, 9999)]})
+    svc = service(db, graph, esi, structures_enabled=False)
+    await svc.run_cycle()
+    w = svc.store.summaries()[0]
+    assert w["structures"] is None
+    assert w["report"]["kills_total"] == 3 and w["report"]["recent_kills"][0]["victim"] == "Some Pilot"
+    assert [(t["name"], t["why"]) for t in w["targets"]] == [("Amarr", ["2 recent kill(s)"])]  # unknown 9999 skipped
+
+
+async def test_empty_or_failing_war_list(db, graph):
+    esi = FakeEsi({})
+    svc = service(db, graph, esi)
+    assert await svc.collect_new_wars() == 0 and svc.store.stats() == {}
+
+    async def down(max_war_id=None):
+        raise WarEsiError("GET /wars/ -> HTTP 503", 503)
+
+    esi.wars = down
+    with pytest.raises(WarEsiError):
+        await svc.run_cycle()
+
+
+async def test_war_gone_by_processing_time_is_skipped(db, graph):
+    wars = hourly_wars([2, 1])
+    esi = FakeEsi(wars)
+    svc = service(db, graph, esi)
+    await svc.collect_new_wars()
+    del wars[FIRST_ID]  # ESI no longer knows it (404)
+    await svc.process_pending()
+    assert svc.store.stats() == {"skipped": 1, "ready": 1}
+
+
+async def test_summary_failure_is_retried_then_parked(db, graph, monkeypatch):
+    svc = service(db, graph, FakeEsi(hourly_wars([1])))
+    monkeypatch.setattr(svc, "summary", lambda *a: (_ for _ in ()).throw(KeyError("boom")))
+    for _ in range(MAX_POST_ATTEMPTS):
+        await svc.run_cycle()
+    assert svc.store.stats() == {"failed": 1}
+    row = db.query("SELECT attempts, last_error FROM wars")[0]
+    assert row["attempts"] == MAX_POST_ATTEMPTS and "boom" in row["last_error"]
+
+
+async def test_new_wars_beyond_the_cycle_limit_wait_for_the_next_cycle(db, graph):
+    wars = hourly_wars([5, 4, 3, 2, 1])
+    svc = service(db, graph, FakeEsi(wars), max_new_per_cycle=2, bootstrap_hours=0)
+    await svc.run_cycle()  # bootstrap: start after the newest
+    now = datetime.now(UTC)
+    for i in range(5, 10):
+        wars[FIRST_ID + i] = make_war(FIRST_ID + i, now)
+    await svc.run_cycle()
+    assert svc.store.stats() == {"ready": 2}
+    await svc.run_cycle()
+    await svc.run_cycle()
+    assert svc.store.stats() == {"ready": 5}
+
+
+async def test_invalid_webhook_keeps_wars_queued_and_visible(db, graph):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"message": "Unknown Webhook"})
+
+    hook = "https://discord.com/api/webhooks/123/SECRET-TOKEN"
+    notifier = DiscordNotifier(hook, 0, transport=httpx.MockTransport(handler))
+    svc = service(db, graph, FakeEsi(hourly_wars([1])), notifier)
+    from evedm.wars.discord import WebhookInvalid
+
+    with pytest.raises(WebhookInvalid):
+        await svc.run_cycle()
+    assert svc.store.stats() == {"pending": 1}
+    assert svc.store.summaries()[0]["post_status"] == "pending"  # still listed on the Wars page
+
+
+async def test_dry_run_marks_wars_posted_without_network(db, graph):
+    notifier = DiscordNotifier("", 0, dry_run=True)
+    svc = service(db, graph, FakeEsi(hourly_wars([2, 1])), notifier)
+    await svc.run_cycle()
+    assert svc.store.stats() == {"notified": 2}
+    assert {r[0] for r in db.query("SELECT discord_message_id FROM wars")} == {"dry_run"}
+
+
+async def test_notifier_errors(monkeypatch):
+    from evedm.wars.discord import WebhookInvalid
+
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr("evedm.wars.discord.asyncio.sleep", no_sleep)
+    with pytest.raises(WebhookInvalid):
+        await DiscordNotifier("", 0).send({"embeds": []})
+    always_429 = httpx.MockTransport(lambda r: httpx.Response(429, json={"retry_after": 0}))
+    with pytest.raises(NotifyError, match="rate limit"):
+        await DiscordNotifier("https://d.test/h", 0, transport=always_429).send({"embeds": []})
+    bad = httpx.MockTransport(lambda r: httpx.Response(400, text="Invalid Form Body"))
+    with pytest.raises(NotifyError, match="400") as exc:
+        await DiscordNotifier("https://d.test/h", 0, transport=bad).send({"embeds": []})
+    assert not isinstance(exc.value, WebhookInvalid)
+
+    def boom(r):
+        raise httpx.ConnectError("refused")
+
+    with pytest.raises(NotifyError, match="request failed"):
+        await DiscordNotifier("https://d.test/h", 0, transport=httpx.MockTransport(boom)).send({"embeds": []})
+
+
+async def test_esi_retries_transient_errors_then_gives_up():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(503 if len(calls) < 3 else 200, json=[1, 2])
+
+    esi = WarEsi("https://esi.test", "ua", "2025-09-30", transport=httpx.MockTransport(handler), backoff_s=0)
+    assert await esi.wars() == [1, 2] and len(calls) == 3
+    gone = WarEsi("https://esi.test", "ua", "d", transport=httpx.MockTransport(lambda r: httpx.Response(404)))
+    with pytest.raises(WarEsiError) as exc:
+        await gone.war(1)
+    assert exc.value.not_found
+    down = WarEsi(
+        "https://esi.test", "ua", "d", backoff_s=0, transport=httpx.MockTransport(lambda r: httpx.Response(502))
+    )
+    with pytest.raises(WarEsiError):
+        await down.wars()
+    await esi.close()
+    await gone.close()
+    await down.close()
+
+
+async def test_background_loop_survives_errors_and_stops_promptly(db, graph):
+    esi = FakeEsi(hourly_wars([1]))
+
+    async def down(max_war_id=None):
+        raise WarEsiError("GET /wars/ -> HTTP 503 https://discord.com/api/webhooks/1/abc", 503)
+
+    esi.wars = down
+    svc = service(db, graph, esi)
+    svc.start()
+    for _ in range(100):
+        if svc.state["cycles"]:
+            break
+        await asyncio.sleep(0.01)
+    assert svc.state["cycles"] == 1 and svc.state["running"] is True
+    assert "HTTP 503" in svc.state["last_error"] and "abc" not in svc.state["last_error"]  # redacted
+    t0 = time.monotonic()
+    await svc.stop()
+    assert time.monotonic() - t0 < 2 and svc.state["running"] is False
+
+
+async def test_stop_cancels_a_cycle_stuck_in_esi(db, graph, monkeypatch):
+    import evedm.wars.service as service_mod
+
+    esi = FakeEsi(hourly_wars([1]))
+    started = asyncio.Event()
+
+    async def hang(max_war_id=None):
+        started.set()
+        await asyncio.sleep(3600)
+
+    esi.wars = hang
+    svc = service(db, graph, esi)
+    real_wait_for = asyncio.wait_for
+    monkeypatch.setattr(service_mod.asyncio, "wait_for", lambda aw, timeout: real_wait_for(aw, min(timeout, 0.2)))
+    svc.start()
+    await started.wait()
+    await svc.stop()
+    assert svc.state["running"] is False
+
+
+async def test_structure_refresh_failures_keep_the_previous_index(graph, monkeypatch):
+    responses = [
+        httpx.Response(200, json={"1": {"structure_id": 1, "owner_id": 5, "type_id": 35832}}),
+        httpx.Response(500),
+        httpx.Response(200, content=b'{"1": {"owner_id": 5, "type_id": 1'),  # truncated download
+        httpx.Response(200, content=b'{"1": {"owner_id": 6, "type_id": 1}, ' + b" " * 2048 + b'"2": {}}'),
+    ]
+    index = StructureIndex(
+        graph, "https://data.test/s.json", "ua", transport=httpx.MockTransport(lambda r: responses.pop(0))
+    )
+    await index.refresh_if_due()
+    assert index.owners == 1 and 5 in index.index
+    for _ in range(2):  # server error, then a truncated document: the old index stays
+        index.last_refresh = 0
+        await index.refresh_if_due()
+        assert 5 in index.index
+    monkeypatch.setattr("evedm.wars.structures.MAX_DATASET_BYTES", 1024)  # oversized download refused
+    index.last_refresh = 0
+    await index.refresh_if_due()
+    assert 5 in index.index and responses == []
+    before = index.last_refresh
+    await index.refresh_if_due()  # not due again: no request (none left in the mock)
+    assert index.last_refresh == before
+
+
+@pytest.mark.parametrize("chunk", [1, 2, 3, 5, 64, 1 << 16])
+def test_streaming_parser_handles_any_chunk_boundary(chunk):
+    doc = {
+        str(i): {
+            "structure_id": i,
+            "owner_id": 7 + i % 3,
+            "type_id": 35832,
+            "solar_system_id": JITA,
+            "name": f"Jita - Ŧ{i} ✓",
+        }
+        for i in range(1, 60)
+    }
+    doc["60"] = {"structure_id": 60, "name": "no owner"}  # ignored
+    doc["61"] = {"structure_id": "x", "owner_id": 1, "type_id": 2}  # malformed: skipped
+    for text in (json.dumps(doc, ensure_ascii=False), json.dumps(doc, indent=2), json.dumps(list(doc.values()))):
+        index = build_index(("﻿" + text).encode("utf-8"), chunk)
+        assert sum(len(v) for v in index.values()) == 59
+        assert index[8][0].name.startswith("Jita - Ŧ")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [b"", b"   ", b"nope", b'{"1": {}', b'{"1" {}}', b'{"1": {}} trailing', b'{"1": {}, }', b"[1 2]", b"{1: {}}"],
+)
+def test_streaming_parser_rejects_broken_documents(raw):
+    with pytest.raises(ValueError):
+        build_index(raw, 3)
+
+
+def test_streaming_parser_peak_memory_stays_small():
+    import tracemalloc
+
+    doc = {
+        str(i): {
+            "structure_id": i,
+            "owner_id": 98000000 + i % 500,
+            "type_id": 35832,
+            "solar_system_id": JITA,
+            "name": f"Jita - Structure number {i} with a long name",
+            "extra": "x" * 200,
+        }
+        for i in range(20000)
+    }
+    raw = json.dumps(doc).encode()
+    del doc
+    tracemalloc.start()
+    index = build_index(raw)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert sum(len(v) for v in index.values()) == 20000
+    assert peak < len(raw)  # whole-document json.loads needs several times the file size
+    tracemalloc.start()
+    json.loads(raw)
+    _, peak_loads = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert peak < peak_loads / 2
+
+
+async def test_public_url_overrides_the_callback_base(db, graph):
+    from evedm.wars.service import public_base
+
+    s = Settings()
+    s.eve.callback_url = "http://localhost:8081/sso/callback"
+    assert public_base(s) == "http://localhost:8081"
+    assert public_base(s, WarsSettings(public_url="https://evedm.example.ts.net/")) == "https://evedm.example.ts.net"
+    s.eve.callback_url = "http://weird/callback"
+    assert public_base(s) is None
+    svc = WarService.create(WarsSettings(enabled=True, public_url="https://x.test"), s, db, graph)
+    assert svc.page_url == "https://x.test/wars"
+    await svc.stop()
+
+
+def test_demo_wars_are_removed_when_the_database_goes_live(tmp_path, monkeypatch):
+    monkeypatch.setattr(WarService, "start", lambda self: None)  # no ESI polling in this test
+    s = Settings()
+    s.data_dir, s.secret_key, s.demo, s.web.auth = tmp_path / "d", "k", True, "none"
+    with TestClient(create_app(s, WarsSettings(enabled=True))) as c:
+        assert len(c.get("/api/wars").json()["wars"]) == 3
+    s.demo = False
+    s.eve.client_id, s.eve.client_secret = "cid", "sec"
+    s.eve.esi_base = "http://127.0.0.1:9"
+    ws = WarsSettings(enabled=True, structures_enabled=False, poll_interval_min=60)
+    with TestClient(create_app(s, ws)) as c:
+        assert c.app.state.svc.wars.store.summaries() == []
+
+
+def test_wars_api_bounds(tmp_path):
+    s = Settings()
+    s.data_dir, s.secret_key, s.demo, s.web.auth = tmp_path / "d", "k", True, "none"
+    with TestClient(create_app(s, WarsSettings(enabled=True, page_limit=2))) as c:
+        assert len(c.get("/api/wars", params={"limit": 1000}).json()["wars"]) == 2  # capped by page_limit
+        assert len(c.get("/api/wars", params={"limit": -5}).json()["wars"]) == 1
+        assert [w["war_id"] for w in c.get("/api/wars", params={"offset": 2}).json()["wars"]] == [990003]
+        assert c.get("/api/wars", params={"offset": -1}).json()["wars"][0]["war_id"] == 990001
+        assert c.get("/api/wars", params={"type": "peace"}).json()["wars"] == []
+        assert c.get("/api/wars", params={"limit": "many"}).status_code == 422
+
+
+def test_wars_api_needs_sign_in_in_sso_mode(tmp_path):
+    s = Settings()
+    s.data_dir, s.secret_key, s.demo = tmp_path / "d", "k", True
+    s.web.auth = "sso"
+    s.eve.client_id, s.eve.client_secret = "cid", "sec"
+    with TestClient(create_app(s, WarsSettings(enabled=True))) as c:
+        assert c.get("/api/wars").status_code == 401
+        assert c.get("/wars", follow_redirects=False).headers["location"] == "/login"
+
+
+def test_more_config_cases(tmp_path, monkeypatch):
+    for k in list(os.environ):
+        if k.startswith("EVEDM_WARS_") or k == "EVEDM_PUBLIC_URL":
+            monkeypatch.delenv(k)
+    cfg = tmp_path / "wars.yaml"
+    cfg.write_text("enabled: ${EVEDM_WARS_ENABLED:-true}\nstatuses: mutual, open_for_allies\n")
+    monkeypatch.setenv("EVEDM_WARS_ENABLED", "")  # empty in .env: the default applies, like in a shell
+    ws = load_wars_settings(cfg)
+    assert ws.enabled is True and ws.statuses == ["mutual", "open_for_allies"]
+    monkeypatch.setenv("EVEDM_WARS_STATUSES", "none")
+    monkeypatch.setenv("EVEDM_WARS_POLL_INTERVAL_MIN", "30")
+    monkeypatch.setenv("EVEDM_PUBLIC_URL", "https://evedm.example")
+    ws = load_wars_settings(cfg)
+    assert ws.statuses == ["none"] and ws.poll_interval_min == 30 and ws.public_url == "https://evedm.example"
+    monkeypatch.setenv("EVEDM_WARS_POLL_INTERVAL_MIN", "soon")
+    with pytest.raises(ConfigError, match="invalid value"):
+        load_wars_settings(cfg)
+    monkeypatch.delenv("EVEDM_WARS_POLL_INTERVAL_MIN")
+    monkeypatch.setenv("EVEDM_PUBLIC_URL", "evedm.example")
+    with pytest.raises(ConfigError, match="public_url"):
+        load_wars_settings(cfg)
+    monkeypatch.delenv("EVEDM_PUBLIC_URL")
+    monkeypatch.delenv("EVEDM_WARS_STATUSES")
+    for text, match in (
+        ("enabled: [unclosed\n", "not valid YAML"),
+        ("- a\n- b\n", "mapping"),
+        ("discord: yes\n", "discord must be a mapping"),
+        ("statuses: {a: 1}\n", "statuses must be a list"),
+        ("poll_interval_min: 0\n", "at least 1"),
+        ("discord:\n  batch_embeds: 11\n", "between 1 and 10"),
+        ("max_new_per_cycle: 0\n", "at least 1"),
+    ):
+        cfg.write_text(text)
+        with pytest.raises(ConfigError, match=match):
+            load_wars_settings(cfg)
+    cfg.write_text("")  # empty file: defaults (watcher off)
+    assert load_wars_settings(cfg).enabled is False
+    cfg.write_text("discord:\n  enabled: true\n  dry_run: true\nenabled: true\n")  # dry run needs no webhook
+    assert load_wars_settings(cfg).discord.dry_run is True
+
+
+def test_serve_reports_a_broken_wars_config(tmp_path, monkeypatch, capsys):
+    from evedm.cli import main
+
+    cfg = tmp_path / "wars.yaml"
+    cfg.write_text("statuses: [peace]\n")
+    monkeypatch.setenv("EVEDM_WARS_CONFIG", str(cfg))
+    monkeypatch.setenv("EVEDM_DATA_DIR", str(tmp_path / "d"))
+    monkeypatch.setenv("EVEDM_SECRET_KEY", "k")
+    assert main(["--demo", "serve"]) == 2
+    assert "unknown war type" in capsys.readouterr().err
+    assert main(["wars", "check"]) == 2
+
+
+def test_cli_wars_run_once_reports_esi_errors(tmp_path, monkeypatch, capsys):
+    from evedm.cli import main
+
+    async def down(self):
+        raise WarEsiError("GET /wars/ -> HTTP 503", 503)
+
+    monkeypatch.setattr(WarService, "run_cycle", down)
+    monkeypatch.setenv("EVEDM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("EVEDM_WARS_CONFIG", str(tmp_path / "none.yaml"))
+    assert main(["wars", "run", "--once"]) == 1
+    assert "ESI unavailable" in capsys.readouterr().err

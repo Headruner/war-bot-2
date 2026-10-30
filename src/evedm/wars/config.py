@@ -45,6 +45,7 @@ class WarsSettings:
     structures_url: str = "https://data.everef.net/structures/structures-latest.v2.json"
     page_limit: int = 200  # wars listed on the Wars page
     contact: str = ""  # added to the User-Agent sent to ESI and EVE Ref
+    public_url: str = ""  # address of this site for links in Discord (default: derived from EVE_CALLBACK_URL)
     discord: DiscordSettings = field(default_factory=DiscordSettings)
     source_path: str = ""  # the file the settings came from (informational)
 
@@ -54,6 +55,12 @@ class WarsSettings:
             raise ConfigError(f"wars.statuses: unknown war type(s) {bad}; use {list(WAR_TYPES)}")
         if self.poll_interval_min < 1:
             raise ConfigError("wars.poll_interval_min must be at least 1")
+        if self.max_new_per_cycle < 1 or self.page_limit < 1:
+            raise ConfigError("wars.max_new_per_cycle and wars.page_limit must be at least 1")
+        if not 1 <= self.discord.batch_embeds <= 10:
+            raise ConfigError("wars.discord.batch_embeds must be between 1 and 10")
+        if self.public_url and not self.public_url.startswith(("http://", "https://")):
+            raise ConfigError("wars.public_url must start with http:// or https://")
         if self.enabled and self.discord.enabled and not self.discord.dry_run and not self.discord.webhook_url:
             raise ConfigError("wars.discord.enabled needs discord.webhook_url (or EVEDM_WARS_DISCORD_WEBHOOK)")
 
@@ -74,6 +81,8 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
     "EVEDM_WARS_ENABLED": ("enabled",),
     "EVEDM_WARS_POLL_INTERVAL_MIN": ("poll_interval_min",),
     "EVEDM_WARS_CONTACT": ("contact",),
+    "EVEDM_WARS_STATUSES": ("statuses",),
+    "EVEDM_PUBLIC_URL": ("public_url",),
     "EVEDM_WARS_DISCORD_ENABLED": ("discord", "enabled"),
     "EVEDM_WARS_DISCORD_WEBHOOK": ("discord", "webhook_url"),
     "EVEDM_WARS_DISCORD_MENTION_ROLE_ID": ("discord", "mention_role_id"),
@@ -81,13 +90,28 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
 }
 
 
+def _statuses(value: Any) -> list[str]:
+    """A list, or a comma-separated string (as from an environment variable); empty means all types."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        return [v.strip() for v in value.split(",") if v.strip()]
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    raise ConfigError(f"wars.statuses must be a list, got {type(value).__name__}")
+
+
 def _apply_wars(obj: Any, data: dict[str, Any]) -> None:
     for key, value in data.items():
-        if key == "discord" and isinstance(value, dict):
+        if key == "discord":
+            if value is None:
+                continue
+            if not isinstance(value, dict):
+                raise ConfigError("wars.discord must be a mapping")
             _apply(obj.discord, value)
         elif key == "statuses":
-            obj.statuses = [str(v) for v in (value or [])]
-        elif hasattr(obj, key):
+            obj.statuses = _statuses(value)
+        elif hasattr(obj, key) and key != "source_path":
             _apply(obj, {key: value})
 
 
@@ -104,19 +128,30 @@ def default_path() -> Path | None:
 def load_wars_settings(path: str | os.PathLike[str] | None = None) -> WarsSettings:
     s = WarsSettings()
     cfg = Path(path) if path else default_path()
-    if cfg is not None and cfg.is_file():
-        raw = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-        if not isinstance(raw, dict):
-            raise ConfigError(f"{cfg}: expected a mapping")
-        _apply_wars(s, _expand(raw))
-        s.source_path = str(cfg.resolve())
-    for env, target in ENV_MAP.items():
-        value = os.environ.get(env)
-        if value is None or value == "":
-            continue
-        obj: Any = s
-        for part in target[:-1]:
-            obj = getattr(obj, part)
-        _apply(obj, {target[-1]: value})
+    try:
+        if cfg is not None and cfg.is_file():
+            try:
+                raw = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+            except yaml.YAMLError as exc:
+                raise ConfigError(f"{cfg}: not valid YAML: {exc}") from exc
+            if not isinstance(raw, dict):
+                raise ConfigError(f"{cfg}: expected a mapping of settings")
+            _apply_wars(s, _expand(raw))
+            s.source_path = str(cfg.resolve())
+        for env, target in ENV_MAP.items():
+            value = os.environ.get(env)
+            if value is None or value == "":
+                continue
+            if target == ("statuses",):
+                s.statuses = _statuses(value)
+                continue
+            obj: Any = s
+            for part in target[:-1]:
+                obj = getattr(obj, part)
+            _apply(obj, {target[-1]: value})
+    except (TypeError, ValueError) as exc:  # e.g. poll_interval_min: soon
+        if isinstance(exc, ConfigError):
+            raise
+        raise ConfigError(f"wars settings: invalid value ({exc})") from exc
     s.validate()
     return s

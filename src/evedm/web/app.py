@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
@@ -34,10 +35,11 @@ from ..selfcheck import check
 from ..sso import AuthService, SsoError
 from ..universe import GateGraph
 from ..wars.config import WarsSettings, load_wars_settings
-from ..wars.demo import seed_demo_wars
+from ..wars.demo import DEMO_WARS, seed_demo_wars
 from ..wars.service import WarService
 
 log = logging.getLogger("evedm.web")
+SESSION_RENEW_S = 86400
 HERE = Path(__file__).parent
 
 
@@ -112,6 +114,8 @@ def build_wars(settings: Settings, ws: WarsSettings, svc: Services) -> WarServic
         n = seed_demo_wars(wars.store, svc.graph)
         if n:
             log.info("seeded %s demo wars", n)
+    elif wars.store.purge_demo([w[0] for w in DEMO_WARS]):
+        log.info("removed the demo wars from a database now used live")
     return wars
 
 
@@ -185,11 +189,17 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         if settings.web.auth == "none":
             return {"id": 0, "name": "local"}
         user = request.session.get("user")
-        if user is None:
+        if not isinstance(user, dict) or "id" not in user:
             return None
-        if svc_of(request).db.get_user(int(user["id"])) is None:  # account deleted meanwhile
-            request.session.clear()
+        uid = int(user["id"])
+        allowed = settings.web.allowed_login_characters
+        if (allowed and uid not in allowed) or svc_of(request).db.get_user(uid) is None:
+            request.session.clear()  # account deleted, or the main was taken off the allow list
             return None
+        now = int(time.time())
+        if now - int(request.session.get("seen", 0)) > SESSION_RENEW_S:
+            # re-sign the cookie at most once a day: the session_days count from the last visit, not the sign-in
+            request.session["seen"] = now
         return user
 
     def require_user(request: Request) -> dict[str, Any]:
@@ -200,6 +210,16 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
 
     def owner(request: Request) -> int:
         return int(require_user(request)["id"])
+
+    async def json_body(request: Request) -> dict[str, Any]:
+        """The request body as a JSON object; 400 for anything else (never a 500)."""
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(status_code=400, detail="request body must be JSON") from None
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be a JSON object")
+        return body
 
     def require_csrf(request: Request) -> None:
         if request.headers.get("x-evedm") != "1":
@@ -297,16 +317,22 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                 log.warning("sign-in refused for character %s", ident.character_id)
                 return RedirectResponse("/login?error=not_allowed", status_code=303)
             is_new = svc.db.upsert_user(ident.character_id, ident.name)
+            if is_new and not settings.demo and svc.db.get_character(ident.character_id, 0) is not None:
+                # upgrade from the single-user version: the characters stored before accounts existed
+                # belong to whoever owned them then; a main that is one of them takes them all over
+                moved = svc.db.reassign_owner(0, ident.character_id)
+                log.info("main %s adopted %s characters stored before accounts existed", ident.character_id, moved)
             svc.chars.store(ts, owner_id=ident.character_id)  # the main is linked to itself
             request.session.clear()
             request.session["user"] = {"id": ident.character_id, "name": ident.name}
+            request.session["seen"] = int(time.time())
             log.info("main %s signed in (%s)", ident.character_id, "new account" if is_new else "returning")
             return RedirectResponse("/characters?welcome=1" if is_new else "/", status_code=303)
         user = user_of(request)
         if user is None:
             return RedirectResponse("/login", status_code=303)
         svc.chars.store(ts, owner_id=int(user["id"]))  # SSO-03 / SSO-05 / SSO-06, linked to the signed-in main
-        return RedirectResponse(f"/characters?added={ident.name}", status_code=303)
+        return RedirectResponse("/characters?" + urlencode({"added": ident.name}), status_code=303)
 
     # ------------------------------------------------------------------ API: public
     @app.get("/api/health")
@@ -326,7 +352,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                 "esi": svc.esi.stats if svc.esi else None,
                 "wars": None
                 if svc.wars is None
-                else {k: v for k, v in svc.wars.status().items() if k in ("running", "cycles", "last_error")},
+                else {"running": svc.wars.state["running"], "cycles": svc.wars.state["cycles"]},
             }
         )
 
@@ -350,7 +376,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
     async def target_resolve(request: Request) -> JSONResponse:
         require_user(request)
         require_csrf(request)
-        body = await request.json()
+        body = await json_body(request)
         text = str(body.get("text", ""))[:20000]
         return JSONResponse({"candidates": svc_of(request).resolver.extract(text)})
 
@@ -383,12 +409,14 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         svc = svc_of(request)
         if svc.db.get_character(character_id, uid) is None:
             raise HTTPException(status_code=404, detail="unknown character")
-        body = await request.json()
+        body = await json_body(request)
         if "enabled" in body:
-            svc.db.set_enabled(character_id, bool(body["enabled"]), uid)
+            if not isinstance(body["enabled"], bool):
+                raise HTTPException(status_code=400, detail="enabled must be true or false")
+            svc.db.set_enabled(character_id, body["enabled"], uid)
         if "tags" in body:
             tags = body["tags"] if isinstance(body["tags"], list) else str(body["tags"]).split(",")
-            svc.db.set_tags(character_id, [str(t) for t in tags], uid)
+            svc.db.set_tags(character_id, [str(t) for t in tags][:20], uid)
         return JSONResponse({"ok": True})
 
     @app.delete("/api/characters/{character_id}")
@@ -443,7 +471,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
     async def delete_me(request: Request) -> JSONResponse:
         uid = owner(request)
         require_csrf(request)
-        body = await request.json()
+        body = await json_body(request)
         if body.get("confirm") is not True:
             raise HTTPException(status_code=400, detail="confirm=true required")
         if uid == 0:
@@ -468,10 +496,13 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
     async def export_characters(request: Request) -> Response:
         uid = owner(request)
         require_csrf(request)
-        body = await request.json()
+        body = await json_body(request)
         if body.get("confirm") is not True:  # EXP-02
             raise HTTPException(status_code=400, detail="export contains credentials: confirm=true required")
-        ids = [int(i) for i in body.get("character_ids") or []]
+        try:
+            ids = [int(i) for i in body.get("character_ids") or []]
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="character_ids must be a list of IDs") from None
         try:
             doc = export_bundle(svc_of(request).chars, ids or None, uid)
         except BundleRejected as exc:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from helpers import evedm_env, evedm_server, free_port
+from helpers import ROOT, evedm_env, evedm_server, free_port
 
 pytestmark = pytest.mark.integration
 playwright = pytest.importorskip("playwright.sync_api")
@@ -20,6 +20,8 @@ def server(tmp_path_factory):
         EVE_CLIENT_ID="",
         EVE_CLIENT_SECRET="",
         EVEDM_WEB_AUTH="none",
+        EVEDM_WARS_ENABLED="1",  # demo mode: sample wars, no network
+        EVEDM_WARS_CONFIG=str(ROOT / "config" / "wars.yaml"),
     )
     with evedm_server(env) as (base, _):
         yield base
@@ -102,4 +104,35 @@ def test_phone_layout_puts_map_above_list(server, browser):
     list_box = page.locator(".list-pane").bounding_box()
     assert map_box["y"] < list_box["y"]
     assert page.evaluate("document.documentElement.scrollWidth") <= 390  # no horizontal scroll (WEB-03)
+    assert errors == []
+
+
+def test_wars_page_lists_wars_and_ranks_a_structure_system(server, browser):
+    page, errors = open_page(browser, f"{server}/wars", viewport={"width": 1280, "height": 900})
+    page.wait_for_selector(".war")
+    assert page.locator(".war").count() == 3
+    first = page.locator("#war-990001")
+    assert "Crimson Ledger Syndicate → Quiet Harbor Logistics" in first.inner_text()
+    assert [c.strip().split()[1] for c in first.locator(".targets .target-chip").all_inner_texts()] == [
+        "Tama",
+        "Kedama",
+        "Nourvukaiken",
+    ]
+    page.select_option("#war-type", "mutual")
+    page.wait_for_function("document.querySelectorAll('.war').length === 1")
+    assert "Ashen Veil" in page.locator(".war").inner_text()
+    page.select_option("#war-type", "")
+    page.wait_for_function("document.querySelectorAll('.war').length === 3")
+    page.locator("#war-990001 .targets .target-chip").first.click()
+    page.wait_for_selector(".row.selected")
+    assert "target=Tama" in page.url and page.locator(".row").count() == 9
+    assert errors == []
+
+
+def test_wars_page_fits_a_phone(server, browser):
+    page, errors = open_page(
+        browser, f"{server}/wars", viewport={"width": 360, "height": 800}, is_mobile=True, has_touch=True
+    )
+    page.wait_for_selector(".war")
+    assert page.evaluate("document.documentElement.scrollWidth") <= 360
     assert errors == []

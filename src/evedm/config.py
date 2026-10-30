@@ -108,8 +108,9 @@ class Settings:
 
 
 def _expand(value: Any) -> Any:
+    """Replace ${NAME} and ${NAME:-default}; like a shell, the default also applies when NAME is set but empty."""
     if isinstance(value, str):
-        return _ENV_REF.sub(lambda m: os.environ.get(m.group(1), m.group(2) or ""), value)
+        return _ENV_REF.sub(lambda m: os.environ.get(m.group(1)) or (m.group(2) or ""), value)
     if isinstance(value, list):
         return [_expand(v) for v in value]
     if isinstance(value, dict):

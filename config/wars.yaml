@@ -10,6 +10,7 @@ bootstrap_hours: 24                        # on a clean database, also show wars
 max_war_age_hours: 48                      # skip "new" war IDs declared longer ago (ESI re-issues old wars)
 # statuses: [mutual, open_for_allies]      # only keep these war types (none, mutual, open_for_allies); unset = all
 contact: ${EVEDM_WARS_CONTACT:-}           # your e-mail or character, sent in the User-Agent to ESI and EVE Ref
+public_url: ${EVEDM_PUBLIC_URL:-}          # address of this site for links in Discord (default: from EVE_CALLBACK_URL)
 
 report_enabled: true                       # score, timeline, allies, recent kills, hot systems
 report_recent_kills: 5

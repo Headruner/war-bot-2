@@ -29,12 +29,14 @@ class TokenCipher:
 
 
 _JWT = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
+_WEBHOOK = re.compile(r"(?i)(discord(?:app)?\.com/api/(?:v\d+/)?webhooks/\d+/)[A-Za-z0-9_\-.]+")
 _LONG_SECRET = re.compile(r"(?i)((?:refresh_token|access_token|client_secret|code)[\"'=: ]+)([A-Za-z0-9_\-+/=.]{12,})")
 
 
 def redact(text: str) -> str:
     """Mask JWTs and token-looking values (TOK-05, IMP-09)."""
     text = _JWT.sub("<jwt:redacted>", text)
+    text = _WEBHOOK.sub(lambda m: m.group(1) + "<redacted>", text)
     return _LONG_SECRET.sub(lambda m: m.group(1) + "<redacted>", text)
 
 

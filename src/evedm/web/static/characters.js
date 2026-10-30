@@ -5,7 +5,7 @@ async function api(url, opts = {}) {
   const resp = await fetch(url, { credentials: "same-origin", ...opts,
     headers: { "X-EVEDM": "1", ...(opts.body && !(opts.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
       ...(opts.headers || {}) } });
-  if (resp.status === 401) { location.href = "/login"; throw new Error("sign in required"); }
+  if (resp.status === 401) { location.href = "/login"; return new Promise(() => {}); }  // signed out: leave quietly
   return resp;
 }
 const $ = (sel) => document.querySelector(sel);

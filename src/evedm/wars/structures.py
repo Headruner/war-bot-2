@@ -7,10 +7,12 @@ come from the bundled universe (no ESI calls), so every system can be ranked aga
 
 from __future__ import annotations
 
+import codecs
 import json
 import logging
 import time
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +24,7 @@ from .esi import WarEsi, WarEsiError
 log = logging.getLogger("evedm.wars.structures")
 
 TOP_CORPS = 5  # alliance summary: corporations listed individually
+MAX_DATASET_BYTES = 256 * 1024 * 1024  # refuse anything larger than this (the dataset is a few MB)
 HIGHSEC_MIN = 0.45  # EVE shows security rounded to one decimal; 0.45 and up is high-sec
 
 
@@ -34,25 +37,121 @@ class Structure:
     owner_id: int
 
 
-def build_index(raw: bytes | str) -> dict[int, list[Structure]]:
-    """owner corporation id -> structures, from the v2 dataset (a JSON object keyed by structure id)."""
-    doc = json.loads(raw)
-    items = doc.items() if isinstance(doc, dict) else ((str(x.get("structure_id")), x) for x in doc)
-    index: dict[int, list[Structure]] = {}
+class StreamingItems:
+    """Incremental parser for a JSON document that is one top-level object ({"id": {...}, ...}) or array.
+
+    Bytes are fed in chunks as they arrive; complete members come out as (key, value) pairs (key None for arrays).
+    Only one member is held in memory at a time, so a large dataset never has to be loaded whole (the bot used
+    ijson for this; the standard library's raw_decode does the same job here without a dependency).
+    """
+
+    _WS = " \t\r\n"
+
+    def __init__(self) -> None:
+        self._dec = codecs.getincrementaldecoder("utf-8-sig")()
+        self._json = json.JSONDecoder()
+        self._buf = ""
+        self._pos = 0
+        self._state = "start"  # start | key | colon | value | sep | done
+        self._array = False
+        self._key: str | None = None
+
+    def _skip_ws(self) -> None:
+        while self._pos < len(self._buf) and self._buf[self._pos] in self._WS:
+            self._pos += 1
+
+    def _decode(self, final: bool) -> tuple[Any, bool]:
+        """Decode one JSON value at the cursor; (value, True) or (None, False) when more input is needed."""
+        try:
+            value, end = self._json.raw_decode(self._buf, self._pos)
+        except json.JSONDecodeError:
+            if final:
+                raise
+            return None, False
+        if end >= len(self._buf) and not final:  # a number or literal may continue in the next chunk
+            return None, False
+        self._pos = end
+        return value, True
+
+    def feed(self, chunk: bytes, final: bool = False) -> Iterator[tuple[str | None, Any]]:
+        self._buf += self._dec.decode(chunk, final)
+        while True:
+            self._skip_ws()
+            if self._pos >= len(self._buf):
+                break
+            ch = self._buf[self._pos]
+            if self._state == "start":
+                if ch not in "{[":
+                    raise ValueError("structure dataset: expected a JSON object or array")
+                self._array = ch == "["
+                self._pos += 1
+                self._state = "value" if self._array else "key"
+                self._skip_ws()
+                if self._pos < len(self._buf) and self._buf[self._pos] in "}]":
+                    self._pos += 1
+                    self._state = "done"
+            elif self._state == "key":
+                key, ok = self._decode(final)
+                if not ok:
+                    break
+                if not isinstance(key, str):
+                    raise ValueError("structure dataset: object key expected")
+                self._key, self._state = key, "colon"
+            elif self._state == "colon":
+                if ch != ":":
+                    raise ValueError("structure dataset: ':' expected")
+                self._pos += 1
+                self._state = "value"
+            elif self._state == "value":
+                value, ok = self._decode(final)
+                if not ok:
+                    break
+                yield (None if self._array else self._key), value
+                self._state = "sep"
+            elif self._state == "sep":
+                self._pos += 1
+                if ch == ",":
+                    self._state = "value" if self._array else "key"
+                elif ch in "}]":
+                    self._state = "done"
+                else:
+                    raise ValueError(f"structure dataset: unexpected {ch!r}")
+            else:  # done: only whitespace may follow
+                raise ValueError("structure dataset: data after the end of the document")
+        if self._pos > 65536:  # drop consumed text
+            self._buf, self._pos = self._buf[self._pos :], 0
+        if final and self._state != "done":
+            raise ValueError("structure dataset: truncated document")
+
+
+def _structure(key: str | None, item: Any) -> Structure | None:
+    if not isinstance(item, dict):
+        return None
+    owner, type_id = item.get("owner_id"), item.get("type_id")
+    if not (owner and type_id):
+        return None
+    try:
+        sid = int(item.get("structure_id") or key or 0)
+        system = int(item["solar_system_id"]) if item.get("solar_system_id") else None
+        return Structure(sid, str(item.get("name") or f"Structure {sid}"), int(type_id), system, int(owner))
+    except (TypeError, ValueError):
+        return None  # malformed entry: skip it, keep the rest
+
+
+def add_items(index: dict[int, list[Structure]], items: Iterator[tuple[str | None, Any]]) -> None:
     for key, item in items:
-        owner, type_id = item.get("owner_id"), item.get("type_id")
-        if not (owner and type_id):
-            continue
-        sid = int(item.get("structure_id") or key)
-        index.setdefault(int(owner), []).append(
-            Structure(
-                structure_id=sid,
-                name=str(item.get("name") or f"Structure {sid}"),
-                type_id=int(type_id),
-                system_id=int(item["solar_system_id"]) if item.get("solar_system_id") else None,
-                owner_id=int(owner),
-            )
-        )
+        st = _structure(key, item)
+        if st is not None:
+            index.setdefault(st.owner_id, []).append(st)
+
+
+def build_index(raw: bytes | str, chunk_size: int = 65536) -> dict[int, list[Structure]]:
+    """owner corporation id -> structures, from the v2 dataset (a JSON object keyed by structure id)."""
+    data = raw.encode("utf-8") if isinstance(raw, str) else raw
+    parser, index = StreamingItems(), {}
+    for start in range(0, max(len(data), 1), chunk_size):
+        add_items(index, parser.feed(data[start : start + chunk_size]))
+    add_items(index, parser.feed(b"", final=True))
     return index
 
 
@@ -86,14 +185,23 @@ class StructureIndex:
         if (self.loaded and now - self.last_refresh < self.refresh_interval) or not self.structures_url:
             return
         try:
+            index: dict[int, list[Structure]] = {}
+            parser = StreamingItems()
+            size = 0
             async with httpx.AsyncClient(
                 timeout=60, headers={"User-Agent": self.user_agent}, follow_redirects=True, transport=self.transport
             ) as client:
-                response = await client.get(self.structures_url)
-                response.raise_for_status()
-            self.index = build_index(response.content)
+                async with client.stream("GET", self.structures_url) as response:
+                    response.raise_for_status()
+                    async for chunk in response.aiter_bytes(65536):  # parsed as it arrives: low peak memory
+                        size += len(chunk)
+                        if size > MAX_DATASET_BYTES:
+                            raise ValueError(f"structure dataset larger than {MAX_DATASET_BYTES} bytes")
+                        add_items(index, parser.feed(chunk))
+            add_items(index, parser.feed(b"", final=True))
+            self.index = index
             self.last_refresh = now
-            log.info("structures: %d owners with public structures loaded", len(self.index))
+            log.info("structures: %d owners with public structures loaded (%d KB)", len(index), size // 1024)
         except Exception as e:  # noqa: BLE001 - keep the previous index, retry next cycle
             log.warning("could not refresh the structure dataset: %s", e)
 
