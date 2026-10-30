@@ -5,7 +5,10 @@
 1. Open <https://developers.eveonline.com/applications> and create an application.
 2. Callback URL: the address you open the app at, plus `/sso/callback`, e.g. `http://localhost:8080/sso/callback` or
    `https://evedm.<tailnet>.ts.net/sso/callback`.
-3. Scopes: `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`.
+3. Scopes: `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
+   and for the Structures page `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1`. EVE SSO refuses the
+   sign-in (`invalid_scope`) while one of them is missing on the application; `EVE_OPTIONAL_SCOPES=none` leaves the
+   last two out.
 4. Put the client ID and secret into `.env` (copy `.env.example`), together with a long random `EVEDM_SECRET_KEY` and your
    character ID in `EVEDM_ALLOWED_LOGIN_CHARACTERS`.
 
@@ -18,7 +21,7 @@ The image is a Linux image; it runs on a Linux VM and on Windows/macOS through D
 | Build from source | `docker compose up -d --build` |
 | Load the shipped image (0.3.0: no accounts, no Wars page) | `docker load -i evedm-image-0.3.0-amd64.tar.gz` (Windows: `scripts\load-image.ps1`) |
 | Prebuilt from GHCR (after CI) | `EVEDM_IMAGE=ghcr.io/<owner>/<repo>:latest docker compose -f deploy/docker-compose.yml up -d` |
-| Try without an EVE app | `docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=x evedm:0.5.0` |
+| Try without an EVE app | `docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=x evedm:0.6.0` |
 
 Resource limits are part of the compose files: `cpus: 2`, `memory: 1g`.
 

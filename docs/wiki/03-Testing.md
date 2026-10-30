@@ -2,9 +2,9 @@
 
 | Suite | Path | What runs | Count |
 | --- | --- | --- | --- |
-| Unit | `tests/unit` | In-process: universe/BFS, resolver, config, crypto, DB, SSO + ESI against the fake (ASGI transport), bundle, ranking, accounts (signed session cookies), war watcher, war census and high-sec structures, web API (TestClient), CLI, dependency validation | 190 |
-| Integration | `tests/integration/test_e2e.py`, `test_multi_user.py` | Real `evedm serve` process + real fake EVE SSO/ESI process: sign-in, add characters, import, rank, ESI caching, export, revocation, second instance, restart, secrets-not-in-logs; several mains on one site; upgrade of a 0.3.0 database | 5 |
-| Browser | `tests/integration/test_ui.py`, `test_ui_accounts.py` | Chromium (Playwright): list + map + route bar, autocomplete, paste, characters page, phone layout, Wars page (filter, rank a structure system, phone, statistics and structures tabs), browser-cookie settings, account UI (main badge, remove, delete account) | 10 |
+| Unit | `tests/unit` | In-process: universe/BFS, resolver, config, crypto, DB, SSO + ESI against the fake (ASGI transport), bundle, ranking, accounts (signed session cookies), war watcher, war census and high-sec structures, structure scout, web API (TestClient), CLI, dependency validation | 207 |
+| Integration | `tests/integration/test_e2e.py`, `test_multi_user.py` | Real `evedm serve` process + real fake EVE SSO/ESI process: sign-in, add characters, import, rank, ESI caching, export, revocation, second instance, restart, secrets-not-in-logs; several mains on one site; upgrade of a 0.3.0 database; structures shared through the scout | 6 |
+| Browser | `tests/integration/test_ui.py`, `test_ui_accounts.py` | Chromium (Playwright): list + map + route bar, autocomplete, paste, characters page, phone layout, Wars page (filter, rank a structure system, phone, statistics and structures tabs), browser-cookie settings, Structures page, account UI (main badge, remove, delete account) | 11 |
 | Footprint | `tests/perf` | 50 characters, 600 requests at concurrency 20, 40 ms ESI latency, server pinned to 2 CPUs; budget peak RSS ≤ 160 MB, p95 ≤ 1 s | 1 |
 | Dependencies | `tests/unit/test_dependencies.py` | every import pinned in `requirements.txt`, exact stable pins, installed = pinned, absolute verified paths, WAL + checkpoint | 8 |
 | Container | `scripts/docker-smoke.sh` | Image with `--cpus 2 --memory 1g`, host folder mounted at `/app/data`, health, ranking, WAL, `evedm check`, uid 10001, restart keeps data | script |
@@ -64,6 +64,13 @@ rows marked 0.5.0 cover the war census, the high-sec structure list and the brow
 | High-sec structures | jumps from the caller's nearest character, per main | multi-source BFS equals per-target BFS | test_structure_jumps_are_per_main, test_nearest_matches_single_source_bfs |
 | High-sec structures | filters, sort, paging, bad parameter, structure data not loaded | as stated / 422 / empty with a note | test_loot_lists…, test_stats_and_structures_api_in_demo, test_loot_is_empty_until… |
 | Census off | tabs and APIs hidden | 404 | test_census_off_hides_its_tabs |
+| Names (0.6.0) | ESI down during the scan; first scan in progress; slow ESI on a page view | stand-in "Corporation 98000001", names page by page, page answers within 3 s then a minute's cooldown | test_names_are_resolved_on_demand…, test_names_appear_page_by_page…, test_on_demand_names_give_up_fast… |
+| zKillboard links | wars, corporations, alliances | links present | test_statistics, test_stats_api_resolves_missing_names_first |
+| Structure scout (0.6.0) | assets in structures, items in own containers, NPC stations, unknown IDs, structures without access | structures only; 404 = not a structure; no access keeps data | test_assets_reveal_structures_for_everyone |
+| Structure scout | one character may not read a structure another may | read with the other token | test_unreadable_by_one_character_is_read_with_another |
+| Structure scout | refresh intervals, character unlinked, re-auth or demo characters, paged and truncated assets | as stated | test_refresh_intervals…, test_reauth_and_demo…, test_paged_assets_and_truncation |
+| Structures page | every space, wormholes unreachable last, search, filters, sort, paging, at-war owners, shared between mains, disabled | as stated | test_structures_page_and_api_in_demo, test_structures_off, test_structures_found_through_assets_are_shared, browser test |
+| Scopes | sign-in asks for the structure scopes; EVE SSO `invalid_scope`; `EVE_OPTIONAL_SCOPES=none`; bad values in the main config | hint shown; serve exits 2 with a message | test_sign_in_asks…, test_optional_scopes_setting, test_bad_values_in_the_main_config_are_reported |
 | Browser settings | tab, filters, map options, auto-refresh survive a reload; other browser has defaults; broken cookie | remembered / defaults / defaults without errors | test_wars_tabs_and_filters_survive_a_reload, test_map_options_and_auto_refresh_are_remembered, test_broken_prefs_cookie… |
 
 ## Fake EVE server

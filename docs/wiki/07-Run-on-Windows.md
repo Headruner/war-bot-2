@@ -15,11 +15,11 @@ All commands are for **PowerShell**, run from the repository folder `C:\Users\<y
 
 ## 1. Get the image (pick A or B)
 
-**A. Build from source (0.5.0: accounts, Wars page with statistics and high-sec structures)**
+**A. Build from source (0.6.0: accounts, Wars page with statistics, Structures page)**
 ```powershell
-docker build -t evedm:0.5.0 .
+docker build -t evedm:0.6.0 .
 ```
-(Behind a TLS-inspecting corporate proxy: `docker build --secret id=pipca,src=C:\path\ca.crt -t evedm:0.5.0 .`)
+(Behind a TLS-inspecting corporate proxy: `docker build --secret id=pipca,src=C:\path\ca.crt -t evedm:0.6.0 .`)
 
 **B. Load the shipped image (older 0.3.0, offline, no accounts or Wars page)** — joins the 3 parts in `image\`,
 verifies SHA-256, runs `docker load`:
@@ -27,26 +27,29 @@ verifies SHA-256, runs `docker load`:
 powershell -ExecutionPolicy Bypass -File .\scripts\load-image.ps1
 docker image ls evedm        # expect evedm  0.3.0
 ```
-Use `evedm:0.3.0` instead of `evedm:0.5.0` in the commands below if you take this way.
+Use `evedm:0.3.0` instead of `evedm:0.6.0` in the commands below if you take this way.
 
 ## 2. Smoke test in demo mode (no EVE application needed)
 
 ```powershell
-docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo evedm:0.5.0
+docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo evedm:0.6.0
 ```
 Open <http://localhost:8080/?target=Tama>. Stop with `Ctrl+C`.
 
 Demo with the prepopulated database (10 fictional characters):
 ```powershell
 docker run --rm -p 8080:8080 -v "${PWD}\data\demo:/app/data" `
-  -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo-secret-key-change-me evedm:0.5.0
+  -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo-secret-key-change-me evedm:0.6.0
 ```
 
 ## 3. Register your EVE application (once)
 
 1. <https://developers.eveonline.com/applications> > Create application (Authentication & API Access).
 2. Callback URL: `http://localhost:8080/sso/callback` (must match `EVE_CALLBACK_URL` exactly).
-3. Scopes: `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`.
+3. Scopes: `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
+   and for the Structures page `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1`. EVE SSO refuses the
+   sign-in (`invalid_scope`) while one of them is missing on the application; `EVE_OPTIONAL_SCOPES=none` leaves the
+   last two out.
 4. Copy the **Client ID** and **Secret Key**.
 
 ## 4. Create `.env`
@@ -80,7 +83,7 @@ Then bind the port to this PC only: `"127.0.0.1:8081:8080"` in `docker-compose.y
 
 Data folder on the host (`.\data` → `/app/data`), as in `docker-compose.yml`:
 ```powershell
-docker compose up -d --build   # builds evedm:0.5.0 from source (or uses it if step 1A already built it)
+docker compose up -d --build   # builds evedm:0.6.0 from source (or uses it if step 1A already built it)
 docker compose ps              # STATUS should become "healthy" within ~30 s
 docker compose logs -f evedm   # Ctrl+C to stop following
 ```
@@ -119,7 +122,7 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
 | --- | --- |
 | `load-image.ps1 cannot be loaded … execution policy` | run it via `powershell -ExecutionPolicy Bypass -File …` (step 1A) |
 | `checksum mismatch` | a part file is incomplete: delete `image\evedm-image-0.3.0-amd64.tar.gz`, restore the parts with `git checkout -- image`, retry |
-| `pull access denied for evedm, repository does not exist` | the image is not in Docker yet, so Docker tries Docker Hub. Do step 1 first (`docker build -t evedm:0.5.0 .`), check with `docker image ls evedm` |
+| `pull access denied for evedm, repository does not exist` | the image is not in Docker yet, so Docker tries Docker Hub. Do step 1 first (`docker build -t evedm:0.6.0 .`), check with `docker image ls evedm` |
 | `no matching manifest for windows/amd64` | Docker Desktop is in Windows-containers mode; switch to Linux containers |
 | `port is already allocated` | change `"8080:8080"` to `"8081:8080"` in `docker-compose.yml` and update `EVE_CALLBACK_URL` and the callback in your EVE application to port 8081 |
 | `missing required settings` | `.env` lacks `EVEDM_SECRET_KEY`, `EVE_CLIENT_ID` or `EVE_CLIENT_SECRET` |
@@ -160,3 +163,21 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
   in `.env`, then `docker compose up -d --force-recreate`. Messages link back to the Wars page; set
   `EVEDM_PUBLIC_URL` (for example your Tailscale address) so the link works for others.
 - Stop the old eve-war-bot-2 container if both would post to the same channel.
+
+## 11. Structures page (structure scout)
+
+- Lists the player-owned structures (Upwell: citadels, engineering complexes, refineries, Keepstars …) in every kind
+  of space where **any** character registered on the site has assets. Everyone signed in sees the whole list,
+  sorted by jumps from their own nearest character; NPC stations never appear.
+- It needs two extra scopes on your EVE application: tick `esi-universe.read_structures.v1` and
+  `esi-assets.read_assets.v1` on developers.eveonline.com **before** upgrading, otherwise sign-in fails with
+  `invalid_scope` (or set `EVE_OPTIONAL_SCOPES=none` in `.env` until you have).
+- Characters added before need to grant them once: sign in again with the main and use **Add character** for each
+  alt. The Characters page says "structures not shared" for characters that have not.
+- The scout runs every 60 minutes, reads each character's assets once a day (locations only are kept) and each
+  structure's name, owner and system every 3 days. A structure a character may no longer dock at keeps its last
+  known data.
+- Structures of corporations at war (from the Wars census) are marked **at war**, and the high-sec ones also appear
+  in the Wars page's High-sec structures tab.
+- The search box and filters are remembered in your browser like the other settings.
+

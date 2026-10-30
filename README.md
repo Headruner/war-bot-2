@@ -17,7 +17,9 @@ static data (shortest path by gates, same as "Shortest" on route planners).
   structures; one click ranks your characters to such a system. Optional Discord posting. Settings in `config/wars.yaml`.
 - **War statistics and loot list**: every active war in New Eden (census), and the public high-sec structures of
   both sides sorted by jumps from your nearest character.
-- **Remembered per browser** (cookie): Wars tab and filters, map options, ranking auto-refresh.
+- **Structures page** (structure scout): every player-owned structure in any space where a registered character has
+  assets (ESI assets + structure info), shared by all users, nearest first, owners at war marked.
+- **Remembered per browser** (cookie): Wars tab and filters, Structures filters, map options, ranking auto-refresh.
 - **JSON import/export** of characters with refresh and access tokens (schema `evedm-characters` v1), with a per-character report.
 - Target by **autocomplete** or by **pasting text**: Dotlan links, in-game `showinfo` links, zKillboard links and plain names.
 - Ranking by jumps (unreachable J-space / Pochven last), ship, docked / in space, online / last seen, **Closest** badge.
@@ -33,8 +35,8 @@ static data (shortest path by gates, same as "Shortest" on route planners).
 ### Demo (no EVE application needed)
 
 ```
-docker build -t evedm:0.5.0 .
-docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo evedm:0.5.0
+docker build -t evedm:0.6.0 .
+docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo evedm:0.6.0
 ```
 
 Open <http://localhost:8080/?target=Tama>. Or without Docker:
@@ -51,7 +53,8 @@ A ready-made demo database is in [`data/demo/evedm.sqlite3`](data/demo) (key `de
 ### Your characters
 
 1. Create an application at <https://developers.eveonline.com/applications> with callback `http://<host>:8080/sso/callback`
-   and scopes `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`.
+   and scopes `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
+   `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1` (the last two for the Structures page).
 2. `cp .env.example .env` and fill in `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET`, `EVEDM_SECRET_KEY`, `EVEDM_ALLOWED_LOGIN_CHARACTERS`.
 3. `docker compose up -d --build` (Linux or Windows with Docker Desktop). Data stays in `./data` on the host, mounted at
    `/app/data` (one-file SQLite database in WAL mode + logs). On a Linux host run `sudo chown -R 10001:10001 data` once:
@@ -74,6 +77,8 @@ The shipped image in `image/` is the older 0.3.0 (no accounts, no Wars page); lo
 | `EVEDM_WARS_ENABLED` | `true` in `config/wars.yaml` | `0` switches the war watcher off |
 | `EVEDM_WARS_DISCORD_ENABLED`, `EVEDM_WARS_DISCORD_WEBHOOK` | `0`, empty | post new wars to a Discord channel |
 | `EVEDM_PUBLIC_URL` | from `EVE_CALLBACK_URL` | address of the site, used in Discord links to the Wars page |
+| `EVE_OPTIONAL_SCOPES` | `esi-universe.read_structures.v1 esi-assets.read_assets.v1` | extra scopes for the structure scout; `none` = only the ranking scopes |
+| `EVEDM_STRUCTURES_ENABLED` | `1` | `0` switches the structure scout and the Structures page off |
 | `EVEDM_DEMO` | `0` | `1` = fictional characters, no EVE application |
 | `EVEDM_DATA_DIR` | `/app/data` (image), `./data` (local) | one-file SQLite DB and logs |
 | `EVEDM_SQLITE_JOURNAL` | `wal` | falls back to `delete` automatically (logged) where WAL is unsupported |
