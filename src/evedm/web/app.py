@@ -466,7 +466,9 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
     @app.get("/api/wars/stats")
     async def war_stats(request: Request) -> JSONResponse:
         """Statistics over every active war in New Eden (the census)."""
-        return JSONResponse(census_of(request).stats())
+        census = census_of(request)
+        await census.ensure_names(timeout=3)  # names, never bare IDs, even during the first scan
+        return JSONResponse(census.stats())
 
     @app.get("/api/wars/structures")
     async def war_structures(
@@ -484,6 +486,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         """High-sec structures of both sides of active wars, nearest to the caller's characters first."""
         uid = owner(request)
         census = census_of(request)
+        await census.ensure_names(timeout=3)
         svc = svc_of(request)
         chars = [c for c in svc.db.list_characters(uid) if c.enabled and c.status != REAUTH]
         if refresh and chars:

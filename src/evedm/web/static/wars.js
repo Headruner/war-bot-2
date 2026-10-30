@@ -31,6 +31,15 @@ function isk(v) {
   for (const [u, n] of [["t", 1e12], ["b", 1e9], ["m", 1e6], ["k", 1e3]]) if (v >= n) return `${(v / n).toFixed(1)}${u}`;
   return v.toFixed(0);
 }
+const ZKB = "https://zkillboard.com";
+function extLink(text, href, cls) {
+  if (!href) return el("span", cls, text);
+  const a = el("a", cls, text);
+  a.href = href; a.target = "_blank"; a.rel = "noopener";
+  return a;
+}
+const zkbWar = (id) => `${ZKB}/war/${id}/`;
+
 function rankLink(sys) {
   const a = el("a", "target-chip");
   a.href = `/?target=${encodeURIComponent(sys.name)}`;
@@ -80,7 +89,9 @@ function card(w) {
   title.href = w.report_url; title.target = "_blank"; title.rel = "noopener";
   head.append(title, el("span", `badge war-${w.type}`, TYPE_TEXT[w.type] || w.type));
   if (w.demo) head.append(el("span", "badge stale", "demo"));
-  head.append(el("span", "small when", `declared ${ago(w.declared)} · #${w.war_id}`));
+  const when = el("span", "small when", `declared ${ago(w.declared)} · `);
+  when.append(extLink(`war #${w.war_id} on zKillboard`, zkbWar(w.war_id)));
+  head.append(when);
   li.append(head);
   const sides = el("div", "parties");
   sides.append(party(w.aggressor, "Aggressor"), party(w.defender, "Defender"));
@@ -106,8 +117,9 @@ function card(w) {
       .filter(Boolean).forEach((d) => li.append(d));
   }
   const links = el("div", "small links");
-  if (r && r.zkill_war_url) { const a = el("a", null, "zKillboard"); a.href = r.zkill_war_url; a.target = "_blank"; a.rel = "noopener"; links.append(a); }
-  if (links.childNodes.length) li.append(links);
+  links.append(extLink("zKillboard war page", zkbWar(w.war_id)), document.createTextNode(" · "),
+    extLink("Dotlan", w.report_url));
+  li.append(links);
   return li;
 }
 
@@ -193,10 +205,11 @@ async function loadStats() {
     c.append(el("b", null, String(value)), el("span", null, label));
     k.append(c);
   });
-  const who = (e) => `${e.name}${e.type === "alliance" ? " (alliance)" : ""}`;
+  const who = (e) => extLink(`${e.name}${e.type === "alliance" ? " (alliance)" : ""}`, e.zkill);
   tableRows($("#top-aggressors"), ["Aggressor", "Wars"], d.top_aggressors.map((e) => [who(e), e.wars]));
   tableRows($("#top-defenders"), ["Defender", "Wars"], d.top_defenders.map((e) => [who(e), e.wars]));
-  tableRows($("#top-isk"), ["War", "Kills", "ISK"], d.top_isk.map((w) => [`${w.aggressor} → ${w.defender}`, w.ships_killed, isk(w.isk_destroyed)]));
+  tableRows($("#top-isk"), ["War", "Kills", "ISK"],
+    d.top_isk.map((w) => [extLink(`${w.aggressor} → ${w.defender}`, w.zkill), w.ships_killed, isk(w.isk_destroyed)]));
   tableRows($("#by-type"), ["Structure type", "Count"], d.structures.by_type);
   tableRows($("#by-region"), ["Region", "Count"], d.structures.by_region);
   const c = d.census;
@@ -232,7 +245,8 @@ function warCell(r) {
   r.wars.slice(0, 3).forEach((w) => {
     const line = el("div", "small");
     const label = w.state === "pending" ? `starts ${until(w.started)}` : w.state === "ending" ? `ends ${until(w.finished)}` : "fighting";
-    line.append(el("span", `badge state-${w.state}`, label), document.createTextNode(` ${w.side} vs ${w.opponent}`));
+    line.append(el("span", `badge state-${w.state}`, label), document.createTextNode(` ${w.side} vs ${w.opponent} · `),
+      extLink(`war #${w.war_id}`, w.zkill || zkbWar(w.war_id)));
     line.title = `war #${w.war_id}` + (w.started ? `, fighting from ${new Date(w.started).toLocaleString()}` : "") +
       (w.finished ? `, ends ${new Date(w.finished).toLocaleString()}` : "");
     td.append(line);
@@ -251,7 +265,9 @@ function lootRow(r) {
   const st = el("td");
   st.append(el("div", null, r.name), el("div", "small", r.type));
   const owner = el("td");
-  owner.append(el("div", null, r.owner));
+  const ownerLine = el("div");
+  ownerLine.append(extLink(r.owner, r.owner_zkill));
+  owner.append(ownerLine);
   const via = r.entities.filter((e) => e.id !== r.owner_id).map((e) => e.name);
   owner.append(el("div", "small", via.length ? `of ${via.join(", ")}` : r.sides.join(", ")));
   tr.append(jumps, sys, st, owner, warCell(r));

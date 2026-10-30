@@ -125,11 +125,21 @@ async def test_statistics(db, graph):
     assert (t_["active"], t_["fighting"], t_["pending"], t_["ending"], t_["mutual"]) == (4, 2, 1, 1, 1)
     assert t_["declared_24h"] == 1 and t_["declared_7d"] == 2 and t_["with_allies"] == 1
     assert t_["ships_killed"] == 7 and t_["isk_destroyed"] == 3e9
-    assert s["top_aggressors"] == [{"id": ALLIANCE, "name": "BLACKFLAG.", "type": "alliance", "wars": 4}]
+    assert s["top_aggressors"] == [
+        {
+            "id": ALLIANCE,
+            "name": "BLACKFLAG.",
+            "type": "alliance",
+            "wars": 4,
+            "zkill": f"https://zkillboard.com/alliance/{ALLIANCE}/",
+        }
+    ]
     assert s["top_defenders"][0]["name"] == "islands in the stream" and s["top_defenders"][0]["wars"] == 4
+    assert s["top_defenders"][0]["zkill"] == f"https://zkillboard.com/corporation/{DEFENDER}/"
     assert s["top_isk"] == [
         {
             "war_id": 709,
+            "zkill": "https://zkillboard.com/war/709/",
             "aggressor": "BLACKFLAG.",
             "defender": "islands in the stream",
             "isk_destroyed": 3e9,
@@ -273,8 +283,12 @@ def test_census_off_hides_its_tabs(tmp_path):
         assert 'id="tab-btn-stats"' not in c.get("/wars").text
 
 
-def test_structure_jumps_are_per_main(tmp_path):
+def test_structure_jumps_are_per_main(tmp_path, monkeypatch):
     from test_accounts_web import SECRET, as_user, link, settings
+
+    from evedm.wars.service import WarService
+
+    monkeypatch.setattr(WarService, "start", lambda self: None)  # no ESI polling here
 
     with TestClient(create_app(settings(tmp_path), WarsSettings(enabled=True, structures_enabled=True))) as c:
         svc = c.app.state.svc
@@ -287,6 +301,11 @@ def test_structure_jumps_are_per_main(tmp_path):
             (t(-48), t(-24), ALLIANCE, "alliance", DEFENDER, "corporation", time.time()),
         )
         census.version += 1
+
+        async def no_names(ids):
+            return {}
+
+        monkeypatch.setattr(census.esi, "names", no_names)
         for main, system in ((2112000001, HEK), (2112000002, JITA)):
             svc.db.upsert_user(main, str(main))
             link(svc, main, main, str(main), system)
@@ -311,3 +330,92 @@ def test_demo_census_is_removed_when_the_database_goes_live(tmp_path, monkeypatc
     with TestClient(create_app(s, WarsSettings(enabled=True))) as c:
         assert c.get("/api/wars/stats").json()["totals"]["active"] == 0
         assert c.app.state.svc.db.get_meta("demo_census") is None
+
+
+async def test_names_are_resolved_on_demand_and_never_shown_as_bare_ids(db, graph):
+    esi = FakeEsi(wars_fixture(), page_size=50)
+    census = census_for(db, graph, esi)
+    real_names = esi.names
+
+    async def down(ids):
+        raise WarEsiError("POST /universe/names/ -> HTTP 503", 503)
+
+    esi.names = down  # ESI fails while the census runs
+    await census.run()
+    s = census.stats()
+    assert s["top_aggressors"][0]["name"] == f"Alliance {ALLIANCE}"  # readable stand-in, not "99010015"
+    assert s["top_defenders"][0]["name"] == f"Corporation {DEFENDER}"
+    esi.names = real_names
+    assert await census.ensure_names() >= 2  # the next request resolves them
+    s = census.stats()
+    assert s["top_aggressors"][0]["name"] == "BLACKFLAG." and s["top_isk"][0]["defender"] == "islands in the stream"
+    assert await census.ensure_names() == 0  # nothing left: no ESI call
+
+
+async def test_names_appear_page_by_page_during_the_first_scan(db, graph):
+    esi = FakeEsi(wars_fixture(), page_size=4)
+    calls = []
+    real = esi.names
+
+    async def names(ids):
+        calls.append(sorted(ids))
+        return await real(ids)
+
+    esi.names = names
+    census = census_for(db, graph, esi, census_pages_per_cycle=3)
+    await census.run()
+    assert len(calls) >= 1 and census.names([ALLIANCE, DEFENDER]) == {
+        ALLIANCE: "BLACKFLAG.",
+        DEFENDER: "islands in the stream",
+    }
+
+
+def test_stats_api_resolves_missing_names_first(tmp_path, monkeypatch):
+    from evedm.wars.service import WarService
+
+    monkeypatch.setattr(WarService, "start", lambda self: None)
+    s = Settings()
+    s.data_dir, s.secret_key, s.web.auth = tmp_path / "d", "k", "none"
+    s.eve.client_id, s.eve.client_secret = "cid", "sec"
+    with TestClient(create_app(s, WarsSettings(enabled=True, structures_enabled=False))) as c:
+        census = c.app.state.svc.wars.census
+        c.app.state.svc.db.execute(
+            "INSERT INTO war_census(war_id,declared,started,aggressor_id,aggressor_type,defender_id,defender_type,"
+            "aggressor_isk,checked_at) VALUES(5,?,?,?,?,?,?,?,?)",
+            (t(-48), t(-24), ALLIANCE, "alliance", DEFENDER, "corporation", 1e9, time.time()),
+        )
+        census.version += 1
+
+        async def names(ids):
+            return {i: NAMES[i] for i in ids if i in NAMES}
+
+        monkeypatch.setattr(census.esi, "names", names)
+        body = c.get("/api/wars/stats").json()
+        assert body["top_aggressors"][0]["name"] == "BLACKFLAG."
+        assert body["top_isk"][0]["defender"] == "islands in the stream"
+        assert body["top_isk"][0]["zkill"] == "https://zkillboard.com/war/5/"
+
+
+async def test_on_demand_names_give_up_fast_and_cool_down(db, graph):
+    import asyncio
+
+    esi = FakeEsi(wars_fixture(), page_size=50)
+    census = census_for(db, graph, esi)
+
+    async def down(ids):
+        raise WarEsiError("POST /universe/names/ -> HTTP 503", 503)
+
+    esi.names = down
+    await census.run()
+    calls = []
+
+    async def slow(ids):
+        calls.append(ids)
+        await asyncio.sleep(10)
+
+    esi.names = slow
+    census._names_failed_at = 0
+    t0 = time.monotonic()
+    assert await census.ensure_names(timeout=0.2) == 0
+    assert time.monotonic() - t0 < 1 and len(calls) == 1
+    assert await census.ensure_names(timeout=0.2) == 0 and len(calls) == 1  # cooling down: ESI not asked again
