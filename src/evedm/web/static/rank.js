@@ -254,13 +254,47 @@ $("#zoom-in").addEventListener("click", () => map.zoomBy(1.6));
 $("#zoom-out").addEventListener("click", () => map.zoomBy(1 / 1.6));
 $("#zoom-fit").addEventListener("click", () => map.fitScene());
 
-if (autoRefresh > 0) {
-  setInterval(() => {
-    if (document.visibilityState === "visible" && state.target && !state.busy) {
-      rank(state.target.name, { keepSelection: true });
-    }
-  }, autoRefresh * 1000);
+/* map options and auto-refresh, remembered in this browser (prefs cookie) */
+const mapPrefs = Prefs.get("map", { labels: true, chars: true, gates: true });
+Object.assign(map.opts, mapPrefs);
+document.querySelectorAll("#map-opts input[data-opt]").forEach((box) => {
+  box.checked = Boolean(map.opts[box.dataset.opt]);
+  box.addEventListener("change", () => {
+    map.opts[box.dataset.opt] = box.checked;
+    Prefs.set("map", { [box.dataset.opt]: box.checked });
+    map.draw();
+  });
+});
+$("#map-opts-btn").addEventListener("click", () => {
+  const panel = $("#map-opts");
+  panel.hidden = !panel.hidden;
+  $("#map-opts-btn").setAttribute("aria-expanded", String(!panel.hidden));
+});
+
+const refreshPrefs = Prefs.get("rank", { every: autoRefresh });
+let refreshTimer = null;
+function setAutoRefresh(seconds) {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = null;
+  const select = $("#auto-refresh");
+  if (![...select.options].some((o) => Number(o.value) === seconds)) {
+    select.append(new Option(`${seconds} s`, String(seconds)));
+  }
+  select.value = String(seconds);
+  if (seconds > 0) {
+    refreshTimer = setInterval(() => {
+      if (document.visibilityState === "visible" && state.target && !state.busy) {
+        rank(state.target.name, { keepSelection: true });
+      }
+    }, seconds * 1000);
+  }
 }
+setAutoRefresh(Math.max(0, Number(refreshPrefs.every) || 0));
+$("#auto-refresh").addEventListener("change", (ev) => {
+  const seconds = Number(ev.target.value) || 0;
+  Prefs.set("rank", { every: seconds });
+  setAutoRefresh(seconds);
+});
 
 (async () => {
   await map.load("/api/universe/map");

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from helpers import ROOT, evedm_env, evedm_server, free_port
 
@@ -136,3 +138,78 @@ def test_wars_page_fits_a_phone(server, browser):
     page.wait_for_selector(".war")
     assert page.evaluate("document.documentElement.scrollWidth") <= 360
     assert errors == []
+
+
+def test_wars_tabs_and_filters_survive_a_reload(server, browser):
+    ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = ctx.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(f"{server}/wars")
+    page.wait_for_selector(".war")
+    page.click("#tab-btn-stats")
+    page.wait_for_selector(".kpi")
+    assert page.locator(".kpi").first.inner_text().startswith("8")
+    assert "Crimson Ledger Syndicate" in page.locator("#top-aggressors").inner_text()
+    page.click("#tab-btn-loot")
+    page.wait_for_function("document.querySelectorAll('#loot-rows tr').length === 8")
+    first = page.locator("#loot-rows tr").first.inner_text()
+    assert first.split()[0] == "0"  # nearest first: a character is in that system
+    page.select_option("#f-side", "aggressor")
+    page.wait_for_function("document.querySelectorAll('#loot-rows tr').length === 1")
+    page.locator("#loot-rows tr .target-chip").first.click()  # rank the structure's system
+    page.wait_for_selector(".row.selected")
+    assert "target=Perimeter" in page.url
+    page.goto(f"{server}/wars")
+    page.wait_for_function("document.querySelectorAll('#loot-rows tr').length === 1")
+    assert page.locator(".tab.active").inner_text() == "High-sec structures"
+    assert page.input_value("#f-side") == "aggressor"
+    cookie = next(c for c in ctx.cookies() if c["name"] == "evedm_prefs")
+    assert cookie["sameSite"] == "Lax" and cookie["path"] == "/" and not cookie["httpOnly"]
+    assert cookie["expires"] - time.time() > 300 * 86400  # about a year
+    assert errors == []
+    ctx.close()
+
+
+def test_map_options_and_auto_refresh_are_remembered(server, browser):
+    ctx = browser.new_context(viewport={"width": 1280, "height": 860})
+    page = ctx.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(f"{server}/?target=Tama")
+    page.wait_for_selector(".row.selected")
+    assert page.input_value("#auto-refresh") == "30"  # server default until changed
+    page.click("#map-opts-btn")
+    assert page.is_visible("#map-opts")
+    page.uncheck("[data-opt=gates]")
+    page.uncheck("[data-opt=labels]")
+    page.select_option("#auto-refresh", "0")
+    page.reload()
+    page.wait_for_selector(".row.selected")
+    assert page.input_value("#auto-refresh") == "0"
+    assert page.evaluate("[map.opts.gates, map.opts.labels, map.opts.chars]") == [False, False, True]
+    page.click("#map-opts-btn")
+    assert not page.is_checked("[data-opt=gates]") and page.is_checked("[data-opt=chars]")
+    assert canvas_has_pixels(page)  # the map still draws (systems, route)
+    other = browser.new_page()  # another browser profile: defaults
+    other.goto(f"{server}/?target=Tama")
+    other.wait_for_selector(".row.selected")
+    assert other.input_value("#auto-refresh") == "30"
+    assert errors == []
+    ctx.close()
+
+
+def test_broken_prefs_cookie_falls_back_to_defaults(server, browser):
+    ctx = browser.new_context()
+    ctx.add_cookies([{"name": "evedm_prefs", "value": "%7Bnot-json", "url": server}])
+    page = ctx.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(f"{server}/wars")
+    page.wait_for_selector(".war")
+    assert page.locator(".tab.active").inner_text() == "New wars"
+    page.goto(f"{server}/?target=Tama")
+    page.wait_for_selector(".row.selected")
+    assert page.input_value("#auto-refresh") == "30"
+    assert errors == []
+    ctx.close()

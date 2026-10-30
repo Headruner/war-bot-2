@@ -26,6 +26,7 @@ class StarMap {
     this.pointers = new Map();
     this.pending = false;
     this.loaded = false;
+    this.opts = { labels: true, chars: true, gates: true };  // map options (kept in the prefs cookie)
     this._bind();
   }
 
@@ -150,7 +151,8 @@ class StarMap {
     const margin = 30;
     const vis = (sx, sy) => sx > -margin && sx < this.W + margin && sy > -margin && sy < this.H + margin;
 
-    // gate links
+    // gate links (the selected route is always drawn)
+    if (this.opts.gates) {
     ctx.lineWidth = 1;
     ctx.strokeStyle = s > 12 ? "rgba(120,140,175,0.42)" : "rgba(110,130,165,0.25)";
     ctx.beginPath();
@@ -164,6 +166,7 @@ class StarMap {
       ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
     }
     ctx.stroke();
+    }
 
     // systems, one fill per security colour
     const r = Math.min(4.2, Math.max(1.1, 0.9 + s * 0.09));
@@ -229,7 +232,9 @@ class StarMap {
 
     // background labels: regions when zoomed out, systems when zoomed in (collision-culled)
     ctx.textBaseline = "middle";
-    if (s < 7) {
+    if (!this.opts.labels) {
+      // names off: only the target, origin and route labels above
+    } else if (s < 7) {
       ctx.font = "600 12px Segoe UI, Inter, system-ui, sans-serif";
       ctx.fillStyle = "rgba(205,215,235,0.42)";
       ctx.textAlign = "center";
@@ -256,7 +261,7 @@ class StarMap {
     }
 
     // other characters
-    for (const m of this.markers) {
+    for (const m of this.opts.chars ? this.markers : []) {
       if (this.origin && m.index === this.origin.index) continue;
       const [x, y] = this.toScreen(m.index);
       ctx.fillStyle = "#e6ebf2";

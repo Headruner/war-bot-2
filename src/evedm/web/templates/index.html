@@ -22,7 +22,15 @@
     <div id="recent" class="chips"></div>
     <ol id="rows" class="rows"></ol>
     <div id="excluded" class="excluded"></div>
-    <div id="status" class="status"></div>
+    <div class="status-line">
+      <div id="status" class="status"></div>
+      <label class="small auto-refresh">Auto-refresh
+        <select id="auto-refresh" aria-label="Auto-refresh interval">
+          <option value="0">off</option><option value="15">15 s</option><option value="30">30 s</option>
+          <option value="60">1 min</option><option value="120">2 min</option>
+        </select>
+      </label>
+    </div>
   </section>
   <section class="map-pane" aria-label="Star map">
     <canvas id="map" role="img" aria-label="2D star map with the selected route"></canvas>
@@ -34,6 +42,13 @@
       <button id="zoom-in" class="btn icon" type="button" aria-label="Zoom in">+</button>
       <button id="zoom-out" class="btn icon" type="button" aria-label="Zoom out">&minus;</button>
       <button id="zoom-fit" class="btn icon" type="button" aria-label="Fit route" title="Fit route">&#10530;</button>
+      <button id="map-opts-btn" class="btn icon" type="button" aria-label="Map options" title="Map options"
+        aria-expanded="false" aria-controls="map-opts">&#9881;</button>
+    </div>
+    <div id="map-opts" class="map-opts" hidden>
+      <label><input type="checkbox" data-opt="labels"> System and region names</label>
+      <label><input type="checkbox" data-opt="chars"> Other characters</label>
+      <label><input type="checkbox" data-opt="gates"> Stargate links</label>
     </div>
     <div id="route-bar" class="route-bar" hidden></div>
     <div id="tooltip" class="tooltip" hidden></div>
@@ -52,6 +67,7 @@
 </dialog>
 {% endblock %}
 {% block scripts %}
+<script src="/static/prefs.js?v={{ version }}"></script>
 <script src="/static/map.js?v={{ version }}"></script>
 <script src="/static/rank.js?v={{ version }}"></script>
 {% endblock %}
