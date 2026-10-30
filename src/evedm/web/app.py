@@ -22,7 +22,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .. import __version__
 from ..bundle import BundleRejected, export_bundle, import_bundle, report
-from ..characters import CharacterService
+from ..characters import REAUTH, CharacterService
 from ..config import ConfigError, Settings
 from ..crypto import TokenCipher
 from ..db import Database
@@ -35,7 +35,7 @@ from ..selfcheck import check
 from ..sso import AuthService, SsoError
 from ..universe import GateGraph
 from ..wars.config import WarsSettings, load_wars_settings
-from ..wars.demo import DEMO_WARS, seed_demo_wars
+from ..wars.demo import DEMO_CENSUS, DEMO_WARS, seed_demo_census, seed_demo_wars
 from ..wars.service import WarService
 
 log = logging.getLogger("evedm.web")
@@ -114,8 +114,19 @@ def build_wars(settings: Settings, ws: WarsSettings, svc: Services) -> WarServic
         n = seed_demo_wars(wars.store, svc.graph)
         if n:
             log.info("seeded %s demo wars", n)
-    elif wars.store.purge_demo([w[0] for w in DEMO_WARS]):
-        log.info("removed the demo wars from a database now used live")
+        index = seed_demo_census(svc.db, svc.graph)
+        svc.db.set_meta("demo_census", "1")
+        if wars.structures is not None:  # sample structures; never downloaded in demo mode
+            wars.structures.index = index
+            wars.structures.last_refresh = time.time() + 10 * 365 * 86400
+    else:
+        if wars.store.purge_demo([w[0] for w in DEMO_WARS]):
+            log.info("removed the demo wars from a database now used live")
+        if svc.db.get_meta("demo_census"):
+            demo_ids = [w[0] for w in DEMO_WARS] + [w[0] for w in DEMO_CENSUS]
+            marks = ",".join("?" * len(demo_ids))
+            svc.db.execute(f"DELETE FROM war_census WHERE war_id IN ({marks})", tuple(demo_ids))  # noqa: S608
+            svc.db.execute("DELETE FROM meta WHERE key='demo_census'")
     return wars
 
 
@@ -266,7 +277,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             return RedirectResponse("/login", status_code=303)
         if svc_of(request).wars is None:
             raise HTTPException(status_code=404, detail="the war watcher is disabled (config/wars.yaml)")
-        return page(request, "wars.html")
+        return page(request, "wars.html", census=svc_of(request).wars.census is not None)
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request) -> Response:
@@ -445,6 +456,58 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         limit = max(1, min(limit, wars.s.page_limit))
         items = wars.store.summaries(limit, max(0, offset), type or None)
         return JSONResponse({"wars": items, "status": wars.status()})
+
+    def census_of(request: Request) -> Any:
+        census = wars_of(request).census
+        if census is None:
+            raise HTTPException(status_code=404, detail="the war census is disabled (census_enabled in wars.yaml)")
+        return census
+
+    @app.get("/api/wars/stats")
+    async def war_stats(request: Request) -> JSONResponse:
+        """Statistics over every active war in New Eden (the census)."""
+        return JSONResponse(census_of(request).stats())
+
+    @app.get("/api/wars/structures")
+    async def war_structures(
+        request: Request,
+        type: str = "",  # noqa: A002
+        region: str = "",
+        side: str = "",
+        state: str = "",
+        min_sec: float = 0.5,
+        sort: str = "jumps",
+        limit: int = 100,
+        offset: int = 0,
+        refresh: int = 1,
+    ) -> JSONResponse:
+        """High-sec structures of both sides of active wars, nearest to the caller's characters first."""
+        uid = owner(request)
+        census = census_of(request)
+        svc = svc_of(request)
+        chars = [c for c in svc.db.list_characters(uid) if c.enabled and c.status != REAUTH]
+        if refresh and chars:
+            await svc.ranking.refresh_states(chars, 1, uid)  # stale-while-revalidate, as on the ranking page
+        snaps = svc.db.get_snapshots([c.character_id for c in chars])
+        sources: dict[int, list[str]] = {}
+        for c in chars:
+            snap = snaps.get(c.character_id)
+            idx = svc.graph.index.get(snap["solar_system_id"]) if snap and snap["solar_system_id"] else None
+            if idx is not None:
+                sources.setdefault(idx, []).append(c.name)
+        result = census.loot(
+            sources,
+            svc.ranking.avoid,
+            type_name=type,
+            region=region,
+            side=side,
+            state=state,
+            min_sec=min_sec,
+            sort=sort,
+            limit=max(1, min(limit, 500)),
+            offset=max(0, offset),
+        )
+        return JSONResponse(result)
 
     @app.get("/api/wars/{war_id}")
     async def get_war(request: Request, war_id: int) -> JSONResponse:

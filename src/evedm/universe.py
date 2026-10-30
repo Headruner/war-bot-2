@@ -323,6 +323,35 @@ class GateGraph:
                     queue.append(nxt)
         return parent
 
+    def nearest(self, sources: Iterable[int], avoid: Iterable[int] = ()) -> tuple[array, array]:
+        """Multi-source BFS: jumps from the nearest source to every system and which source that is.
+
+        One pass answers "how far is my closest character" for every system at once (stargates are two-way).
+        ``dist[i] == -1`` marks systems no source can reach. Avoided systems are never transit nodes but stay
+        valid origins and destinations, as in :meth:`bfs`.
+        """
+        n = len(self.ids)
+        dist = array("i", [-1]) * n
+        origin = array("i", [-1]) * n
+        blocked = set(avoid)
+        queue: deque[int] = deque()
+        for s in sources:
+            if 0 <= s < n and dist[s] == -1:
+                dist[s], origin[s] = 0, s
+                queue.append(s)
+        off, nb = self.adj_off, self.adj_nb
+        while queue:
+            node = queue.popleft()
+            if node in blocked and dist[node] > 0:
+                continue
+            d, o = dist[node] + 1, origin[node]
+            for k in range(off[node], off[node + 1]):
+                nxt = nb[k]
+                if dist[nxt] == -1:
+                    dist[nxt], origin[nxt] = d, o
+                    queue.append(nxt)
+        return dist, origin
+
     def neighbors(self, i: int) -> list[int]:
         return list(self.adj_nb[self.adj_off[i] : self.adj_off[i + 1]])
 

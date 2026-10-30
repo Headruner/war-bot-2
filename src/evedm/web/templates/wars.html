@@ -3,27 +3,79 @@
 {% block content %}
 <div class="page wars-page">
   <h1>Wars</h1>
-  <p class="small">New war declarations from ESI with public structures of both sides. Pick a system to rank your
-    characters by jumps to it.</p>
-  <div class="toolbar">
-    <label class="small">Type
-      <select id="war-type">
-        <option value="">all</option>
-        <option value="none">war declared</option>
-        <option value="mutual">mutual</option>
-        <option value="open_for_allies">open for allies</option>
-      </select>
-    </label>
-    <label class="small"><input id="only-targets" type="checkbox"> only wars with systems to rank</label>
-    <button id="reload" class="btn" type="button">Reload</button>
-    <span id="watcher" class="small"></span>
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" id="tab-btn-feed" data-tab="feed" aria-controls="tab-feed">New wars</button>
+    {% if census %}<button class="tab" role="tab" id="tab-btn-stats" data-tab="stats" aria-controls="tab-stats">Statistics</button>
+    <button class="tab" role="tab" id="tab-btn-loot" data-tab="loot" aria-controls="tab-loot">High-sec structures</button>{% endif %}
   </div>
-  <ul id="wars" class="wars"></ul>
-  <p id="empty" class="small" hidden>No wars yet. The watcher checks ESI every few minutes.</p>
-  <button id="more" class="btn" type="button" hidden>Older wars</button>
+
+  <section id="tab-feed" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-feed" hidden>
+    <p class="small">New war declarations from ESI with public structures of both sides. Pick a system to rank your
+      characters by jumps to it.</p>
+    <div class="toolbar">
+      <label class="small">Type
+        <select id="war-type">
+          <option value="">all</option>
+          <option value="none">war declared</option>
+          <option value="mutual">mutual</option>
+          <option value="open_for_allies">open for allies</option>
+        </select>
+      </label>
+      <label class="small"><input id="only-targets" type="checkbox"> only wars with systems to rank</label>
+      <button id="reload" class="btn" type="button">Reload</button>
+      <span id="watcher" class="small"></span>
+    </div>
+    <ul id="wars" class="wars"></ul>
+    <p id="empty" class="small" hidden>No wars yet. The watcher checks ESI every few minutes.</p>
+    <button id="more" class="btn" type="button" hidden>Older wars</button>
+  </section>
+
+  {% if census %}
+  <section id="tab-stats" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-stats" hidden>
+    <p class="small">Every active war in New Eden (declared, fighting or ending), read from ESI.</p>
+    <div id="kpis" class="kpis"></div>
+    <div class="stat-grid">
+      <div class="card"><h2>Most wars declared</h2><table class="grid compact" id="top-aggressors"></table></div>
+      <div class="card"><h2>Most war-decced</h2><table class="grid compact" id="top-defenders"></table></div>
+      <div class="card"><h2>Most destructive wars</h2><table class="grid compact" id="top-isk"></table></div>
+      <div class="card"><h2>High-sec structures at war</h2><table class="grid compact" id="by-type"></table>
+        <table class="grid compact" id="by-region"></table></div>
+    </div>
+    <p id="census" class="small"></p>
+  </section>
+
+  <section id="tab-loot" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-loot" hidden>
+    <p class="small">Public high-sec structures owned by either side of an active war, nearest to your characters
+      first. A structure can be shot once its war is fighting; pick the system to rank your characters.</p>
+    <div class="toolbar filters">
+      <label class="small">Type <select id="f-type"><option value="">all</option></select></label>
+      <label class="small">Region <select id="f-region"><option value="">all</option></select></label>
+      <label class="small">Side
+        <select id="f-side"><option value="">both</option><option value="aggressor">aggressor</option>
+          <option value="defender">defender / ally</option></select></label>
+      <label class="small">War
+        <select id="f-state"><option value="">any state</option><option value="fighting">fighting</option>
+          <option value="pending">starts soon</option><option value="ending">ending</option></select></label>
+      <label class="small">Security ≥
+        <select id="f-sec"><option value="0.5">0.5</option><option value="0.6">0.6</option><option value="0.7">0.7</option>
+          <option value="0.8">0.8</option><option value="0.9">0.9</option><option value="1.0">1.0</option></select></label>
+      <label class="small">Sort
+        <select id="f-sort"><option value="jumps">nearest first</option><option value="security">security</option>
+          <option value="system">system</option><option value="type">structure type</option><option value="owner">owner</option></select></label>
+      <button id="loot-reload" class="btn" type="button">Refresh</button>
+    </div>
+    <div id="loot-info" class="small"></div>
+    <table class="grid loot">
+      <thead><tr><th>Jumps</th><th>System</th><th>Structure</th><th>Owner</th><th>War</th></tr></thead>
+      <tbody id="loot-rows"></tbody>
+    </table>
+    <button id="loot-more" class="btn" type="button" hidden>More</button>
+  </section>
+  {% endif %}
 </div>
 {% endblock %}
 {% block scripts %}
+<script src="/static/prefs.js?v={{ version }}"></script>
 <script src="/static/map.js?v={{ version }}"></script>
 <script src="/static/wars.js?v={{ version }}"></script>
 {% endblock %}

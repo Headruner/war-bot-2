@@ -31,7 +31,7 @@ RUNTIME_DISTRIBUTIONS = [
 if sys.platform != "win32":
     RUNTIME_DISTRIBUTIONS.append("uvloop")
 
-STATIC_FILES = ["app.css", "map.js", "rank.js", "characters.js", "wars.js", "favicon.svg"]
+STATIC_FILES = ["app.css", "map.js", "rank.js", "characters.js", "wars.js", "prefs.js", "favicon.svg"]
 TEMPLATES = ["base.html", "index.html", "characters.html", "login.html", "wars.html"]
 
 

@@ -24,6 +24,14 @@ structures_url: "https://data.everef.net/structures/structures-latest.v2.json"
 
 page_limit: 200                            # most wars one Wars page request returns
 
+# Census: every active war in New Eden, for the Statistics tab and the high-sec structures list.
+# Active wars can be old (mutual wars run for years), so the census walks back through the newest war IDs.
+census_enabled: true
+census_max_ids: 20000                      # newest war IDs to examine (0 = only new ones from now on)
+census_pages_per_cycle: 2                  # first scan: pages of 2000 IDs per cycle (spreads the ESI load)
+census_refresh_hours: 6                    # re-read active wars (scores, retractions, end times)
+census_concurrency: 8                      # parallel ESI requests
+
 discord:
   enabled: ${EVEDM_WARS_DISCORD_ENABLED:-false}   # also post new wars to a Discord channel
   webhook_url: ${EVEDM_WARS_DISCORD_WEBHOOK:-}    # Channel settings > Integrations > Webhooks

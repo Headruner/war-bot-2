@@ -44,6 +44,11 @@ class WarsSettings:
     structures_refresh_hours: float = 24
     structures_url: str = "https://data.everef.net/structures/structures-latest.v2.json"
     page_limit: int = 200  # wars listed on the Wars page
+    census_enabled: bool = True  # follow every active war in New Eden (statistics, high-sec structures)
+    census_max_ids: int = 20000  # how many of the newest war IDs to examine (active wars hide among them)
+    census_pages_per_cycle: int = 2  # pages of 2000 war IDs examined per cycle while the first scan runs
+    census_refresh_hours: float = 6  # re-read active wars this often (score, retracted, finished)
+    census_concurrency: int = 8  # parallel ESI requests of the census
     contact: str = ""  # added to the User-Agent sent to ESI and EVE Ref
     public_url: str = ""  # address of this site for links in Discord (default: derived from EVE_CALLBACK_URL)
     discord: DiscordSettings = field(default_factory=DiscordSettings)
@@ -55,6 +60,8 @@ class WarsSettings:
             raise ConfigError(f"wars.statuses: unknown war type(s) {bad}; use {list(WAR_TYPES)}")
         if self.poll_interval_min < 1:
             raise ConfigError("wars.poll_interval_min must be at least 1")
+        if self.census_max_ids < 0 or self.census_pages_per_cycle < 1 or not 1 <= self.census_concurrency <= 32:
+            raise ConfigError("wars.census_*: max_ids >= 0, pages_per_cycle >= 1, concurrency 1..32")
         if self.max_new_per_cycle < 1 or self.page_limit < 1:
             raise ConfigError("wars.max_new_per_cycle and wars.page_limit must be at least 1")
         if not 1 <= self.discord.batch_embeds <= 10:
@@ -71,6 +78,8 @@ class WarsSettings:
             "poll_interval_min": self.poll_interval_min,
             "statuses": self.statuses or "all",
             "structures": self.structures_enabled,
+            "census": self.census_enabled,
+            "census_max_ids": self.census_max_ids,
             "discord": self.discord.enabled,
             "discord_dry_run": self.discord.dry_run,
             "webhook_set": bool(self.discord.webhook_url),

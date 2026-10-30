@@ -40,13 +40,17 @@ def make_war(war_id: int, declared: datetime, **extra) -> dict:
 
 
 class FakeEsi:
-    def __init__(self, wars: dict[int, dict], killmails: Optional[dict[int, list[dict]]] = None):
+    def __init__(self, wars: dict[int, dict], killmails: Optional[dict[int, list[dict]]] = None, page_size: int = 2000):
         self.wars_db = wars
         self.killmails_db = killmails or {}
         self.war_calls: list[int] = []
+        self.page_size = page_size  # ESI lists up to 2000 IDs per page, newest first
+        self.list_calls: list[Optional[int]] = []
 
     async def wars(self, max_war_id: Optional[int] = None) -> list[int]:
-        return sorted(self.wars_db, reverse=True)
+        self.list_calls.append(max_war_id)
+        ids = sorted((i for i in self.wars_db if max_war_id is None or i < max_war_id), reverse=True)
+        return ids[: self.page_size]
 
     async def war(self, war_id: int) -> dict:
         self.war_calls.append(war_id)
@@ -60,8 +64,10 @@ class FakeEsi:
     async def alliance(self, alliance_id: int) -> dict:
         return {"name": NAMES[alliance_id][0], "ticker": "BFLAG"}
 
+    alliance_members: dict[int, list[int]] = {}
+
     async def alliance_corporations(self, alliance_id: int) -> list[int]:
-        return [98000001, 98000002]
+        return self.alliance_members.get(alliance_id, [98000001, 98000002])
 
     async def corporation(self, corp_id: int) -> dict:
         return {"name": NAMES[corp_id][0], "ticker": "CORP", "member_count": 7}

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 log = logging.getLogger("evedm.db")
 
 SCHEMA = """
@@ -120,6 +120,38 @@ CREATE TABLE IF NOT EXISTS wars (
     updated_at         REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS wars_by_declared ON wars(declared);
+-- every war the census has seen (active = finished is NULL or in the future)
+CREATE TABLE IF NOT EXISTS war_census (
+    war_id          INTEGER PRIMARY KEY,
+    declared        TEXT,
+    started         TEXT,
+    finished        TEXT,
+    retracted       TEXT,
+    mutual          INTEGER NOT NULL DEFAULT 0,
+    open_for_allies INTEGER NOT NULL DEFAULT 0,
+    aggressor_id    INTEGER,
+    aggressor_type  TEXT,
+    aggressor_ships INTEGER NOT NULL DEFAULT 0,
+    aggressor_isk   REAL NOT NULL DEFAULT 0,
+    defender_id     INTEGER,
+    defender_type   TEXT,
+    defender_ships  INTEGER NOT NULL DEFAULT 0,
+    defender_isk    REAL NOT NULL DEFAULT 0,
+    allies          TEXT NOT NULL DEFAULT '[]',
+    checked_at      REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS war_census_by_finished ON war_census(finished);
+CREATE TABLE IF NOT EXISTS entity_names (
+    entity_id  INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    category   TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS alliance_corps (
+    alliance_id INTEGER PRIMARY KEY,
+    corps       TEXT NOT NULL,
+    updated_at  REAL NOT NULL
+);
 """
 
 # v1 (single user) -> v2 (characters and tokens owned by a main; v1 rows go to owner 0)
@@ -227,6 +259,7 @@ class Database:
             version = self._conn.execute("PRAGMA user_version").fetchone()[0]
             if version >= SCHEMA_VERSION:
                 return
+            log.info("migrating database schema v%s -> v%s", version, SCHEMA_VERSION)
             self._conn.execute("PRAGMA foreign_keys=OFF")  # table rebuilds; cannot change inside a transaction
             self._conn.execute("BEGIN IMMEDIATE")
             try:

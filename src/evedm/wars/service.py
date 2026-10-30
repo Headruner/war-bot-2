@@ -15,6 +15,7 @@ from ..config import Settings
 from ..crypto import redact
 from ..db import Database
 from ..universe import GateGraph
+from .census import WarCensus
 from .config import WarsSettings
 from .discord import DiscordNotifier, NotifyError, WebhookInvalid
 from .embeds import MAX_EMBEDS_PER_MESSAGE, build_embed, build_payload
@@ -64,6 +65,7 @@ class WarService:
         self.source = EsiWarSource(esi, ws.alliance_member_count_max_corps)
         self.notifier = notifier
         self.structures = structures
+        self.census = WarCensus(ws, db, graph, esi, structures) if ws.census_enabled else None
         self.page_url = page_url
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -332,7 +334,20 @@ class WarService:
         await self.collect_new_wars()
         if self.structures is not None:
             await self.structures.refresh_if_due()
-        await self.process_pending()
+        try:
+            await self.process_pending()
+        finally:  # the census does not depend on Discord: it runs even when posting failed
+            await self.run_census()
+
+    async def run_census(self) -> None:
+        if self.census is None:
+            return
+        try:
+            await self.census.run()
+            self.state["census_error"] = None
+        except WarEsiError as e:
+            self.state["census_error"] = redact(f"ESI: {e}")
+            log.warning("census step failed (retried next cycle): %s", e)
 
     # -- background worker ---------------------------------------------------------------------------
     async def _loop(self) -> None:
@@ -384,4 +399,5 @@ class WarService:
             "stored": self.store.stats(),
             "structures_loaded": bool(self.structures and self.structures.loaded),
             "structure_owners": self.structures.owners if self.structures else 0,
+            "census": self.census.last_run if self.census else None,
         }
