@@ -11,7 +11,10 @@ static data (shortest path by gates, same as "Shortest" on route planners).
 
 ## Features
 
-- EVE SSO sign-in (allow-listed characters) and **Add character** through EVE SSO; tokens are stored encrypted (Fernet) in SQLite.
+- **Accounts**: each player signs in with a main character; characters added later are linked to that main and only
+  that player sees them. The sign-in lasts 90 days per browser; tokens are stored encrypted (Fernet) in SQLite.
+- **Wars page** (merged eve-war-bot-2): new war declarations from ESI with the systems of both sides' public
+  structures; one click ranks your characters to such a system. Optional Discord posting. Settings in `config/wars.yaml`.
 - **JSON import/export** of characters with refresh and access tokens (schema `evedm-characters` v1), with a per-character report.
 - Target by **autocomplete** or by **pasting text**: Dotlan links, in-game `showinfo` links, zKillboard links and plain names.
 - Ranking by jumps (unreachable J-space / Pochven last), ship, docked / in space, online / last seen, **Closest** badge.
@@ -61,7 +64,10 @@ Load the shipped image instead of building: `docker load -i evedm-image-0.3.0-am
 | `EVEDM_SECRET_KEY` | — (required) | encrypts tokens, signs sessions |
 | `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET` | — | your EVE application |
 | `EVE_CALLBACK_URL` | `http://localhost:8080/sso/callback` | must match the application |
-| `EVEDM_ALLOWED_LOGIN_CHARACTERS` | empty (anyone) | comma-separated character IDs allowed to sign in |
+| `EVEDM_ALLOWED_LOGIN_CHARACTERS` | empty (anyone) | comma-separated character IDs allowed to sign in as a main |
+| `EVEDM_WARS_CONFIG` | `config/wars.yaml` next to `EVEDM_CONFIG` | war watcher settings file |
+| `EVEDM_WARS_ENABLED` | `true` in `config/wars.yaml` | `0` switches the war watcher off |
+| `EVEDM_WARS_DISCORD_ENABLED`, `EVEDM_WARS_DISCORD_WEBHOOK` | `0`, empty | post new wars to a Discord channel |
 | `EVEDM_DEMO` | `0` | `1` = fictional characters, no EVE application |
 | `EVEDM_DATA_DIR` | `/app/data` (image), `./data` (local) | one-file SQLite DB and logs |
 | `EVEDM_SQLITE_JOURNAL` | `wal` | falls back to `delete` automatically (logged) where WAL is unsupported |

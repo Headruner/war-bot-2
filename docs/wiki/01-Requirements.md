@@ -132,6 +132,33 @@ requirement to the code and to the automated tests in this repository (0.3.0).
 | WEB-05 | The Web UI shall refuse to start without `EVEDM_SECRET_KEY`, `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET` (demo mode needs only the key). | M | done | test_validate_for_serve_requires_secrets |
 | LOG-01 | Every launch shall be recorded in the `launches` table and in `logs/launches.jsonl` (start and stop, RSS, requests). | M | done | test_launch_is_recorded, test_restart_keeps_data… |
 
+### Accounts: mains and linked characters (UC-09, added after 0.3.0)
+
+| ID | Requirement | P | Status | Verified by |
+| --- | --- | --- | --- | --- |
+| USR-01 | When a character signs in through EVE SSO, the system shall create an account for it (the main), ask for the required scopes and link the main to itself. | M | done | test_multi_user step 1 |
+| USR-02 | When a signed-in user adds or imports a character, the system shall link it to that user's main. | M | done | test_multi_user step 2, test_users |
+| USR-03 | The system shall show, rank, export and change only the characters linked to the signed-in main; recent targets are per main. | M | done | test_multi_user steps 3–4, test_links_are_scoped_per_main |
+| USR-04 | The same EVE character may be linked to several mains; each link keeps its own tokens, tags and enabled flag, and removing it for one main keeps the others. | M | done | test_links_are_scoped_per_main |
+| USR-05 | The session cookie shall keep a main signed in for `session_days` (default 90) after the last visit; it carries only the main's ID, tokens stay encrypted in the database. | M | done | test_multi_user step 5 |
+| USR-06 | The main cannot be removed on its own; Delete account removes and revokes every link of the main and ends its sessions. | S | done | test_multi_user steps 4 and 7 |
+| USR-07 | A v1 database migrates in place; its characters belong to owner 0 (local user, demo, CLI) until `evedm users adopt --to <main>`. | M | done | test_v1_database_is_migrated_to_owner_0, test_reassign_owner… |
+
+### War watcher (UC-10, merged from eve-war-bot-2)
+
+| ID | Requirement | P | Status | Verified by |
+| --- | --- | --- | --- | --- |
+| WAR-01 | Where `enabled` in `config/wars.yaml`, the system shall poll ESI `/wars/` every `poll_interval_min` minutes in the background. | M | done | test_wars (cycle tests), WarService.start |
+| WAR-02 | On a clean database, the system shall keep wars declared in the last `bootstrap_hours`; later it shall keep only new IDs and heal a watermark ahead of ESI. | M | done | test_clean_db_posts_last_24h_once, test_heals_test_data_watermark |
+| WAR-03 | If a new war ID was declared more than `max_war_age_hours` ago (re-issued war), then the system shall store it as stale and not show it. | M | done | test_reissued_old_wars_are_stale |
+| WAR-04 | Where `statuses` is set, the system shall keep only those war types. | S | done | test_statuses_filter |
+| WAR-05 | For each kept war, the system shall build parties, report (score, allies, recent kills, hot systems) and public structures of both sides with their systems. | M | done | test_structures_give_rankable_systems |
+| WAR-06 | The Wars page shall list wars newest first with the systems of their structures and hot systems; choosing one opens the ranking for that system. | M | done | test_wars_page_and_api_in_demo, browser check |
+| WAR-07 | Where `discord.enabled`, the system shall post new wars in batches, honour 429 `retry_after`, and park a war as failed after 5 failed posts. | S | done | test_failed_post_is_retried_then_parked, test_notifier_waits… |
+| WAR-08 | War settings shall live in their own file (`config/wars.yaml`, `$EVEDM_WARS_CONFIG`), secrets in `.env` (`EVEDM_WARS_DISCORD_WEBHOOK`). | M | done | test_wars_config_file_env_and_validation |
+| WAR-09 | The system shall offer `evedm wars run|list|stats|check`, including monthly statistics. | S | done | test_cli_wars_list_stats_check |
+| WAR-10 | A transient ESI error shall not drop a war; it is retried on the next cycle. | M | done | test_transient_esi_error_does_not_skip_war |
+
 ## Non-functional requirements
 
 | ID | Requirement | Result (0.3.0) |
