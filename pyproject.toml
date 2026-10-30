@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evedm"
-version = "0.5.0"
+version = "0.6.0"
 description = "EVE Distance Meter - rank your EVE Online characters by stargate jumps to a target system and show the route on a 2D star map"
 readme = "README.md"
 requires-python = ">=3.11"
