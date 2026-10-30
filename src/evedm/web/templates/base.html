@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>{% block title %}EVE Distance Meter{% endblock %}</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css?v={{ version }}">
+</head>
+<body class="{% block bodyclass %}{% endblock %}">
+  <header class="topbar">
+    <a class="brand" href="/"><span class="logo">&#9678;</span>EVE Distance Meter</a>
+    {% block topbar %}{% endblock %}
+    <nav class="nav">
+      {% if user %}
+        <a href="/">Ranking</a>
+        <a href="/characters">Characters</a>
+        {% if auth == "sso" %}
+          <form method="post" action="/logout"><button class="link" type="submit">Sign out {{ user.name }}</button></form>
+        {% endif %}
+      {% endif %}
+    </nav>
+  </header>
+  {% if demo %}<div class="demo-banner">Demo mode: fictional characters, no EVE login needed.<span class="detail"> Universe data: {{ universe }}</span></div>{% endif %}
+  {% block content %}{% endblock %}
+  {% block scripts %}{% endblock %}
+</body>
+</html>

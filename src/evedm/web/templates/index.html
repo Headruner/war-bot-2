@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Ranking · EVE Distance Meter{% endblock %}
+{% block bodyclass %}rank-page{% endblock %}
+{% block topbar %}
+<form id="target-form" class="target" autocomplete="off">
+  <label for="target" class="sr-only">Target system</label>
+  <div class="combo">
+    <input id="target" name="target" placeholder="Target system, e.g. Tama" spellcheck="false" autocapitalize="off">
+    <ul id="suggest" class="suggest" hidden></ul>
+  </div>
+  <button type="submit" class="btn primary">Rank</button>
+  <button type="button" id="paste-btn" class="btn">Paste text</button>
+  <button type="button" id="refresh-btn" class="btn icon" title="Refresh locations" aria-label="Refresh">&#8635;</button>
+</form>
+{% endblock %}
+{% block content %}
+<main class="split" data-auto-refresh="{{ auto_refresh_s }}">
+  <section class="list-pane" aria-label="Characters ranked by jumps">
+    <div id="target-info" class="target-info">
+      <p class="hint">Type a target system or paste the notification text. Characters are ranked by stargate jumps; click one to see its route.</p>
+    </div>
+    <div id="recent" class="chips"></div>
+    <ol id="rows" class="rows"></ol>
+    <div id="excluded" class="excluded"></div>
+    <div id="status" class="status"></div>
+  </section>
+  <section class="map-pane" aria-label="Star map">
+    <canvas id="map" role="img" aria-label="2D star map with the selected route"></canvas>
+    <div class="legend">
+      <span><i class="dot high"></i>High</span><span><i class="dot low"></i>Low</span><span><i class="dot null"></i>Null</span>
+      <span><i class="mk origin"></i>Selected character</span><span><i class="mk target"></i>Target</span>
+    </div>
+    <div class="map-tools">
+      <button id="zoom-in" class="btn icon" type="button" aria-label="Zoom in">+</button>
+      <button id="zoom-out" class="btn icon" type="button" aria-label="Zoom out">&minus;</button>
+      <button id="zoom-fit" class="btn icon" type="button" aria-label="Fit route" title="Fit route">&#10530;</button>
+    </div>
+    <div id="route-bar" class="route-bar" hidden></div>
+    <div id="tooltip" class="tooltip" hidden></div>
+  </section>
+</main>
+<dialog id="paste-dialog">
+  <form method="dialog" class="dlg">
+    <h2>Paste notification text</h2>
+    <textarea id="paste-text" rows="8" placeholder="Paste the Discord message here. Dotlan links and plain system names are recognised."></textarea>
+    <div id="paste-result"></div>
+    <div class="dlg-actions">
+      <button value="cancel" class="btn">Close</button>
+      <button id="paste-find" value="default" class="btn primary">Find system</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}
+<script src="/static/map.js?v={{ version }}"></script>
+<script src="/static/rank.js?v={{ version }}"></script>
+{% endblock %}

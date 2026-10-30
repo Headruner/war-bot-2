@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Characters · EVE Distance Meter{% endblock %}
+{% block content %}
+<div class="page">
+  <h1>Characters</h1>
+  {% if added %}<div class="notice ok">Added {{ added }}.</div>{% endif %}
+  {% if error %}<div class="notice err">EVE SSO error: {{ error }}</div>{% endif %}
+  <div class="toolbar">
+    {% if sso_ready %}<a class="btn primary" href="/sso/add">Add character (EVE SSO)</a>
+    {% else %}<span class="small">EVE SSO is not configured (set EVE_CLIENT_ID / EVE_CLIENT_SECRET) - demo characters only.</span>{% endif %}
+    <label class="btn">Import JSON<input id="import-file" type="file" accept="application/json,.json" hidden></label>
+    <button id="export-btn" class="btn" type="button">Export JSON</button>
+    <span class="small">Tick characters to export only those. Exports contain credentials.</span>
+  </div>
+  <div id="import-report" class="notice" hidden></div>
+  <div class="card">
+    <table class="grid">
+      <thead><tr><th></th><th>Character</th><th>Status</th><th>Ranked</th><th>Tags</th><th class="hide-sm">Scopes</th><th></th></tr></thead>
+      <tbody id="char-rows"></tbody>
+    </table>
+    <p id="empty" class="small" hidden>No characters yet. Add one through EVE SSO or import a JSON bundle.</p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/characters.js?v={{ version }}"></script>{% endblock %}

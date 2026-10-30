@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Sign in · EVE Distance Meter{% endblock %}
+{% block content %}
+<div class="login">
+  <div class="card">
+    <h1>Sign in</h1>
+    <p>Sign in with one of your EVE characters. Only characters listed in the instance configuration are admitted.</p>
+    {% if error %}<div class="notice err">Sign-in failed: {{ error }}</div>{% endif %}
+    {% if sso_ready %}<a class="btn primary" href="/sso/login">Sign in with EVE Online</a>
+    {% else %}<p class="small">EVE SSO is not configured on this instance.</p>{% endif %}
+  </div>
+</div>
+{% endblock %}
