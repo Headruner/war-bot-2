@@ -1,0 +1,36 @@
+@startuml seq-rank-and-map
+title UC-04 / UC-05 · Rank characters and show the route on the star map
+skinparam shadowing false
+actor User
+participant "Browser UI\n(rank.js + map.js)" as UI
+participant "Routes" as R
+participant "RankingService" as RS
+participant "GateGraph" as G
+participant "LiveProvider" as P
+participant "EsiClient" as E
+participant "ESI" as ESI
+database "SQLite" as DB
+
+User -> UI : type target or paste message text
+UI -> R : GET /api/systems/search or POST /api/target/resolve
+R --> UI : candidate systems
+UI -> R : GET /api/rank?target=Tama&refresh=1
+R -> RS : rank(target, mode)
+alt snapshots younger than 30 s (stale-while-revalidate)
+  RS -> RS : answer from snapshots; start a background round if older than 5 s
+else first ranking, or Refresh button (mode 2)
+  RS -> P : fetch all enabled characters (one shared round, single flight)
+  P -> E : location / ship / online (max 20 in parallel)
+  E -> ESI : GET (skipped until Expires, If-None-Match)
+  ESI --> E : 200 or 304
+  RS -> DB : save_snapshots (one transaction)
+end
+RS -> G : bfs(target, avoid = [Zarzakh]) (cached per target)
+G --> RS : parent pointers
+RS -> RS : route per character, sort: reachable, jumps, online, name; mark Closest
+RS --> UI : rows (jumps, system, ship, docked, route ids)
+UI -> UI : list on the left, closest selected
+UI -> UI : map.setScene(target, route, markers) - draw route, fit view
+User -> UI : click another character
+UI -> UI : draw that character's route (no server call)
+@enduml

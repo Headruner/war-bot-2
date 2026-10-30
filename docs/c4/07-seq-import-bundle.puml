@@ -1,0 +1,35 @@
+@startuml seq-import-bundle
+title UC-02 · Import characters from a JSON bundle
+skinparam shadowing false
+actor User
+participant "Routes" as R
+participant "BundleIO" as B
+participant "AuthService" as A
+participant "EVE SSO" as SSO
+participant "CharacterService" as C
+database "SQLite" as DB
+
+User -> R : POST /api/characters/import (file)
+R -> B : import_bundle(bytes)
+B -> B : size <= 1 MB, JSON, schema evedm-characters v1
+alt invalid file or client_id differs (IMP-02, IMP-03)
+  B --> R : BundleRejected(reason, JSON paths)
+  R --> User : 422 + reasons, nothing stored
+else valid
+  loop each entry
+    opt access_token present (IMP-04)
+      B -> A : verify(jwt, allow_expired = true)
+    end
+    B -> A : refresh(refresh_token) (IMP-05)
+    A -> SSO : POST /v2/oauth/token grant_type=refresh_token
+    alt refreshed
+      B -> C : store(newest tokens) (IMP-06)
+      C -> DB : upsert, keep local tags / enabled (IMP-07)
+    else invalid_grant or character mismatch
+      B -> B : entry Rejected (reason)
+    end
+  end
+  B --> R : report Added / Updated / Limited / Rejected (IMP-08)
+  R --> User : 200 report
+end
+@enduml

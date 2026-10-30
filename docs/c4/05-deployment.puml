@@ -1,0 +1,31 @@
+@startuml deployment
+!include <C4/C4_Deployment>
+title Deployment · small VM (2 vCPU / 1 GB RAM) or Windows with Docker Desktop
+LAYOUT_LEFT_RIGHT()
+
+Person(user, "EVE player", "PC browser or phone")
+
+Deployment_Node(vm, "Linux VM", "Ubuntu / Debian, 2 vCPU, 1 GB RAM") {
+  Deployment_Node(docker, "Docker Engine", "limits: 2 CPUs, 1 GB RAM") {
+    Container(app, "evedm container", "image evedm:0.3.0, non-root uid 10001", "uvicorn, 1 worker; idle RSS ~75 MB, peak ~85 MB")
+  }
+  ContainerDb(vol, "/app/data volume", "named volume or host folder data/", "evedm.sqlite3, logs/evedm.log, logs/launches.jsonl")
+  Container(ts, "Tailscale (optional)", "WireGuard", "private HTTPS access from the phone, no open ports")
+}
+
+Deployment_Node(win, "Windows PC (alternative)", "Docker Desktop, WSL 2") {
+  Container(app2, "evedm container", "same image", "-v C:\\evedm\\data:/app/data")
+}
+
+System_Ext(sso, "EVE SSO")
+System_Ext(esi, "ESI")
+
+Rel(user, ts, "HTTPS")
+Rel(ts, app, "HTTP :8080")
+Rel(app, vol, "SQLite (WAL)")
+Rel(app, sso, "HTTPS")
+Rel(app, esi, "HTTPS")
+Rel(app2, sso, "HTTPS")
+Rel(app2, esi, "HTTPS")
+SHOW_LEGEND()
+@enduml

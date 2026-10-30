@@ -1,0 +1,73 @@
+@startuml data-model
+title Database schema v1 (one file evedm.sqlite3, WAL, on the /app/data volume)
+skinparam shadowing false
+hide circle
+hide methods
+skinparam class {
+  BackgroundColor #FDFDFD
+  BorderColor #5B6B82
+}
+entity characters {
+  * character_id : INTEGER <<PK>>
+  --
+  name : TEXT
+  enabled : INTEGER
+  tags : TEXT (JSON)
+  status : OK | LIMITED | REAUTH
+  scopes : TEXT (JSON)
+  owner_hash : TEXT
+  demo : INTEGER
+  added_at : REAL
+}
+entity tokens {
+  * character_id : INTEGER <<PK, FK>>
+  --
+  client_id : TEXT
+  access_token : BLOB <<Fernet>>
+  access_expires_at : REAL
+  refresh_token : BLOB <<Fernet>>
+  refresh_tail : TEXT
+  updated_at : REAL
+}
+entity snapshots {
+  * character_id : INTEGER <<PK, FK>>
+  --
+  solar_system_id, station_id, structure_id
+  ship_type_id, ship_item_id, ship_name
+  online, last_login, last_logout
+  fetched_at : REAL
+  error : TEXT
+}
+entity launches {
+  * id : INTEGER <<PK>>
+  --
+  started_at, stopped_at, version, pid, mode
+  python, platform, cpu_count
+  rss_mb_start, rss_mb_peak, requests
+  config : TEXT (JSON, no secrets)
+}
+entity sso_states {
+  * state : TEXT <<PK>>
+  --
+  purpose : login | add
+  created_at : REAL
+  used : INTEGER
+}
+entity target_history {
+  * solar_system_id : INTEGER <<PK>>
+  --
+  used_at : REAL
+}
+entity type_names {
+  * type_id : INTEGER <<PK>>
+  --
+  name : TEXT
+}
+entity meta {
+  * key : TEXT <<PK>>
+  --
+  value : TEXT
+}
+characters ||--|| tokens
+characters ||--o| snapshots
+@enduml

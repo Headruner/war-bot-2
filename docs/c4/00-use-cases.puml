@@ -1,0 +1,33 @@
+@startuml use-cases
+title Use cases · EVE Distance Meter 0.3
+left to right direction
+skinparam shadowing false
+skinparam packageStyle rectangle
+actor "EVE player" as user
+actor "EVE SSO" as sso <<system>>
+actor "ESI" as esi <<system>>
+rectangle "EVE Distance Meter" {
+  usecase "UC-08 Sign in to the Web UI" as UC8
+  usecase "UC-01 Add a character\nthrough EVE SSO" as UC1
+  usecase "UC-07 Re-authorize a character" as UC7
+  usecase "UC-02 Import characters\nfrom a JSON bundle" as UC2
+  usecase "UC-03 Export characters\nto a JSON bundle" as UC3
+  usecase "UC-06 Manage characters\n(enable, tags, remove)" as UC6
+  usecase "UC-04 Rank characters for a target\nand see the route on the star map" as UC4
+  usecase "UC-05 Get the target from\npasted notification text" as UC5
+}
+user --> UC8
+user --> UC1
+user --> UC7
+user --> UC2
+user --> UC3
+user --> UC6
+user --> UC4
+user --> UC5
+UC5 .> UC4 : <<include>>
+UC7 .> UC1 : <<extend>>
+UC8 --> sso
+UC1 --> sso
+UC2 --> sso : refresh tokens
+UC4 --> esi : location, ship, online
+@enduml

@@ -1,0 +1,46 @@
+@startuml c3-components
+!include <C4/C4_Component>
+title C3 · Components of the web app (package evedm)
+LAYOUT_TOP_DOWN()
+
+Container(spa, "Browser UI", "JS", "rank.js, map.js, characters.js")
+ContainerDb(db, "SQLite", "evedm.sqlite3")
+System_Ext(sso, "EVE SSO")
+System_Ext(esi, "ESI")
+
+Container_Boundary(web, "Web app") {
+  Component(routes, "Routes", "web/app.py", "Pages, /api/*, /sso/*, session sign-in, CSRF header check")
+  Component(resolver, "TargetResolver", "resolver.py", "Autocomplete, Dotlan / in-game links and plain names in pasted text")
+  Component(ranking, "RankingService", "ranking.py", "Single-flight refresh, stale-while-revalidate, sort, routes, flags")
+  Component(graph, "GateGraph", "universe.py", "CSR adjacency, BFS with parent pointers, avoid list, map payload")
+  Component(provider, "Live / Demo provider", "ranking.py", "Character state from ESI or from seeded snapshots")
+  Component(chars, "CharacterService", "characters.py", "Store tokens, refresh when < 60 s left, REAUTH on invalid_grant")
+  Component(bundle, "BundleIO", "bundle.py", "JSON bundle v1: schema, per-entry refresh, report, export")
+  Component(auth, "AuthService", "sso.py", "Authorize URL, code exchange, refresh, revoke, JWT validation via JWKS")
+  Component(esiclient, "EsiClient", "esi.py", "Expires/ETag cache, request coalescing, 429/420 handling, concurrency limit")
+  Component(cipher, "TokenCipher", "crypto.py", "Fernet encryption at rest, log redaction")
+  Component(store, "Database", "db.py", "Schema v1, migrations, batched snapshot writes")
+  Component(launch, "Logs + LaunchRecorder", "logs.py", "Rotating log, launches table + launches.jsonl, RSS")
+}
+
+Rel(spa, routes, "HTTPS")
+Rel(routes, resolver, "search / resolve")
+Rel(routes, ranking, "rank(target)")
+Rel(routes, bundle, "import / export")
+Rel(routes, auth, "SSO flows")
+Rel(ranking, graph, "bfs + route")
+Rel(ranking, provider, "fetch states")
+Rel(provider, chars, "access token")
+Rel(provider, esiclient, "location / ship / online")
+Rel(chars, auth, "refresh")
+Rel(chars, cipher, "encrypt / decrypt")
+Rel(bundle, chars, "store")
+Rel(bundle, auth, "verify + refresh")
+Rel(chars, store, "tokens")
+Rel(ranking, store, "snapshots")
+Rel(store, db, "sqlite3")
+Rel(auth, sso, "HTTPS")
+Rel(esiclient, esi, "HTTPS")
+Rel(routes, launch, "start / stop")
+SHOW_LEGEND()
+@enduml

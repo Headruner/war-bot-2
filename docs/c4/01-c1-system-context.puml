@@ -1,0 +1,19 @@
+@startuml c1-system-context
+!include <C4/C4_Context>
+title C1 · System context · EVE Distance Meter 0.3
+LAYOUT_LEFT_RIGHT()
+
+Person(user, "EVE player (you)", "Reads a notification, enters or pastes the target system, picks which character to log in")
+System(evedm, "EVE Distance Meter", "Ranks your characters by stargate jumps to the target and draws each route on a 2D star map")
+System_Ext(sso, "EVE SSO", "login.eveonline.com - OAuth 2.0 authorization code + refresh, JWT access tokens")
+System_Ext(esi, "ESI", "esi.evetech.net - character location, ship, online state")
+System_Ext(sde, "CCP static data (SDE)", "developers.eveonline.com - solar systems, stargates, ship types")
+System_Ext(discord, "Existing bot's Discord channel", "Notification source, read by the user only (no technical interface)")
+
+Rel(user, discord, "reads notifications")
+Rel(user, evedm, "target system, character list, route map", "HTTPS (browser / phone)")
+Rel(evedm, sso, "sign-in, add characters, refresh tokens", "HTTPS")
+Rel(evedm, esi, "location, ship, online per character", "HTTPS + Bearer JWT")
+Rel(evedm, sde, "universe build (offline, on update)", "HTTPS download")
+SHOW_LEGEND()
+@enduml
