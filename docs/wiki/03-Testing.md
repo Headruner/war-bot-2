@@ -2,16 +2,17 @@
 
 | Suite | Path | What runs | Count |
 | --- | --- | --- | --- |
-| Unit | `tests/unit` | In-process: universe/BFS, resolver, config, crypto, DB, SSO + ESI against the fake (ASGI transport), bundle, ranking, accounts (signed session cookies), war watcher, web API (TestClient), CLI, dependency validation | 177 |
+| Unit | `tests/unit` | In-process: universe/BFS, resolver, config, crypto, DB, SSO + ESI against the fake (ASGI transport), bundle, ranking, accounts (signed session cookies), war watcher, war census and high-sec structures, web API (TestClient), CLI, dependency validation | 190 |
 | Integration | `tests/integration/test_e2e.py`, `test_multi_user.py` | Real `evedm serve` process + real fake EVE SSO/ESI process: sign-in, add characters, import, rank, ESI caching, export, revocation, second instance, restart, secrets-not-in-logs; several mains on one site; upgrade of a 0.3.0 database | 5 |
-| Browser | `tests/integration/test_ui.py`, `test_ui_accounts.py` | Chromium (Playwright): list + map + route bar, autocomplete, paste, characters page, phone layout, Wars page (filter, rank a structure system, phone), account UI (main badge, remove, delete account) | 7 |
+| Browser | `tests/integration/test_ui.py`, `test_ui_accounts.py` | Chromium (Playwright): list + map + route bar, autocomplete, paste, characters page, phone layout, Wars page (filter, rank a structure system, phone, statistics and structures tabs), browser-cookie settings, account UI (main badge, remove, delete account) | 10 |
 | Footprint | `tests/perf` | 50 characters, 600 requests at concurrency 20, 40 ms ESI latency, server pinned to 2 CPUs; budget peak RSS ≤ 160 MB, p95 ≤ 1 s | 1 |
 | Dependencies | `tests/unit/test_dependencies.py` | every import pinned in `requirements.txt`, exact stable pins, installed = pinned, absolute verified paths, WAL + checkpoint | 8 |
 | Container | `scripts/docker-smoke.sh` | Image with `--cpus 2 --memory 1g`, host folder mounted at `/app/data`, health, ranking, WAL, `evedm check`, uid 10001, restart keeps data | script |
 
 ## Scenario matrix (accounts and war watcher)
 
-Every row is an automated test. Rows marked *fix* found a defect that was corrected before release 0.4.0.
+Every row is an automated test. Rows marked *fix* found a defect that was corrected before release 0.4.0;
+rows marked 0.5.0 cover the war census, the high-sec structure list and the browser-cookie settings.
 
 | Area | Scenario | Expected | Test |
 | --- | --- | --- | --- |
@@ -54,7 +55,16 @@ Every row is an automated test. Rows marked *fix* found a defect that was correc
 | Discord | 429, 400, network error, dry run | retry / error / error / no network | test_notifier_errors, test_dry_run… |
 | Discord | webhook URL in logs, errors, health | redacted; health shows no error text (*fix*) | test_discord_webhook_tokens_are_redacted, test_background_loop…, test_health_is_public… |
 | Wars page | bounds, type filter, sign-in required, disabled watcher | as stated | test_wars_api_bounds, test_wars_api_needs_sign_in…, test_wars_disabled_hides_page |
-| Wars page | demo wars when the database goes live | removed | test_demo_wars_are_removed… |
+| Wars page | demo wars when the database goes live | removed | test_demo_wars_are_removed…, test_demo_census_is_removed… |
+| Census (0.5.0) | first scan in pages, new IDs, a page with a failed read, unknown IDs (404) | page retried, 404 kept as known and inactive | test_scan_walks_back…, test_unknown_war_is_a_tombstone… |
+| Census | scan depth limit | stops at `census_max_ids` | test_scan_stops_at_census_max_ids |
+| Census | war retracted / finished meanwhile, score changes | re-read when due, drops out of the active set | test_active_wars_are_reread_and_drop_out… |
+| Statistics | totals, states, top aggressors/defenders, destructive wars, structures | as stated | test_statistics, test_stats_and_structures_api_in_demo |
+| High-sec structures | both sides, allies, alliance member corps, low-sec and bystanders excluded, state precedence | as stated | test_loot_lists_high_sec_structures… |
+| High-sec structures | jumps from the caller's nearest character, per main | multi-source BFS equals per-target BFS | test_structure_jumps_are_per_main, test_nearest_matches_single_source_bfs |
+| High-sec structures | filters, sort, paging, bad parameter, structure data not loaded | as stated / 422 / empty with a note | test_loot_lists…, test_stats_and_structures_api_in_demo, test_loot_is_empty_until… |
+| Census off | tabs and APIs hidden | 404 | test_census_off_hides_its_tabs |
+| Browser settings | tab, filters, map options, auto-refresh survive a reload; other browser has defaults; broken cookie | remembered / defaults / defaults without errors | test_wars_tabs_and_filters_survive_a_reload, test_map_options_and_auto_refresh_are_remembered, test_broken_prefs_cookie… |
 
 ## Fake EVE server
 

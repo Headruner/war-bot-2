@@ -15,11 +15,11 @@ All commands are for **PowerShell**, run from the repository folder `C:\Users\<y
 
 ## 1. Get the image (pick A or B)
 
-**A. Build from source (0.4.0: accounts and Wars page)**
+**A. Build from source (0.5.0: accounts, Wars page with statistics and high-sec structures)**
 ```powershell
-docker build -t evedm:0.4.0 .
+docker build -t evedm:0.5.0 .
 ```
-(Behind a TLS-inspecting corporate proxy: `docker build --secret id=pipca,src=C:\path\ca.crt -t evedm:0.4.0 .`)
+(Behind a TLS-inspecting corporate proxy: `docker build --secret id=pipca,src=C:\path\ca.crt -t evedm:0.5.0 .`)
 
 **B. Load the shipped image (older 0.3.0, offline, no accounts or Wars page)** — joins the 3 parts in `image\`,
 verifies SHA-256, runs `docker load`:
@@ -27,19 +27,19 @@ verifies SHA-256, runs `docker load`:
 powershell -ExecutionPolicy Bypass -File .\scripts\load-image.ps1
 docker image ls evedm        # expect evedm  0.3.0
 ```
-Use `evedm:0.3.0` instead of `evedm:0.4.0` in the commands below if you take this way.
+Use `evedm:0.3.0` instead of `evedm:0.5.0` in the commands below if you take this way.
 
 ## 2. Smoke test in demo mode (no EVE application needed)
 
 ```powershell
-docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo evedm:0.4.0
+docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo evedm:0.5.0
 ```
 Open <http://localhost:8080/?target=Tama>. Stop with `Ctrl+C`.
 
 Demo with the prepopulated database (10 fictional characters):
 ```powershell
 docker run --rm -p 8080:8080 -v "${PWD}\data\demo:/app/data" `
-  -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo-secret-key-change-me evedm:0.4.0
+  -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo-secret-key-change-me evedm:0.5.0
 ```
 
 ## 3. Register your EVE application (once)
@@ -80,7 +80,7 @@ Then bind the port to this PC only: `"127.0.0.1:8081:8080"` in `docker-compose.y
 
 Data folder on the host (`.\data` → `/app/data`), as in `docker-compose.yml`:
 ```powershell
-docker compose up -d --build   # builds evedm:0.4.0 from source (or uses it if step 1A already built it)
+docker compose up -d --build   # builds evedm:0.5.0 from source (or uses it if step 1A already built it)
 docker compose ps              # STATUS should become "healthy" within ~30 s
 docker compose logs -f evedm   # Ctrl+C to stop following
 ```
@@ -119,7 +119,7 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
 | --- | --- |
 | `load-image.ps1 cannot be loaded … execution policy` | run it via `powershell -ExecutionPolicy Bypass -File …` (step 1A) |
 | `checksum mismatch` | a part file is incomplete: delete `image\evedm-image-0.3.0-amd64.tar.gz`, restore the parts with `git checkout -- image`, retry |
-| `pull access denied for evedm, repository does not exist` | the image is not in Docker yet, so Docker tries Docker Hub. Do step 1 first (`docker build -t evedm:0.4.0 .`), check with `docker image ls evedm` |
+| `pull access denied for evedm, repository does not exist` | the image is not in Docker yet, so Docker tries Docker Hub. Do step 1 first (`docker build -t evedm:0.5.0 .`), check with `docker image ls evedm` |
 | `no matching manifest for windows/amd64` | Docker Desktop is in Windows-containers mode; switch to Linux containers |
 | `port is already allocated` | change `"8080:8080"` to `"8081:8080"` in `docker-compose.yml` and update `EVE_CALLBACK_URL` and the callback in your EVE application to port 8081 |
 | `missing required settings` | `.env` lacks `EVEDM_SECRET_KEY`, `EVE_CLIENT_ID` or `EVE_CLIENT_SECRET` |
@@ -143,9 +143,18 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
 
 ## 10. Wars page (merged eve-war-bot-2)
 
-- The war watcher checks ESI for new war declarations every 15 minutes and shows them under **Wars**, newest first.
-- Each war lists the systems of both sides' public structures and the systems with recent kills. Click one to rank
-  your characters by jumps to it.
+- **New wars**: the watcher checks ESI for new war declarations every 15 minutes, newest first. Each war lists the
+  systems of both sides' public structures and the systems with recent kills. Click one to rank your characters.
+- **Statistics**: every active war in New Eden (fighting, starting within 24 h, ending): counts, most active
+  aggressors, most war-decced corporations, most destructive wars, high-sec structures at war by type and region.
+  The first scan walks back through the newest 20,000 war IDs in the background (about 20 cycles of 15 minutes);
+  the coverage line under the tables shows its progress.
+- **High-sec structures**: public high-sec structures of both sides of every active war, nearest to your own
+  characters first, with the war state (fighting, starts in …, ends in …). Filter by type, region, side, war state
+  and security; click the system to rank your characters.
+- The chosen tab, the filters, the map options (names, other characters, stargate links) and the ranking's
+  auto-refresh interval are remembered in a cookie of your browser (`evedm_prefs`, one year); nothing is stored on
+  the server, so another browser starts with the defaults.
 - Settings: `config\wars.yaml` (its own file). Switch it off with `EVEDM_WARS_ENABLED=0` in `.env`.
 - Discord posting (what the old bot did): set `EVEDM_WARS_DISCORD_ENABLED=1` and `EVEDM_WARS_DISCORD_WEBHOOK=<url>`
   in `.env`, then `docker compose up -d --force-recreate`. Messages link back to the Wars page; set

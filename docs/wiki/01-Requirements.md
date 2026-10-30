@@ -164,6 +164,10 @@ requirement to the code and to the automated tests in this repository (0.3.0).
 | WAR-10 | A transient ESI error shall not drop a war; it is retried on the next cycle. | M | done | test_transient_esi_error_does_not_skip_war |
 | WAR-11 | The structure dataset shall be parsed while it downloads (bounded memory); a failed, truncated or oversized download keeps the previous data. | M | done | test_streaming_parser_*, test_structure_refresh_failures… |
 | WAR-12 | Discord webhook tokens shall never appear in logs, stored errors or the public health endpoint. | M | done | test_discord_webhook_tokens_are_redacted, test_health_is_public… |
+| WAR-13 | Where `census_enabled`, the system shall follow every active war in New Eden: walk back through the newest `census_max_ids` war IDs (paged, `census_pages_per_cycle` per cycle, a failed page retried), add new IDs every cycle and re-read active wars every `census_refresh_hours`. A war is active while `finished` is empty or in the future. | M | done (0.5.0) | test_scan_walks_back…, test_unknown_war_is_a_tombstone…, test_scan_stops_at_census_max_ids, test_active_wars_are_reread… |
+| WAR-14 | The Statistics tab shall show active wars (fighting, starting within 24 h, ending, mutual, declared in 24 h / 7 days), ships and ISK destroyed, top aggressors and defenders, most destructive wars, high-sec structures at war by type and region, and the census coverage. | M | done (0.5.0) | test_statistics, test_stats_and_structures_api_in_demo, browser test |
+| WAR-15 | The High-sec structures tab shall list public high-sec structures (security ≥ 0.5) owned by the aggressor, defender or allies of an active war (alliance members included), with war state and jumps from the signed-in main's nearest character (one multi-source BFS), filterable by type, region, side, war state and security, sortable, paged. | M | done (0.5.0) | test_loot_lists_high_sec_structures…, test_structure_jumps_are_per_main, test_nearest_matches_single_source_bfs |
+| PRF-01 | The browser shall remember the Wars tab and filters, the map options (names, other characters, stargate links) and the ranking auto-refresh interval in one first-party cookie (`evedm_prefs`, one year, SameSite=Lax); nothing is stored on the server; an unreadable cookie means defaults. | S | done (0.5.0) | test_wars_tabs_and_filters_survive_a_reload, test_map_options_and_auto_refresh_are_remembered, test_broken_prefs_cookie… |
 
 ## Non-functional requirements
 
@@ -174,7 +178,7 @@ requirement to the code and to the automated tests in this repository (0.3.0).
 | NFR-03 | ESI: User-Agent, X-Compatibility-Date, rate-limit headers, Retry-After on 429, back-off on 420. | implemented, tested |
 | NFR-04 | Works without access to CCP static data at runtime. | universe file bundled in the package |
 | NFR-08 | Runs within 2 vCPU / 1 GB RAM. | container peak RSS 77.5 MB (cgroup 55 MiB), p95 83 ms at 422 req/s (WAL) |
-| NFR-06 | Core unit tests for BFS, resolver, bundle, sort order, token refresh, accounts, war watcher. | 0.4.0: 177 unit, 12 integration (5 process + 7 browser), 1 footprint; scenario matrix in 03-Testing |
+| NFR-06 | Core unit tests for BFS, resolver, bundle, sort order, token refresh, accounts, war watcher. | 0.5.0: 190 unit, 15 integration (5 process + 10 browser), 1 footprint; scenario matrix in 03-Testing |
 
 ## Acceptance criteria → tests
 

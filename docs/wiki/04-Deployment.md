@@ -18,7 +18,7 @@ The image is a Linux image; it runs on a Linux VM and on Windows/macOS through D
 | Build from source | `docker compose up -d --build` |
 | Load the shipped image (0.3.0: no accounts, no Wars page) | `docker load -i evedm-image-0.3.0-amd64.tar.gz` (Windows: `scripts\load-image.ps1`) |
 | Prebuilt from GHCR (after CI) | `EVEDM_IMAGE=ghcr.io/<owner>/<repo>:latest docker compose -f deploy/docker-compose.yml up -d` |
-| Try without an EVE app | `docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=x evedm:0.4.0` |
+| Try without an EVE app | `docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=x evedm:0.5.0` |
 
 Resource limits are part of the compose files: `cpus: 2`, `memory: 1g`.
 

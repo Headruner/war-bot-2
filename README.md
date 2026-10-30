@@ -15,6 +15,9 @@ static data (shortest path by gates, same as "Shortest" on route planners).
   that player sees them. The sign-in lasts 90 days per browser; tokens are stored encrypted (Fernet) in SQLite.
 - **Wars page** (merged eve-war-bot-2): new war declarations from ESI with the systems of both sides' public
   structures; one click ranks your characters to such a system. Optional Discord posting. Settings in `config/wars.yaml`.
+- **War statistics and loot list**: every active war in New Eden (census), and the public high-sec structures of
+  both sides sorted by jumps from your nearest character.
+- **Remembered per browser** (cookie): Wars tab and filters, map options, ranking auto-refresh.
 - **JSON import/export** of characters with refresh and access tokens (schema `evedm-characters` v1), with a per-character report.
 - Target by **autocomplete** or by **pasting text**: Dotlan links, in-game `showinfo` links, zKillboard links and plain names.
 - Ranking by jumps (unreachable J-space / Pochven last), ship, docked / in space, online / last seen, **Closest** badge.
@@ -30,8 +33,8 @@ static data (shortest path by gates, same as "Shortest" on route planners).
 ### Demo (no EVE application needed)
 
 ```
-docker build -t evedm:0.4.0 .
-docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo evedm:0.4.0
+docker build -t evedm:0.5.0 .
+docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo evedm:0.5.0
 ```
 
 Open <http://localhost:8080/?target=Tama>. Or without Docker:
