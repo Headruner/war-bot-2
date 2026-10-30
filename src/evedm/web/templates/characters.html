@@ -3,6 +3,8 @@
 {% block content %}
 <div class="page">
   <h1>Characters</h1>
+  {% if welcome %}<div class="notice ok">Welcome, {{ user.name }}. Your main is linked. Add your other characters
+    with <b>Add character</b>: each one is linked to {{ user.name }} and stays signed in on this site.</div>{% endif %}
   {% if added %}<div class="notice ok">Added {{ added }}.</div>{% endif %}
   {% if error %}<div class="notice err">EVE SSO error: {{ error }}</div>{% endif %}
   <div class="toolbar">
@@ -20,6 +22,14 @@
     </table>
     <p id="empty" class="small" hidden>No characters yet. Add one through EVE SSO or import a JSON bundle.</p>
   </div>
+  {% if auth == "sso" and user and user.id %}
+  <div class="card account">
+    <h2>Account</h2>
+    <p class="small">Signed in as <b>{{ user.name }}</b> (main). Only you see the characters linked to this main.
+      You stay signed in on this browser for {{ session_days }} days after your last visit.</p>
+    <button id="delete-account" class="btn danger" type="button">Delete account</button>
+  </div>
+  {% endif %}
 </div>
 {% endblock %}
 {% block scripts %}<script src="/static/characters.js?v={{ version }}"></script>{% endblock %}

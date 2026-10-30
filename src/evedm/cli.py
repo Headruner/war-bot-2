@@ -1,4 +1,4 @@
-"""Command line: ``evedm serve | rank | db | universe | import | export | launches | check | healthcheck``."""
+"""Command line: ``evedm serve | rank | db | users | wars | universe | import | export | check | ...``."""
 
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ def cmd_rank(args: argparse.Namespace) -> int:
             idx = svc.graph.find(args.target)
             if idx is None:
                 raise SystemExit(f"unknown solar system: {args.target}")
-            return await svc.ranking.rank(idx, refresh=0 if args.no_refresh else 2)
+            return await svc.ranking.rank(idx, refresh=0 if args.no_refresh else 2, owner_id=args.owner)
         finally:
             await svc.http.aclose()
 
@@ -164,7 +164,7 @@ def cmd_import(args: argparse.Namespace) -> int:
 
     async def run() -> dict:
         try:
-            return report(await import_bundle(Path(args.file).read_bytes(), svc.chars))
+            return report(await import_bundle(Path(args.file).read_bytes(), svc.chars, args.owner))
         finally:
             await svc.http.aclose()
 
@@ -180,9 +180,31 @@ def cmd_export(args: argparse.Namespace) -> int:
     from .bundle import export_bundle
 
     svc = _services(_settings(args))
-    doc = export_bundle(svc.chars)
+    doc = export_bundle(svc.chars, owner_id=args.owner)
     Path(args.out).write_text(json.dumps(doc, indent=2), encoding="utf-8")
     print(f"exported {len(doc['characters'])} characters to {args.out} (contains credentials!)")
+    return 0
+
+
+def cmd_users(args: argparse.Namespace) -> int:
+    from .db import Database
+
+    s = _settings(args)
+    db = Database(s.db_path, s.sqlite_journal)
+    try:
+        if args.action == "list":
+            local = len(db.list_characters(0))
+            print(json.dumps({"user_id": 0, "name": "(local / unassigned)", "characters": local}))
+            for row in db.list_users():
+                print(json.dumps(row))
+        elif args.action == "adopt":
+            if not args.to or db.get_user(args.to) is None:
+                print("evedm: --to must be the character ID of a main that has signed in once", file=sys.stderr)
+                return 2
+            n = db.reassign_owner(args.owner, args.to)
+            print(f"moved {n} characters from owner {args.owner} to main {args.to}")
+    finally:
+        db.close()
     return 0
 
 
@@ -230,7 +252,14 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("target")
     sp.add_argument("--no-refresh", action="store_true")
     sp.add_argument("--json", action="store_true")
+    sp.add_argument("--owner", type=int, default=0, help="main character ID (default 0: local characters)")
     sp.set_defaults(fn=cmd_rank)
+
+    sp = sub.add_parser("users", help="mains and their linked characters")
+    sp.add_argument("action", choices=["list", "adopt"])
+    sp.add_argument("--owner", type=int, default=0, help="adopt: move characters from this owner (default 0)")
+    sp.add_argument("--to", type=int, help="adopt: main character ID that receives them")
+    sp.set_defaults(fn=cmd_users)
 
     sp = sub.add_parser("db", help="database tasks")
     sp.add_argument("action", choices=["init", "seed-demo"])
@@ -247,10 +276,12 @@ def main(argv: list[str] | None = None) -> int:
 
     sp = sub.add_parser("import", help="import a character bundle (JSON)")
     sp.add_argument("file")
+    sp.add_argument("--owner", type=int, default=0, help="main character ID that receives the characters")
     sp.set_defaults(fn=cmd_import)
 
     sp = sub.add_parser("export", help="export characters to a bundle (contains credentials)")
     sp.add_argument("--out", default="evedm-characters.json")
+    sp.add_argument("--owner", type=int, default=0, help="main character ID whose characters are exported")
     sp.set_defaults(fn=cmd_export)
 
     sp = sub.add_parser("launches", help="show recorded launches")

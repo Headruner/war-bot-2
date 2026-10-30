@@ -13,12 +13,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 log = logging.getLogger("evedm.db")
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    user_id        INTEGER PRIMARY KEY,              -- the main character's ID
+    name           TEXT NOT NULL,
+    created_at     REAL NOT NULL,
+    last_login_at  REAL NOT NULL
+);
+-- one row per (main, linked character): the same EVE character may be linked to several mains,
+-- each link with its own tokens and local settings. owner_id 0 = local user (web.auth none, demo, CLI).
 CREATE TABLE IF NOT EXISTS characters (
-    character_id   INTEGER PRIMARY KEY,
+    owner_id       INTEGER NOT NULL DEFAULT 0,
+    character_id   INTEGER NOT NULL,
     name           TEXT NOT NULL,
     enabled        INTEGER NOT NULL DEFAULT 1,
     tags           TEXT NOT NULL DEFAULT '[]',
@@ -26,19 +35,25 @@ CREATE TABLE IF NOT EXISTS characters (
     scopes         TEXT NOT NULL DEFAULT '[]',
     owner_hash     TEXT,
     demo           INTEGER NOT NULL DEFAULT 0,
-    added_at       REAL NOT NULL
+    added_at       REAL NOT NULL,
+    PRIMARY KEY (owner_id, character_id)
 );
+CREATE INDEX IF NOT EXISTS characters_by_id ON characters(character_id);
 CREATE TABLE IF NOT EXISTS tokens (
-    character_id      INTEGER PRIMARY KEY REFERENCES characters(character_id) ON DELETE CASCADE,
+    owner_id          INTEGER NOT NULL DEFAULT 0,
+    character_id      INTEGER NOT NULL,
     client_id         TEXT NOT NULL,
     access_token      BLOB,
     access_expires_at REAL NOT NULL DEFAULT 0,
     refresh_token     BLOB NOT NULL,
     refresh_tail      TEXT NOT NULL DEFAULT '',
-    updated_at        REAL NOT NULL
+    updated_at        REAL NOT NULL,
+    PRIMARY KEY (owner_id, character_id),
+    FOREIGN KEY (owner_id, character_id) REFERENCES characters(owner_id, character_id) ON DELETE CASCADE
 );
+-- last known state of an EVE character (shared by every main that links it)
 CREATE TABLE IF NOT EXISTS snapshots (
-    character_id    INTEGER PRIMARY KEY REFERENCES characters(character_id) ON DELETE CASCADE,
+    character_id    INTEGER PRIMARY KEY,
     solar_system_id INTEGER,
     station_id      INTEGER,
     structure_id    INTEGER,
@@ -56,8 +71,10 @@ CREATE TABLE IF NOT EXISTS type_names (
     name    TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS target_history (
-    solar_system_id INTEGER PRIMARY KEY,
-    used_at         REAL NOT NULL
+    owner_id        INTEGER NOT NULL DEFAULT 0,
+    solar_system_id INTEGER NOT NULL,
+    used_at         REAL NOT NULL,
+    PRIMARY KEY (owner_id, solar_system_id)
 );
 CREATE TABLE IF NOT EXISTS sso_states (
     state      TEXT PRIMARY KEY,
@@ -86,6 +103,45 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 """
 
+# war tables (filled by evedm.wars, the merged eve-war-bot-2 logic)
+WAR_SCHEMA = """
+CREATE TABLE IF NOT EXISTS wars (
+    war_id             INTEGER PRIMARY KEY,
+    status             TEXT NOT NULL,      -- pending | notified | ready | failed | stale | filtered | skipped
+    declared           TEXT,
+    war_type           TEXT,               -- none | mutual | open_for_allies
+    aggressor          TEXT,
+    defender           TEXT,
+    summary_json       TEXT,               -- parties, report and structures shown on the Wars page
+    notified_at        TEXT,
+    discord_message_id TEXT,
+    attempts           INTEGER NOT NULL DEFAULT 0,
+    last_error         TEXT,
+    updated_at         REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS wars_by_declared ON wars(declared);
+"""
+
+# v1 (single user) -> v2 (characters and tokens owned by a main; v1 rows go to owner 0)
+_MIGRATE_V1_V2 = """
+ALTER TABLE characters RENAME TO characters_v1;
+ALTER TABLE tokens RENAME TO tokens_v1;
+ALTER TABLE snapshots RENAME TO snapshots_v1;
+ALTER TABLE target_history RENAME TO target_history_v1;
+"""
+_COPY_V1_V2 = """
+INSERT INTO characters(owner_id,character_id,name,enabled,tags,status,scopes,owner_hash,demo,added_at)
+    SELECT 0,character_id,name,enabled,tags,status,scopes,owner_hash,demo,added_at FROM characters_v1;
+INSERT INTO tokens(owner_id,character_id,client_id,access_token,access_expires_at,refresh_token,refresh_tail,updated_at)
+    SELECT 0,character_id,client_id,access_token,access_expires_at,refresh_token,refresh_tail,updated_at FROM tokens_v1;
+INSERT INTO snapshots SELECT * FROM snapshots_v1;
+INSERT INTO target_history(owner_id,solar_system_id,used_at) SELECT 0,solar_system_id,used_at FROM target_history_v1;
+DROP TABLE tokens_v1;
+DROP TABLE snapshots_v1;
+DROP TABLE characters_v1;
+DROP TABLE target_history_v1;
+"""
+
 
 @dataclass
 class CharacterRow:
@@ -98,6 +154,7 @@ class CharacterRow:
     owner_hash: str | None
     demo: bool
     added_at: float
+    owner_id: int = 0
 
 
 class Database:
@@ -159,12 +216,36 @@ class Database:
             cur = self._conn.execute(sql, params)
             return cur.lastrowid or cur.rowcount
 
+    def _script(self, sql: str) -> None:
+        for stmt in (s.strip() for s in sql.split(";\n")):
+            if stmt and not all(line.strip().startswith("--") or not line.strip() for line in stmt.splitlines()):
+                self._conn.execute(stmt)
+
     def migrate(self) -> None:
+        """0 -> create; 1 -> 2 per-main ownership (v1 rows to owner 0); 2 -> 3 war tables. One transaction."""
         with self._lock:
             version = self._conn.execute("PRAGMA user_version").fetchone()[0]
-            if version < SCHEMA_VERSION:
-                self._conn.executescript(SCHEMA)
+            if version >= SCHEMA_VERSION:
+                return
+            self._conn.execute("PRAGMA foreign_keys=OFF")  # table rebuilds; cannot change inside a transaction
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                if version == 1:
+                    self._script(_MIGRATE_V1_V2)
+                    self._script(SCHEMA)
+                    self._script(_COPY_V1_V2)
+                    log.info("database migrated to per-main ownership: existing characters belong to owner 0")
+                else:
+                    self._script(SCHEMA)
+                self._script(WAR_SCHEMA)
                 self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+            else:
+                self._conn.execute("COMMIT")
+            finally:
+                self._conn.execute("PRAGMA foreign_keys=ON")
 
     def close(self) -> None:
         """Checkpoint the WAL into the main file so the database is one self-contained file again."""
@@ -205,14 +286,19 @@ class Database:
             owner_hash=row["owner_hash"],
             demo=bool(row["demo"]),
             added_at=row["added_at"],
+            owner_id=row["owner_id"],
         )
 
-    def list_characters(self) -> list[CharacterRow]:
-        return [self._char(r) for r in self.query("SELECT * FROM characters ORDER BY name COLLATE NOCASE")]
+    def list_characters(self, owner_id: int = 0) -> list[CharacterRow]:
+        rows = self.query("SELECT * FROM characters WHERE owner_id=? ORDER BY name COLLATE NOCASE", (owner_id,))
+        return [self._char(r) for r in rows]
 
-    def get_character(self, character_id: int) -> CharacterRow | None:
-        rows = self.query("SELECT * FROM characters WHERE character_id=?", (character_id,))
+    def get_character(self, character_id: int, owner_id: int = 0) -> CharacterRow | None:
+        rows = self.query("SELECT * FROM characters WHERE owner_id=? AND character_id=?", (owner_id, character_id))
         return self._char(rows[0]) if rows else None
+
+    def owners_of(self, character_id: int) -> list[int]:
+        return [r[0] for r in self.query("SELECT owner_id FROM characters WHERE character_id=?", (character_id,))]
 
     def upsert_character(
         self,
@@ -224,21 +310,26 @@ class Database:
         demo: bool = False,
         enabled: bool | None = None,
         tags: list[str] | None = None,
+        *,
+        owner_id: int = 0,
     ) -> bool:
-        """Insert or update; returns True when the character was new. Local enabled/tags are kept."""
+        """Insert or update the link owner -> character; True when new. Local enabled/tags are kept."""
         with self.tx() as c:
-            exists = c.execute("SELECT 1 FROM characters WHERE character_id=?", (character_id,)).fetchone()
+            exists = c.execute(
+                "SELECT 1 FROM characters WHERE owner_id=? AND character_id=?", (owner_id, character_id)
+            ).fetchone()
             if exists:
                 c.execute(
                     "UPDATE characters SET name=?, status=?, scopes=?, owner_hash=COALESCE(?, owner_hash) "
-                    "WHERE character_id=?",
-                    (name, status, json.dumps(scopes), owner_hash, character_id),
+                    "WHERE owner_id=? AND character_id=?",
+                    (name, status, json.dumps(scopes), owner_hash, owner_id, character_id),
                 )
                 return False
             c.execute(
-                "INSERT INTO characters(character_id,name,enabled,tags,status,scopes,owner_hash,demo,added_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO characters(owner_id,character_id,name,enabled,tags,status,scopes,owner_hash,demo,"
+                "added_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
+                    owner_id,
                     character_id,
                     name,
                     1 if enabled is None else int(enabled),
@@ -252,18 +343,75 @@ class Database:
             )
             return True
 
-    def set_enabled(self, character_id: int, enabled: bool) -> None:
-        self.execute("UPDATE characters SET enabled=? WHERE character_id=?", (int(enabled), character_id))
+    def set_enabled(self, character_id: int, enabled: bool, owner_id: int = 0) -> None:
+        self.execute(
+            "UPDATE characters SET enabled=? WHERE owner_id=? AND character_id=?",
+            (int(enabled), owner_id, character_id),
+        )
 
-    def set_tags(self, character_id: int, tags: list[str]) -> None:
+    def set_tags(self, character_id: int, tags: list[str], owner_id: int = 0) -> None:
         clean = sorted({t.strip()[:32] for t in tags if t.strip()})
-        self.execute("UPDATE characters SET tags=? WHERE character_id=?", (json.dumps(clean), character_id))
+        self.execute(
+            "UPDATE characters SET tags=? WHERE owner_id=? AND character_id=?",
+            (json.dumps(clean), owner_id, character_id),
+        )
 
-    def set_status(self, character_id: int, status: str) -> None:
-        self.execute("UPDATE characters SET status=? WHERE character_id=?", (status, character_id))
+    def set_status(self, character_id: int, status: str, owner_id: int = 0) -> None:
+        self.execute(
+            "UPDATE characters SET status=? WHERE owner_id=? AND character_id=?", (status, owner_id, character_id)
+        )
 
-    def delete_character(self, character_id: int) -> None:
-        self.execute("DELETE FROM characters WHERE character_id=?", (character_id,))
+    def delete_character(self, character_id: int, owner_id: int = 0) -> None:
+        """Remove one link (its tokens cascade); the shared snapshot goes with the last link."""
+        with self.tx() as c:
+            c.execute("DELETE FROM characters WHERE owner_id=? AND character_id=?", (owner_id, character_id))
+            if not c.execute("SELECT 1 FROM characters WHERE character_id=?", (character_id,)).fetchone():
+                c.execute("DELETE FROM snapshots WHERE character_id=?", (character_id,))
+
+    # -- users (mains) --------------------------------------------------------------------------
+    def upsert_user(self, user_id: int, name: str) -> bool:
+        """Record a sign-in of a main; True when the main is new."""
+        now = time.time()
+        with self.tx() as c:
+            if c.execute("SELECT 1 FROM users WHERE user_id=?", (user_id,)).fetchone():
+                c.execute("UPDATE users SET name=?, last_login_at=? WHERE user_id=?", (name, now, user_id))
+                return False
+            c.execute(
+                "INSERT INTO users(user_id,name,created_at,last_login_at) VALUES(?,?,?,?)", (user_id, name, now, now)
+            )
+            return True
+
+    def get_user(self, user_id: int) -> sqlite3.Row | None:
+        rows = self.query("SELECT * FROM users WHERE user_id=?", (user_id,))
+        return rows[0] if rows else None
+
+    def list_users(self) -> list[dict[str, Any]]:
+        rows = self.query(
+            "SELECT u.*, (SELECT COUNT(*) FROM characters c WHERE c.owner_id=u.user_id) AS characters "
+            "FROM users u ORDER BY u.name COLLATE NOCASE"
+        )
+        return [dict(r) for r in rows]
+
+    def delete_user(self, user_id: int) -> None:
+        """Delete a main with all its links and tokens (snapshots of no longer linked characters too)."""
+        with self.tx() as c:
+            c.execute("DELETE FROM characters WHERE owner_id=?", (user_id,))
+            c.execute("DELETE FROM target_history WHERE owner_id=?", (user_id,))
+            c.execute("DELETE FROM users WHERE user_id=?", (user_id,))
+            c.execute("DELETE FROM snapshots WHERE character_id NOT IN (SELECT character_id FROM characters)")
+
+    def reassign_owner(self, from_owner: int, to_owner: int) -> int:
+        """Move every link of one owner to another (e.g. legacy owner 0 -> a main). Existing links win."""
+        with self.tx() as c:
+            c.execute(
+                "DELETE FROM characters WHERE owner_id=? AND character_id IN "
+                "(SELECT character_id FROM characters WHERE owner_id=?)",
+                (from_owner, to_owner),
+            )
+            c.execute("PRAGMA defer_foreign_keys=ON")
+            n = c.execute("UPDATE characters SET owner_id=? WHERE owner_id=?", (to_owner, from_owner)).rowcount
+            c.execute("UPDATE tokens SET owner_id=? WHERE owner_id=?", (to_owner, from_owner))
+            return n
 
     # -- tokens -------------------------------------------------------------------------------
     def save_tokens(
@@ -274,17 +422,20 @@ class Database:
         expires_at: float,
         refresh_token: bytes,
         refresh_tail: str,
+        *,
+        owner_id: int = 0,
     ) -> None:
         self.execute(
-            "INSERT INTO tokens(character_id,client_id,access_token,access_expires_at,refresh_token,refresh_tail,"
-            "updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET client_id=excluded.client_id,"
-            " access_token=excluded.access_token, access_expires_at=excluded.access_expires_at,"
-            " refresh_token=excluded.refresh_token, refresh_tail=excluded.refresh_tail, updated_at=excluded.updated_at",
-            (character_id, client_id, access_token, expires_at, refresh_token, refresh_tail, time.time()),
+            "INSERT INTO tokens(owner_id,character_id,client_id,access_token,access_expires_at,refresh_token,"
+            "refresh_tail,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(owner_id,character_id) DO UPDATE SET"
+            " client_id=excluded.client_id, access_token=excluded.access_token,"
+            " access_expires_at=excluded.access_expires_at, refresh_token=excluded.refresh_token,"
+            " refresh_tail=excluded.refresh_tail, updated_at=excluded.updated_at",
+            (owner_id, character_id, client_id, access_token, expires_at, refresh_token, refresh_tail, time.time()),
         )
 
-    def get_tokens(self, character_id: int) -> sqlite3.Row | None:
-        rows = self.query("SELECT * FROM tokens WHERE character_id=?", (character_id,))
+    def get_tokens(self, character_id: int, owner_id: int = 0) -> sqlite3.Row | None:
+        rows = self.query("SELECT * FROM tokens WHERE owner_id=? AND character_id=?", (owner_id, character_id))
         return rows[0] if rows else None
 
     # -- snapshots ----------------------------------------------------------------------------
@@ -325,8 +476,14 @@ class Database:
                     (character_id, *fields.values()),
                 )
 
-    def get_snapshots(self) -> dict[int, sqlite3.Row]:
-        return {r["character_id"]: r for r in self.query("SELECT * FROM snapshots")}
+    def get_snapshots(self, character_ids: list[int] | None = None) -> dict[int, sqlite3.Row]:
+        if character_ids is None:
+            return {r["character_id"]: r for r in self.query("SELECT * FROM snapshots")}
+        if not character_ids:
+            return {}
+        marks = ",".join("?" * len(character_ids))
+        rows = self.query(f"SELECT * FROM snapshots WHERE character_id IN ({marks})", tuple(character_ids))  # noqa: S608
+        return {r["character_id"]: r for r in rows}
 
     # -- type names, targets, SSO states --------------------------------------------------------
     def get_type_names(self, ids: list[int]) -> dict[int, str]:
@@ -340,20 +497,24 @@ class Database:
         with self.tx() as c:
             c.executemany("INSERT OR REPLACE INTO type_names(type_id,name) VALUES(?,?)", list(names.items()))
 
-    def remember_target(self, system_id: int) -> None:
+    def remember_target(self, system_id: int, owner_id: int = 0) -> None:
         with self.tx() as c:
             c.execute(
-                "INSERT INTO target_history(solar_system_id, used_at) VALUES(?,?) "
-                "ON CONFLICT(solar_system_id) DO UPDATE SET used_at=excluded.used_at",
-                (system_id, time.time()),
+                "INSERT INTO target_history(owner_id, solar_system_id, used_at) VALUES(?,?,?) "
+                "ON CONFLICT(owner_id, solar_system_id) DO UPDATE SET used_at=excluded.used_at",
+                (owner_id, system_id, time.time()),
             )
             c.execute(
-                "DELETE FROM target_history WHERE solar_system_id NOT IN "
-                "(SELECT solar_system_id FROM target_history ORDER BY used_at DESC LIMIT 20)"
+                "DELETE FROM target_history WHERE owner_id=? AND solar_system_id NOT IN "
+                "(SELECT solar_system_id FROM target_history WHERE owner_id=? ORDER BY used_at DESC LIMIT 20)",
+                (owner_id, owner_id),
             )
 
-    def recent_targets(self, limit: int = 20) -> list[int]:
-        rows = self.query("SELECT solar_system_id FROM target_history ORDER BY used_at DESC LIMIT ?", (limit,))
+    def recent_targets(self, limit: int = 20, owner_id: int = 0) -> list[int]:
+        rows = self.query(
+            "SELECT solar_system_id FROM target_history WHERE owner_id=? ORDER BY used_at DESC LIMIT ?",
+            (owner_id, limit),
+        )
         return [r[0] for r in rows]
 
     def create_state(self, state: str, purpose: str) -> None:

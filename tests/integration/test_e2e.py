@@ -43,9 +43,9 @@ def test_full_user_journey(eve, tmp_path):
         r = sso_flow(c, "/sso/login", FIRST + 1)
         assert "not_allowed" in r.headers["location"]
 
-        # 3. sign in with the allowed character
+        # 3. sign in with the allowed character: a new main lands on Characters, linked to itself
         r = sso_flow(c, "/sso/login", FIRST)
-        assert r.status_code == 303 and r.headers["location"] == "/"
+        assert r.status_code == 303 and r.headers["location"] == "/characters?welcome=1"
         assert c.get("/").status_code == 200
 
         # 4. add two characters through SSO (SSO-01..SSO-03)

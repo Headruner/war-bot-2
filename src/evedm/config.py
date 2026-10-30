@@ -44,7 +44,7 @@ class WebSettings:
     port: int = 8080
     auth: str = "sso"  # sso | none
     allowed_login_characters: list[int] = field(default_factory=list)
-    session_days: int = 30
+    session_days: int = 90  # rolling: the cookie is renewed on every visit
     cookie_secure: bool = False
     auto_refresh_s: int = 30
     stale_after_s: int = 120

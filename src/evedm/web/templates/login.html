@@ -4,7 +4,8 @@
 <div class="login">
   <div class="card">
     <h1>Sign in</h1>
-    <p>Sign in with one of your EVE characters. Only characters listed in the instance configuration are admitted.</p>
+    <p>Sign in with your <b>main</b> character. Characters you add later are linked to it, and only you see them.
+      You stay signed in on this browser, so you never sign in your alts again.</p>
     {% if error %}<div class="notice err">Sign-in failed: {{ error }}</div>{% endif %}
     {% if sso_ready %}<a class="btn primary" href="/sso/login">Sign in with EVE Online</a>
     {% else %}<p class="small">EVE SSO is not configured on this instance.</p>{% endif %}

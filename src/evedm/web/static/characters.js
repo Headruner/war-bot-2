@@ -24,7 +24,9 @@ async function load() {
     const tdSel = el("td"); tdSel.append(sel);
 
     const tdName = el("td");
-    tdName.append(el("div", null, c.name));
+    const nameLine = el("div", null, c.name);
+    if (c.main) nameLine.append(el("span", "badge main", "Main"));
+    tdName.append(nameLine);
     tdName.append(el("div", "small", c.demo ? "demo character" : `token ${c.refresh_tail}`));
 
     const tdStatus = el("td");
@@ -39,7 +41,14 @@ async function load() {
     const toggle = el("input"); toggle.type = "checkbox"; toggle.checked = c.enabled;
     toggle.addEventListener("change", async () => {
       await api(`/api/characters/${c.character_id}`, { method: "PATCH", body: JSON.stringify({ enabled: toggle.checked }) });
-      load();
+      const del = $("#delete-account");
+if (del) del.addEventListener("click", async () => {
+  if (!confirm("Delete your account? All linked characters are removed and their tokens revoked. This cannot be undone.")) return;
+  const resp = await api("/api/me", { method: "DELETE", body: JSON.stringify({ confirm: true }) });
+  if (resp.ok) location.href = "/login";
+});
+
+load();
     });
     tdEnabled.append(toggle);
 
@@ -52,10 +61,18 @@ async function load() {
 
     const tdActions = el("td");
     const rm = el("button", "btn danger", "Remove"); rm.type = "button";
+    if (c.main) { rm.disabled = true; rm.title = "The main signs you in. Delete the account to remove it."; }
     rm.addEventListener("click", async () => {
       if (!confirm(`Remove ${c.name}? Its tokens are deleted and revoked.`)) return;
       await api(`/api/characters/${c.character_id}`, { method: "DELETE" });
-      load();
+      const del = $("#delete-account");
+if (del) del.addEventListener("click", async () => {
+  if (!confirm("Delete your account? All linked characters are removed and their tokens revoked. This cannot be undone.")) return;
+  const resp = await api("/api/me", { method: "DELETE", body: JSON.stringify({ confirm: true }) });
+  if (resp.ok) location.href = "/login";
+});
+
+load();
     });
     tdActions.append(rm);
     tr.append(tdSel, tdName, tdStatus, tdEnabled, tdTags, tdScopes, tdActions);
@@ -91,7 +108,14 @@ $("#import-file").addEventListener("change", async (ev) => {
     out.append(table);
   }
   ev.target.value = "";
-  load();
+  const del = $("#delete-account");
+if (del) del.addEventListener("click", async () => {
+  if (!confirm("Delete your account? All linked characters are removed and their tokens revoked. This cannot be undone.")) return;
+  const resp = await api("/api/me", { method: "DELETE", body: JSON.stringify({ confirm: true }) });
+  if (resp.ok) location.href = "/login";
+});
+
+load();
 });
 
 $("#export-btn").addEventListener("click", async () => {
@@ -104,6 +128,13 @@ $("#export-btn").addEventListener("click", async () => {
   const name = (resp.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/);
   const a = el("a"); a.href = URL.createObjectURL(blob); a.download = name ? name[1] : "evedm-characters.json";
   document.body.append(a); a.click(); a.remove();
+});
+
+const del = $("#delete-account");
+if (del) del.addEventListener("click", async () => {
+  if (!confirm("Delete your account? All linked characters are removed and their tokens revoked. This cannot be undone.")) return;
+  const resp = await api("/api/me", { method: "DELETE", body: JSON.stringify({ confirm: true }) });
+  if (resp.ok) location.href = "/login";
 });
 
 load();

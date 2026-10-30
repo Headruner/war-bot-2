@@ -149,15 +149,30 @@ def create_app(settings: Settings) -> FastAPI:
         return request.app.state.svc
 
     def user_of(request: Request) -> dict[str, Any] | None:
+        """The signed-in main ({id, name}); id 0 is the single local user when web.auth is none.
+
+        The session cookie (signed, HttpOnly, renewed on every response, valid ``web.session_days``)
+        only carries the main's ID: characters and tokens stay encrypted in the database, so a user
+        signs in once per browser and never re-adds alts.
+        """
         if settings.web.auth == "none":
             return {"id": 0, "name": "local"}
-        return request.session.get("user")
+        user = request.session.get("user")
+        if user is None:
+            return None
+        if svc_of(request).db.get_user(int(user["id"])) is None:  # account deleted meanwhile
+            request.session.clear()
+            return None
+        return user
 
     def require_user(request: Request) -> dict[str, Any]:
         user = user_of(request)
         if user is None:
             raise HTTPException(status_code=401, detail="sign in required")
         return user
+
+    def owner(request: Request) -> int:
+        return int(require_user(request)["id"])
 
     def require_csrf(request: Request) -> None:
         if request.headers.get("x-evedm") != "1":
@@ -174,6 +189,8 @@ def create_app(settings: Settings) -> FastAPI:
             "auto_refresh_s": settings.web.auto_refresh_s,
             "sso_ready": svc.auth is not None,
             "universe": svc.graph.build,
+            "session_days": settings.web.session_days,
+            "wars_enabled": getattr(svc, "wars", None) is not None,
         }
         return templates.TemplateResponse(request, name, base | ctx)
 
@@ -189,7 +206,11 @@ def create_app(settings: Settings) -> FastAPI:
         if user_of(request) is None:
             return RedirectResponse("/login", status_code=303)
         return page(
-            request, "characters.html", added=request.query_params.get("added"), error=request.query_params.get("error")
+            request,
+            "characters.html",
+            added=request.query_params.get("added"),
+            error=request.query_params.get("error"),
+            welcome=request.query_params.get("welcome"),
         )
 
     @app.get("/login", response_class=HTMLResponse)
@@ -212,7 +233,8 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/sso/login")
     async def sso_login(request: Request) -> Response:
-        return _start_sso(request, "login", [])
+        # the main is the first linked character, so sign-in asks for the same scopes as Add character
+        return _start_sso(request, "login", settings.eve.required_scopes)
 
     @app.get("/sso/add")
     async def sso_add(request: Request) -> Response:  # SSO-01
@@ -239,13 +261,16 @@ def create_app(settings: Settings) -> FastAPI:
             if allowed and ident.character_id not in allowed:
                 log.warning("sign-in refused for character %s", ident.character_id)
                 return RedirectResponse("/login?error=not_allowed", status_code=303)
-            if not allowed:
-                log.warning("web.allowed_login_characters is empty: any EVE character can sign in")
+            is_new = svc.db.upsert_user(ident.character_id, ident.name)
+            svc.chars.store(ts, owner_id=ident.character_id)  # the main is linked to itself
+            request.session.clear()
             request.session["user"] = {"id": ident.character_id, "name": ident.name}
-            return RedirectResponse("/", status_code=303)
-        if user_of(request) is None:
+            log.info("main %s signed in (%s)", ident.character_id, "new account" if is_new else "returning")
+            return RedirectResponse("/characters?welcome=1" if is_new else "/", status_code=303)
+        user = user_of(request)
+        if user is None:
             return RedirectResponse("/login", status_code=303)
-        svc.chars.store(ts)  # SSO-03 / SSO-05 / SSO-06
+        svc.chars.store(ts, owner_id=int(user["id"]))  # SSO-03 / SSO-05 / SSO-06, linked to the signed-in main
         return RedirectResponse(f"/characters?added={ident.name}", status_code=303)
 
     # ------------------------------------------------------------------ API: public
@@ -293,71 +318,102 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/api/targets/recent")
     async def recent_targets(request: Request) -> JSONResponse:
-        require_user(request)
+        uid = owner(request)
         svc = svc_of(request)
-        out = [
-            svc.graph.describe(i) for i in (svc.graph.index.get(s) for s in svc.db.recent_targets()) if i is not None
-        ]
+        ids = svc.db.recent_targets(owner_id=uid)
+        out = [svc.graph.describe(i) for i in (svc.graph.index.get(s) for s in ids) if i is not None]
         return JSONResponse(out)
 
     @app.get("/api/rank")
     async def rank(request: Request, target: str, refresh: int = 1) -> JSONResponse:
-        require_user(request)
+        uid = owner(request)
         svc = svc_of(request)
         idx = svc.graph.index.get(int(target)) if target.isdigit() else svc.graph.find(target)
         if idx is None:
             raise HTTPException(status_code=404, detail=f"unknown solar system: {target}")
-        result = await svc.ranking.rank(idx, refresh=max(0, min(2, refresh)))
+        result = await svc.ranking.rank(idx, refresh=max(0, min(2, refresh)), owner_id=uid)
         return JSONResponse(result)
 
     @app.get("/api/characters")
     async def list_characters(request: Request) -> JSONResponse:
-        require_user(request)
-        return JSONResponse(svc_of(request).chars.list_view())
+        return JSONResponse(svc_of(request).chars.list_view(owner(request)))
 
     @app.patch("/api/characters/{character_id}")
     async def patch_character(request: Request, character_id: int) -> JSONResponse:
-        require_user(request)
+        uid = owner(request)
         require_csrf(request)
         svc = svc_of(request)
-        if svc.db.get_character(character_id) is None:
+        if svc.db.get_character(character_id, uid) is None:
             raise HTTPException(status_code=404, detail="unknown character")
         body = await request.json()
         if "enabled" in body:
-            svc.db.set_enabled(character_id, bool(body["enabled"]))
+            svc.db.set_enabled(character_id, bool(body["enabled"]), uid)
         if "tags" in body:
             tags = body["tags"] if isinstance(body["tags"], list) else str(body["tags"]).split(",")
-            svc.db.set_tags(character_id, [str(t) for t in tags])
+            svc.db.set_tags(character_id, [str(t) for t in tags], uid)
         return JSONResponse({"ok": True})
 
     @app.delete("/api/characters/{character_id}")
     async def delete_character(request: Request, character_id: int) -> JSONResponse:
-        require_user(request)
+        uid = owner(request)
         require_csrf(request)
-        await svc_of(request).chars.remove(character_id)
+        svc = svc_of(request)
+        if svc.db.get_character(character_id, uid) is None:
+            raise HTTPException(status_code=404, detail="unknown character")
+        if uid and character_id == uid:
+            raise HTTPException(status_code=400, detail="the main cannot be removed; delete the account instead")
+        await svc.chars.remove(character_id, uid)
         return JSONResponse({"ok": True})
+
+    # ------------------------------------------------------------------ API: account
+    @app.get("/api/me")
+    async def me(request: Request) -> JSONResponse:
+        user = require_user(request)
+        svc = svc_of(request)
+        return JSONResponse(
+            {
+                "id": user["id"],
+                "name": user["name"],
+                "characters": len(svc.db.list_characters(int(user["id"]))),
+                "session_days": settings.web.session_days,
+            }
+        )
+
+    @app.delete("/api/me")
+    async def delete_me(request: Request) -> JSONResponse:
+        uid = owner(request)
+        require_csrf(request)
+        body = await request.json()
+        if body.get("confirm") is not True:
+            raise HTTPException(status_code=400, detail="confirm=true required")
+        if uid == 0:
+            raise HTTPException(status_code=400, detail="the local user has no account")
+        removed = await svc_of(request).chars.remove_user(uid)
+        request.session.clear()
+        log.info("main %s deleted its account (%s characters)", uid, removed)
+        return JSONResponse({"ok": True, "removed": removed})
 
     @app.post("/api/characters/import")
     async def import_characters(request: Request, file: UploadFile = File(...)) -> JSONResponse:
-        require_user(request)
+        uid = owner(request)
         require_csrf(request)
         raw = await file.read(1_000_001)
         try:
-            results = await import_bundle(raw, svc_of(request).chars)
+            results = await import_bundle(raw, svc_of(request).chars, uid)
         except BundleRejected as exc:
             return JSONResponse({"rejected": exc.reason, "errors": exc.errors}, status_code=422)
         return JSONResponse(report(results))
 
     @app.post("/api/characters/export")
     async def export_characters(request: Request) -> Response:
-        require_user(request)
+        uid = owner(request)
         require_csrf(request)
         body = await request.json()
         if body.get("confirm") is not True:  # EXP-02
             raise HTTPException(status_code=400, detail="export contains credentials: confirm=true required")
         ids = [int(i) for i in body.get("character_ids") or []]
         try:
-            doc = export_bundle(svc_of(request).chars, ids or None)
+            doc = export_bundle(svc_of(request).chars, ids or None, uid)
         except BundleRejected as exc:
             raise HTTPException(status_code=400, detail=exc.reason) from exc
         name = f"evedm-characters-{time.strftime('%Y%m%d-%H%M%S')}.json"

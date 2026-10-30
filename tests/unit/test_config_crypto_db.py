@@ -4,7 +4,7 @@ import pytest
 
 from evedm.config import ConfigError, Settings, load_settings
 from evedm.crypto import TokenCipher, redact, tail
-from evedm.db import Database
+from evedm.db import SCHEMA_VERSION, Database
 
 
 # --------------------------------------------------------------------------- config
@@ -91,7 +91,7 @@ def test_migration_is_idempotent(tmp_path):
     path = tmp_path / "x.sqlite3"
     Database(path).close()
     d = Database(path)
-    assert d.query("PRAGMA user_version")[0][0] == 1
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION
     d.close()
 
 

@@ -15,8 +15,8 @@ async def mint(http: httpx.AsyncClient, character_id: int, **kw) -> dict:  # noq
     return resp.json()
 
 
-async def add_character(services, character_id: int, scopes=None):  # noqa: ANN001, ANN201
+async def add_character(services, character_id: int, scopes=None, owner_id: int = 0):  # noqa: ANN001, ANN201
     tokens = await mint(services["http"], character_id, scopes=scopes or ALL_SCOPES)
     ts = await services["auth"].refresh(tokens["refresh_token"])
-    services["chars"].store(ts)
+    services["chars"].store(ts, owner_id=owner_id)
     return tokens

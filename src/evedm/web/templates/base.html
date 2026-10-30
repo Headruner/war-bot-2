@@ -16,6 +16,7 @@
       {% if user %}
         <a href="/">Ranking</a>
         <a href="/characters">Characters</a>
+        {% if wars_enabled %}<a href="/wars">Wars</a>{% endif %}
         {% if auth == "sso" %}
           <form method="post" action="/logout"><button class="link" type="submit">Sign out {{ user.name }}</button></form>
         {% endif %}

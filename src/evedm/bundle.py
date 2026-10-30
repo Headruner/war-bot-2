@@ -69,7 +69,7 @@ def parse(raw: bytes) -> dict[str, Any]:
     return doc
 
 
-async def import_bundle(raw: bytes, chars: CharacterService) -> list[EntryResult]:
+async def import_bundle(raw: bytes, chars: CharacterService, owner_id: int = 0) -> list[EntryResult]:
     doc = parse(raw)
     if doc["client_id"] != chars.settings.eve.client_id:
         raise BundleRejected("tokens were issued by another EVE application")
@@ -91,13 +91,13 @@ async def import_bundle(raw: bytes, chars: CharacterService) -> list[EntryResult
             for expected in (hinted.character_id if hinted else None, res.character_id):
                 if expected and expected != ident.character_id:
                     raise SsoError("character_mismatch", "refresh token belongs to another character")
-            existed = chars.db.get_character(ident.character_id) is not None
-            _, status = chars.store(ts)  # IMP-06 stores the refreshed (newest) refresh token
+            existed = chars.db.get_character(ident.character_id, owner_id) is not None
+            _, status = chars.store(ts, owner_id=owner_id)  # IMP-06 stores the refreshed (newest) refresh token
             if not existed:
                 if entry.get("tags"):
-                    chars.db.set_tags(ident.character_id, entry["tags"])
+                    chars.db.set_tags(ident.character_id, entry["tags"], owner_id)
                 if entry.get("enabled") is False:
-                    chars.db.set_enabled(ident.character_id, False)
+                    chars.db.set_enabled(ident.character_id, False, owner_id)
             res.character_id, res.name = ident.character_id, ident.name
             res.missing_scopes = chars.missing_scopes(ident.scopes)
             res.result = "Limited" if status == LIMITED else ("Updated" if existed else "Added")
@@ -118,14 +118,14 @@ def report(results: list[EntryResult]) -> dict[str, Any]:
     }
 
 
-def export_bundle(chars: CharacterService, character_ids: list[int] | None = None) -> dict[str, Any]:
+def export_bundle(chars: CharacterService, character_ids: list[int] | None = None, owner_id: int = 0) -> dict[str, Any]:
     """EXP-01: refresh token always; access token only while still valid. Demo characters are skipped."""
     now = time.time()
     entries = []
-    for c in chars.db.list_characters():
+    for c in chars.db.list_characters(owner_id):
         if c.demo or (character_ids and c.character_id not in character_ids):
             continue
-        tok = chars.db.get_tokens(c.character_id)
+        tok = chars.db.get_tokens(c.character_id, owner_id)
         if tok is None:
             continue
         item: dict[str, Any] = {

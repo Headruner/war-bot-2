@@ -23,7 +23,7 @@ class CharacterService:
         self.cipher = cipher
         self.auth = auth
         self.settings = settings
-        self._locks: dict[int, asyncio.Lock] = {}
+        self._locks: dict[tuple[int, int], asyncio.Lock] = {}
 
     # -- scopes ---------------------------------------------------------------------------------
     def missing_scopes(self, scopes: list[str]) -> list[str]:
@@ -33,12 +33,18 @@ class CharacterService:
         return LIMITED if self.missing_scopes(scopes) else OK
 
     # -- storing tokens ---------------------------------------------------------------------------
-    def store(self, ts: TokenSet, demo: bool = False) -> tuple[bool, str]:
-        """Upsert the character and its encrypted tokens; returns (is_new, status)."""
+    def store(self, ts: TokenSet, demo: bool = False, owner_id: int = 0) -> tuple[bool, str]:
+        """Link the character to ``owner_id`` (a main) with its encrypted tokens; returns (is_new, status)."""
         ident = ts.identity
         status = self.status_for(ident.scopes)
         is_new = self.db.upsert_character(
-            ident.character_id, ident.name, status, ident.scopes, owner_hash=ident.owner_hash, demo=demo
+            ident.character_id,
+            ident.name,
+            status,
+            ident.scopes,
+            owner_hash=ident.owner_hash,
+            demo=demo,
+            owner_id=owner_id,
         )
         self.db.save_tokens(
             ident.character_id,
@@ -47,16 +53,23 @@ class CharacterService:
             ts.expires_at,
             self.cipher.encrypt(ts.refresh_token),
             tail(ts.refresh_token)[1:],
+            owner_id=owner_id,
         )
-        log.info("stored tokens for character %s (%s, %s)", ident.character_id, "new" if is_new else "updated", status)
+        log.info(
+            "stored tokens for character %s of owner %s (%s, %s)",
+            ident.character_id,
+            owner_id,
+            "new" if is_new else "updated",
+            status,
+        )
         return is_new, status
 
     # -- token lifecycle -----------------------------------------------------------------------------
-    async def access_token(self, character_id: int) -> str:
-        """Valid access token, refreshing when < 60 s remain (TOK-02); one refresh per character (TOK-03)."""
-        lock = self._locks.setdefault(character_id, asyncio.Lock())
+    async def access_token(self, character_id: int, owner_id: int = 0) -> str:
+        """Valid access token, refreshing when < 60 s remain (TOK-02); one refresh per link (TOK-03)."""
+        lock = self._locks.setdefault((owner_id, character_id), asyncio.Lock())
         async with lock:
-            row = self.db.get_tokens(character_id)
+            row = self.db.get_tokens(character_id, owner_id)
             if row is None:
                 raise SsoError("no_token")
             if row["access_token"] and row["access_expires_at"] - time.time() > 60:
@@ -68,28 +81,37 @@ class CharacterService:
                 ts = await self.auth.refresh(refresh)
             except SsoError as exc:
                 if exc.code in ("invalid_grant", "invalid_token", "wrong_client"):
-                    self.db.set_status(character_id, REAUTH)  # TOK-04
+                    self.db.set_status(character_id, REAUTH, owner_id)  # TOK-04
                     log.warning("character %s needs re-authorization (%s)", character_id, exc.code)
                 raise
             if ts.identity.character_id != character_id:
                 raise SsoError("identity_mismatch")
-            self.store(ts)
+            self.store(ts, owner_id=owner_id)
             return ts.access_token
 
-    async def remove(self, character_id: int) -> None:
-        row = self.db.get_tokens(character_id)
+    async def remove(self, character_id: int, owner_id: int = 0) -> None:
+        """TOK-05 for one link: revoke this main's refresh token and delete the link."""
+        row = self.db.get_tokens(character_id, owner_id)
         if row is not None and self.auth is not None:
             try:
                 await self.auth.revoke(self.cipher.decrypt(row["refresh_token"]))
             except ValueError:
                 pass
-        self.db.delete_character(character_id)
+        self.db.delete_character(character_id, owner_id)
+
+    async def remove_user(self, user_id: int) -> int:
+        """Delete a main's account: revoke and delete every linked character. Returns the number removed."""
+        chars = self.db.list_characters(user_id)
+        for c in chars:
+            await self.remove(c.character_id, user_id)
+        self.db.delete_user(user_id)
+        return len(chars)
 
     # -- views ---------------------------------------------------------------------------------------
-    def list_view(self) -> list[dict[str, Any]]:
+    def list_view(self, owner_id: int = 0) -> list[dict[str, Any]]:
         out = []
-        for c in self.db.list_characters():
-            tok = self.db.get_tokens(c.character_id)
+        for c in self.db.list_characters(owner_id):
+            tok = self.db.get_tokens(c.character_id, owner_id)
             out.append(
                 {
                     "character_id": c.character_id,
@@ -100,6 +122,7 @@ class CharacterService:
                     "missing_scopes": self.missing_scopes(c.scopes),
                     "tags": c.tags,
                     "demo": c.demo,
+                    "main": c.character_id == owner_id,
                     "token_expires_at": tok["access_expires_at"] if tok else None,
                     "refresh_tail": ("…" + tok["refresh_tail"]) if tok and tok["refresh_tail"] else "",
                 }
