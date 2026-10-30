@@ -30,7 +30,8 @@ static data (shortest path by gates, same as "Shortest" on route planners).
 ### Demo (no EVE application needed)
 
 ```
-docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo evedm:0.3.0
+docker build -t evedm:0.4.0 .
+docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo evedm:0.4.0
 ```
 
 Open <http://localhost:8080/?target=Tama>. Or without Docker:
@@ -54,7 +55,8 @@ A ready-made demo database is in [`data/demo/evedm.sqlite3`](data/demo) (key `de
    the container runs as the non-root user 10001.
 4. Sign in, then **Characters > Add character** or **Import JSON**.
 
-Load the shipped image instead of building: `docker load -i evedm-image-0.3.0-amd64.tar.gz`
+The shipped image in `image/` is the older 0.3.0 (no accounts, no Wars page); load it with
+`docker load -i evedm-image-0.3.0-amd64.tar.gz`
 (split into parts: `scripts/load-image.sh` or `scripts\load-image.ps1`).
 
 ## Configuration
@@ -68,6 +70,7 @@ Load the shipped image instead of building: `docker load -i evedm-image-0.3.0-am
 | `EVEDM_WARS_CONFIG` | `config/wars.yaml` next to `EVEDM_CONFIG` | war watcher settings file |
 | `EVEDM_WARS_ENABLED` | `true` in `config/wars.yaml` | `0` switches the war watcher off |
 | `EVEDM_WARS_DISCORD_ENABLED`, `EVEDM_WARS_DISCORD_WEBHOOK` | `0`, empty | post new wars to a Discord channel |
+| `EVEDM_PUBLIC_URL` | from `EVE_CALLBACK_URL` | address of the site, used in Discord links to the Wars page |
 | `EVEDM_DEMO` | `0` | `1` = fictional characters, no EVE application |
 | `EVEDM_DATA_DIR` | `/app/data` (image), `./data` (local) | one-file SQLite DB and logs |
 | `EVEDM_SQLITE_JOURNAL` | `wal` | falls back to `delete` automatically (logged) where WAL is unsupported |

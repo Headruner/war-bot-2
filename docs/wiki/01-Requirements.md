@@ -142,7 +142,11 @@ requirement to the code and to the automated tests in this repository (0.3.0).
 | USR-04 | The same EVE character may be linked to several mains; each link keeps its own tokens, tags and enabled flag, and removing it for one main keeps the others. | M | done | test_links_are_scoped_per_main |
 | USR-05 | The session cookie shall keep a main signed in for `session_days` (default 90) after the last visit; it carries only the main's ID, tokens stay encrypted in the database. | M | done | test_multi_user step 5 |
 | USR-06 | The main cannot be removed on its own; Delete account removes and revokes every link of the main and ends its sessions. | S | done | test_multi_user steps 4 and 7 |
-| USR-07 | A v1 database migrates in place; its characters belong to owner 0 (local user, demo, CLI) until `evedm users adopt --to <main>`. | M | done | test_v1_database_is_migrated_to_owner_0, test_reassign_owner… |
+| USR-07 | A v1 database migrates in place; its characters belong to owner 0 (local user, demo, CLI). | M | done | test_v1_database_is_migrated_to_owner_0 |
+| USR-08 | When the first main that is one of the owner-0 characters signs in, the system shall move every non-demo owner-0 character and recent target to it; `evedm users adopt --to <main>` does the same by hand. | M | done | test_upgrade_from_single_user…, test_upgrade_from_a_single_user_database, test_cli_users_list_and_adopt |
+| USR-09 | If a main is no longer on a non-empty `allowed_login_characters`, then its sessions shall end. | M | done | test_main_removed_from_the_allow_list_loses_its_session |
+| USR-10 | A ranking shall show each character's error from the caller's own refresh, and a link without a scope shall not blank data another link fetched. | M | done | test_one_mains_broken_link…, test_link_without_ship_scope… |
+| USR-11 | Malformed requests shall get a 4xx answer, never a 500. | M | done | test_bad_input_is_a_4xx_never_a_500 |
 
 ### War watcher (UC-10, merged from eve-war-bot-2)
 
@@ -158,6 +162,8 @@ requirement to the code and to the automated tests in this repository (0.3.0).
 | WAR-08 | War settings shall live in their own file (`config/wars.yaml`, `$EVEDM_WARS_CONFIG`), secrets in `.env` (`EVEDM_WARS_DISCORD_WEBHOOK`). | M | done | test_wars_config_file_env_and_validation |
 | WAR-09 | The system shall offer `evedm wars run|list|stats|check`, including monthly statistics. | S | done | test_cli_wars_list_stats_check |
 | WAR-10 | A transient ESI error shall not drop a war; it is retried on the next cycle. | M | done | test_transient_esi_error_does_not_skip_war |
+| WAR-11 | The structure dataset shall be parsed while it downloads (bounded memory); a failed, truncated or oversized download keeps the previous data. | M | done | test_streaming_parser_*, test_structure_refresh_failures… |
+| WAR-12 | Discord webhook tokens shall never appear in logs, stored errors or the public health endpoint. | M | done | test_discord_webhook_tokens_are_redacted, test_health_is_public… |
 
 ## Non-functional requirements
 
@@ -168,7 +174,7 @@ requirement to the code and to the automated tests in this repository (0.3.0).
 | NFR-03 | ESI: User-Agent, X-Compatibility-Date, rate-limit headers, Retry-After on 429, back-off on 420. | implemented, tested |
 | NFR-04 | Works without access to CCP static data at runtime. | universe file bundled in the package |
 | NFR-08 | Runs within 2 vCPU / 1 GB RAM. | container peak RSS 77.5 MB (cgroup 55 MiB), p95 83 ms at 422 req/s (WAL) |
-| NFR-06 | Core unit tests for BFS, resolver, bundle, sort order, token refresh. | 95 unit, 7 integration (3 process + 4 browser), 1 footprint |
+| NFR-06 | Core unit tests for BFS, resolver, bundle, sort order, token refresh, accounts, war watcher. | 0.4.0: 177 unit, 12 integration (5 process + 7 browser), 1 footprint; scenario matrix in 03-Testing |
 
 ## Acceptance criteria → tests
 
