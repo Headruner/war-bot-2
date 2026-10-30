@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Smoke test for the image: 2 CPU / 1 GB limits, host folder mounted as /app/data, demo mode,
-# non-root user, SQLite in WAL mode, data kept across a restart.
-#   scripts/docker-smoke.sh [image]        (default evedm:0.3.0)
+# non-root user, SQLite in WAL mode, war watcher config, data kept across a restart.
+#   scripts/docker-smoke.sh [image]        (default evedm:0.4.0)
 set -euo pipefail
-IMAGE="${1:-evedm:0.3.0}"
+IMAGE="${1:-evedm:0.4.0}"
 NAME="evedm-smoke-$$"
 DATA="$(mktemp -d)"
 chmod 0777 "$DATA"   # the container runs as uid 10001 (non-root)
@@ -27,6 +27,8 @@ run
 curl -fsS "http://127.0.0.1:$PORT/api/health" | tee /dev/stderr | grep -q '"status":"ok"'
 curl -fsS "http://127.0.0.1:$PORT/api/rank?target=Tama" | grep -q '"recommended":true'
 curl -fsS -o /dev/null "http://127.0.0.1:$PORT/"
+curl -fsS -o /dev/null "http://127.0.0.1:$PORT/wars"   # war watcher on (config/wars.yaml in the image), demo wars
+curl -fsS "http://127.0.0.1:$PORT/api/wars" | grep -q '"war_id":990001' || { echo "Wars page API has no demo wars"; exit 1; }
 curl -fsS "http://127.0.0.1:$PORT/api/health" | grep -q '"journal_mode":"wal"' || { echo "SQLite is not in WAL mode"; exit 1; }
 docker exec "$NAME" evedm check | grep -q '"ok": true' || { echo "evedm check failed"; exit 1; }
 docker stats --no-stream --format 'memory {{.MemUsage}}  cpu {{.CPUPerc}}' "$NAME"

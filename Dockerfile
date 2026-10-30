@@ -29,7 +29,7 @@ RUN --mount=type=secret,id=pipca,required=false \
  && /opt/evedm/bin/python -m compileall -q /opt/evedm/lib
 
 FROM ${BASE_IMAGE}
-ARG VERSION=0.3.0
+ARG VERSION=0.4.0
 ENV PATH=/opt/evedm/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
