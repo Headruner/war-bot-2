@@ -1,0 +1,54 @@
+# 04 · Deployment
+
+## 1. Register your EVE application
+
+1. Open <https://developers.eveonline.com/applications> and create an application.
+2. Callback URL: the address you open the app at, plus `/sso/callback`, e.g. `http://localhost:8080/sso/callback` or
+   `https://evedm.<tailnet>.ts.net/sso/callback`.
+3. Scopes: `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`.
+4. Put the client ID and secret into `.env` (copy `.env.example`), together with a long random `EVEDM_SECRET_KEY` and your
+   character ID in `EVEDM_ALLOWED_LOGIN_CHARACTERS`.
+
+## 2. Run with Docker
+
+The image is a Linux image; it runs on a Linux VM and on Windows/macOS through Docker Desktop.
+
+| Way | Command |
+| --- | --- |
+| Build from source | `docker compose up -d --build` |
+| Load the shipped image | `docker load -i evedm-image-0.3.0-amd64.tar.gz` (Windows: `scripts\load-image.ps1`) |
+| Prebuilt from GHCR (after CI) | `EVEDM_IMAGE=ghcr.io/<owner>/<repo>:latest docker compose -f deploy/docker-compose.yml up -d` |
+| Try without an EVE app | `docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=x evedm:0.3.0` |
+
+Resource limits are part of the compose files: `cpus: 2`, `memory: 1g`.
+
+## 3. Mounted database
+
+Everything persistent lives in `/app/data` inside the container (`data/` on the host). The database is one SQLite file in WAL
+mode; on shutdown the WAL is checkpointed back into it.
+
+| Path | Content |
+| --- | --- |
+| `/app/data/evedm.sqlite3` | characters, encrypted tokens, snapshots, launches |
+| `/app/data/logs/evedm.log` | application log, rotated at 1 MB × 5, secrets redacted |
+| `/app/data/logs/launches.jsonl` | one line per start and stop |
+
+- **Linux**: a named volume (`deploy/docker-compose.yml`, owned by uid 10001 automatically) or a host folder
+  (`./data:/app/data`). The container runs as the non-root user 10001, so a host folder needs
+  `sudo chown -R 10001:10001 data` once; otherwise `evedm check` stops the start with a clear message.
+- **Windows (Docker Desktop)**: `-v C:\evedm\data:/app/data` works without permission changes. SQLite runs in WAL mode;
+  if a bind-mounted folder cannot share WAL memory, the app logs a warning and falls back to the rollback journal by itself.
+  A named volume always gets WAL.
+- The database file is portable between Linux and Windows hosts. Keep the same `EVEDM_SECRET_KEY`, or tokens cannot be
+  decrypted (export a bundle before changing it).
+
+## 4. Phone access
+
+Expose the app privately, for example with Tailscale on the VM (`tailscale serve --bg 8080` gives
+`https://<vm>.<tailnet>.ts.net`), then set `EVE_CALLBACK_URL` and `EVEDM_COOKIE_SECURE=1`. Do not publish port 8080 to the
+internet; the compose file for servers binds to 127.0.0.1 by default.
+
+## 5. Behind a TLS-inspecting proxy (build only)
+
+`docker build --secret id=pipca,src=/path/ca.crt .` lets pip trust a corporate CA during the build. Any Debian/Ubuntu base
+with python3 + venv works: `--build-arg BASE_IMAGE=<image>`.
