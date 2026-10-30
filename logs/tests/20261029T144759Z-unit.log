@@ -1,0 +1,16 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.18, pytest-9.2.0, pluggy-1.7.0
+rootdir: <repo>
+configfile: pyproject.toml
+plugins: anyio-4.15.1
+collected 87 items
+
+tests/unit/test_bundle_ranking.py ..............                         [ 16%]
+tests/unit/test_config_crypto_db.py ...............                      [ 33%]
+tests/unit/test_resolver.py ..........                                   [ 44%]
+tests/unit/test_sso_esi.py .............                                 [ 59%]
+tests/unit/test_universe.py ..................                           [ 80%]
+tests/unit/test_web_cli.py .................                             [100%]
+
+- generated xml file: <repo>/logs/tests/20261029T144759Z-unit.xml --
+============================== 87 passed in 6.65s ==============================
