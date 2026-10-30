@@ -17,7 +17,7 @@ eve:
     - esi-location.read_ship_type.v1
     - esi-location.read_online.v1
   compatibility_date: "2025-09-30"
-  user_agent: "EVE-Distance-Meter/0.4 (contact: change-me)"
+  user_agent: "EVE-Distance-Meter/0.5 (contact: change-me)"
   max_concurrency: 20                       # parallel ESI calls (rate limits are per character)
 
 web:

@@ -5,7 +5,7 @@ already running container), imports N characters, then drives concurrent ranking
 peak RSS, CPU and latency. Writes a JSON + Markdown report to logs/perf/.
 
   python tests/perf/footprint.py --label local
-  python tests/perf/footprint.py --label docker --docker evedm:0.4.0
+  python tests/perf/footprint.py --label docker --docker evedm:0.5.0
 """
 
 from __future__ import annotations
