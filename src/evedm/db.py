@@ -1,0 +1,385 @@
+"""SQLite storage: one database file (WAL mode) on the data volume (data/ locally, /app/data in Docker)."""
+
+from __future__ import annotations
+
+import json
+import logging
+import sqlite3
+import threading
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+SCHEMA_VERSION = 1
+log = logging.getLogger("evedm.db")
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS characters (
+    character_id   INTEGER PRIMARY KEY,
+    name           TEXT NOT NULL,
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    tags           TEXT NOT NULL DEFAULT '[]',
+    status         TEXT NOT NULL DEFAULT 'OK',      -- OK | LIMITED | REAUTH | DISABLED
+    scopes         TEXT NOT NULL DEFAULT '[]',
+    owner_hash     TEXT,
+    demo           INTEGER NOT NULL DEFAULT 0,
+    added_at       REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tokens (
+    character_id      INTEGER PRIMARY KEY REFERENCES characters(character_id) ON DELETE CASCADE,
+    client_id         TEXT NOT NULL,
+    access_token      BLOB,
+    access_expires_at REAL NOT NULL DEFAULT 0,
+    refresh_token     BLOB NOT NULL,
+    refresh_tail      TEXT NOT NULL DEFAULT '',
+    updated_at        REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS snapshots (
+    character_id    INTEGER PRIMARY KEY REFERENCES characters(character_id) ON DELETE CASCADE,
+    solar_system_id INTEGER,
+    station_id      INTEGER,
+    structure_id    INTEGER,
+    ship_type_id    INTEGER,
+    ship_item_id    INTEGER,
+    ship_name       TEXT,
+    online          INTEGER,
+    last_login      TEXT,
+    last_logout     TEXT,
+    fetched_at      REAL,
+    error           TEXT
+);
+CREATE TABLE IF NOT EXISTS type_names (
+    type_id INTEGER PRIMARY KEY,
+    name    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS target_history (
+    solar_system_id INTEGER PRIMARY KEY,
+    used_at         REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sso_states (
+    state      TEXT PRIMARY KEY,
+    purpose    TEXT NOT NULL,          -- login | add
+    created_at REAL NOT NULL,
+    used       INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS launches (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at   TEXT NOT NULL,
+    stopped_at   TEXT,
+    version      TEXT NOT NULL,
+    pid          INTEGER NOT NULL,
+    mode         TEXT NOT NULL,
+    python       TEXT NOT NULL,
+    platform     TEXT NOT NULL,
+    cpu_count    INTEGER,
+    rss_mb_start REAL,
+    rss_mb_peak  REAL,
+    requests     INTEGER,
+    config       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
+
+@dataclass
+class CharacterRow:
+    character_id: int
+    name: str
+    enabled: bool
+    tags: list[str]
+    status: str
+    scopes: list[str]
+    owner_hash: str | None
+    demo: bool
+    added_at: float
+
+
+class Database:
+    """Thin, thread-safe wrapper around one sqlite3 connection (the app runs one process)."""
+
+    def __init__(self, path: str | Path, journal_mode: str = "wal"):
+        self.path = Path(path) if str(path) == ":memory:" else Path(path).resolve()
+        if str(path) != ":memory:":
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(
+            str(self.path) if str(path) != ":memory:" else ":memory:", check_same_thread=False, isolation_level=None
+        )
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA busy_timeout=5000")
+        self.journal_mode = self._set_journal(journal_mode)
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        # NORMAL is safe with WAL (no corruption, at most the last commits lost on power failure)
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA temp_store=MEMORY")
+        self._conn.execute("PRAGMA cache_size=-2000")  # ~2 MB page cache
+        self.migrate()
+
+    def _set_journal(self, wanted: str) -> str:
+        """Enable WAL (default). Fall back to DELETE where the filesystem cannot share WAL memory."""
+        wanted = wanted.lower()
+        try:
+            mode = str(self._conn.execute(f"PRAGMA journal_mode={wanted.upper()}").fetchone()[0]).lower()
+            if mode == "wal":
+                self._conn.execute("CREATE TABLE IF NOT EXISTS _wal_probe(x)")  # a real write through WAL
+                self._conn.execute("DROP TABLE _wal_probe")
+        except sqlite3.OperationalError as exc:
+            log.warning("WAL is not supported on %s (%s); using journal_mode=DELETE", self.path, exc)
+            mode = "delete"
+        if wanted == "wal" and mode != "wal":
+            log.warning("journal_mode=WAL unavailable for %s (got %s); using DELETE", self.path, mode)
+            mode = str(self._conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0]).lower()
+        return mode
+
+    # -- plumbing --------------------------------------------------------------------------
+    @contextmanager
+    def tx(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._conn
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+            else:
+                self._conn.execute("COMMIT")
+
+    def query(self, sql: str, params: tuple[Any, ...] | dict[str, Any] = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute(sql, params).fetchall()
+
+    def execute(self, sql: str, params: tuple[Any, ...] | dict[str, Any] = ()) -> int:
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            return cur.lastrowid or cur.rowcount
+
+    def migrate(self) -> None:
+        with self._lock:
+            version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+            if version < SCHEMA_VERSION:
+                self._conn.executescript(SCHEMA)
+                self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
+    def close(self) -> None:
+        """Checkpoint the WAL into the main file so the database is one self-contained file again."""
+        with self._lock:
+            if self.journal_mode == "wal":
+                try:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except sqlite3.Error as exc:
+                    log.warning("WAL checkpoint failed: %s", exc)
+            self._conn.close()
+
+    def ok(self) -> bool:
+        try:
+            return self.query("SELECT 1")[0][0] == 1
+        except sqlite3.Error:
+            return False
+
+    # -- meta ---------------------------------------------------------------------------------
+    def get_meta(self, key: str, default: str | None = None) -> str | None:
+        rows = self.query("SELECT value FROM meta WHERE key=?", (key,))
+        return rows[0]["value"] if rows else default
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.execute(
+            "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value)
+        )
+
+    # -- characters ---------------------------------------------------------------------------
+    @staticmethod
+    def _char(row: sqlite3.Row) -> CharacterRow:
+        return CharacterRow(
+            character_id=row["character_id"],
+            name=row["name"],
+            enabled=bool(row["enabled"]),
+            tags=json.loads(row["tags"]),
+            status=row["status"],
+            scopes=json.loads(row["scopes"]),
+            owner_hash=row["owner_hash"],
+            demo=bool(row["demo"]),
+            added_at=row["added_at"],
+        )
+
+    def list_characters(self) -> list[CharacterRow]:
+        return [self._char(r) for r in self.query("SELECT * FROM characters ORDER BY name COLLATE NOCASE")]
+
+    def get_character(self, character_id: int) -> CharacterRow | None:
+        rows = self.query("SELECT * FROM characters WHERE character_id=?", (character_id,))
+        return self._char(rows[0]) if rows else None
+
+    def upsert_character(
+        self,
+        character_id: int,
+        name: str,
+        status: str,
+        scopes: list[str],
+        owner_hash: str | None = None,
+        demo: bool = False,
+        enabled: bool | None = None,
+        tags: list[str] | None = None,
+    ) -> bool:
+        """Insert or update; returns True when the character was new. Local enabled/tags are kept."""
+        with self.tx() as c:
+            exists = c.execute("SELECT 1 FROM characters WHERE character_id=?", (character_id,)).fetchone()
+            if exists:
+                c.execute(
+                    "UPDATE characters SET name=?, status=?, scopes=?, owner_hash=COALESCE(?, owner_hash) "
+                    "WHERE character_id=?",
+                    (name, status, json.dumps(scopes), owner_hash, character_id),
+                )
+                return False
+            c.execute(
+                "INSERT INTO characters(character_id,name,enabled,tags,status,scopes,owner_hash,demo,added_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    character_id,
+                    name,
+                    1 if enabled is None else int(enabled),
+                    json.dumps(tags or []),
+                    status,
+                    json.dumps(scopes),
+                    owner_hash,
+                    int(demo),
+                    time.time(),
+                ),
+            )
+            return True
+
+    def set_enabled(self, character_id: int, enabled: bool) -> None:
+        self.execute("UPDATE characters SET enabled=? WHERE character_id=?", (int(enabled), character_id))
+
+    def set_tags(self, character_id: int, tags: list[str]) -> None:
+        clean = sorted({t.strip()[:32] for t in tags if t.strip()})
+        self.execute("UPDATE characters SET tags=? WHERE character_id=?", (json.dumps(clean), character_id))
+
+    def set_status(self, character_id: int, status: str) -> None:
+        self.execute("UPDATE characters SET status=? WHERE character_id=?", (status, character_id))
+
+    def delete_character(self, character_id: int) -> None:
+        self.execute("DELETE FROM characters WHERE character_id=?", (character_id,))
+
+    # -- tokens -------------------------------------------------------------------------------
+    def save_tokens(
+        self,
+        character_id: int,
+        client_id: str,
+        access_token: bytes | None,
+        expires_at: float,
+        refresh_token: bytes,
+        refresh_tail: str,
+    ) -> None:
+        self.execute(
+            "INSERT INTO tokens(character_id,client_id,access_token,access_expires_at,refresh_token,refresh_tail,"
+            "updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET client_id=excluded.client_id,"
+            " access_token=excluded.access_token, access_expires_at=excluded.access_expires_at,"
+            " refresh_token=excluded.refresh_token, refresh_tail=excluded.refresh_tail, updated_at=excluded.updated_at",
+            (character_id, client_id, access_token, expires_at, refresh_token, refresh_tail, time.time()),
+        )
+
+    def get_tokens(self, character_id: int) -> sqlite3.Row | None:
+        rows = self.query("SELECT * FROM tokens WHERE character_id=?", (character_id,))
+        return rows[0] if rows else None
+
+    # -- snapshots ----------------------------------------------------------------------------
+    def save_snapshot(self, character_id: int, **fields: Any) -> None:
+        cols = ["character_id", *fields.keys()]
+        updates = ", ".join(f"{k}=excluded.{k}" for k in fields)
+        self.execute(
+            f"INSERT INTO snapshots({','.join(cols)}) VALUES({','.join('?' * len(cols))}) "  # noqa: S608 - fixed columns
+            f"ON CONFLICT(character_id) DO UPDATE SET {updates}",
+            (character_id, *fields.values()),
+        )
+
+    def snapshot_error(self, character_id: int, error: str) -> None:
+        self.execute(
+            "INSERT INTO snapshots(character_id, error) VALUES(?,?) "
+            "ON CONFLICT(character_id) DO UPDATE SET error=excluded.error",
+            (character_id, error),
+        )
+
+    def save_snapshots(self, items: list[tuple[int, dict[str, Any] | None, str | None]]) -> None:
+        """Write a whole refresh round in one transaction (one fsync instead of one per character)."""
+        if not items:
+            return
+        with self.tx() as c:
+            for character_id, fields, error in items:
+                if fields is None:
+                    c.execute(
+                        "INSERT INTO snapshots(character_id, error) VALUES(?,?) "
+                        "ON CONFLICT(character_id) DO UPDATE SET error=excluded.error",
+                        (character_id, error),
+                    )
+                    continue
+                cols = ["character_id", *fields.keys()]
+                updates = ", ".join(f"{k}=excluded.{k}" for k in fields)
+                c.execute(
+                    f"INSERT INTO snapshots({','.join(cols)}) VALUES({','.join('?' * len(cols))}) "  # noqa: S608
+                    f"ON CONFLICT(character_id) DO UPDATE SET {updates}",
+                    (character_id, *fields.values()),
+                )
+
+    def get_snapshots(self) -> dict[int, sqlite3.Row]:
+        return {r["character_id"]: r for r in self.query("SELECT * FROM snapshots")}
+
+    # -- type names, targets, SSO states --------------------------------------------------------
+    def get_type_names(self, ids: list[int]) -> dict[int, str]:
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        rows = self.query(f"SELECT type_id, name FROM type_names WHERE type_id IN ({marks})", tuple(ids))  # noqa: S608
+        return {r["type_id"]: r["name"] for r in rows}
+
+    def save_type_names(self, names: dict[int, str]) -> None:
+        with self.tx() as c:
+            c.executemany("INSERT OR REPLACE INTO type_names(type_id,name) VALUES(?,?)", list(names.items()))
+
+    def remember_target(self, system_id: int) -> None:
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO target_history(solar_system_id, used_at) VALUES(?,?) "
+                "ON CONFLICT(solar_system_id) DO UPDATE SET used_at=excluded.used_at",
+                (system_id, time.time()),
+            )
+            c.execute(
+                "DELETE FROM target_history WHERE solar_system_id NOT IN "
+                "(SELECT solar_system_id FROM target_history ORDER BY used_at DESC LIMIT 20)"
+            )
+
+    def recent_targets(self, limit: int = 20) -> list[int]:
+        rows = self.query("SELECT solar_system_id FROM target_history ORDER BY used_at DESC LIMIT ?", (limit,))
+        return [r[0] for r in rows]
+
+    def create_state(self, state: str, purpose: str) -> None:
+        self.execute("INSERT INTO sso_states(state,purpose,created_at) VALUES(?,?,?)", (state, purpose, time.time()))
+        self.execute("DELETE FROM sso_states WHERE created_at < ?", (time.time() - 3600,))
+
+    def consume_state(self, state: str, max_age_s: float = 600) -> str | None:
+        """SSO-04: single use, at most 10 minutes old. Returns the purpose or None."""
+        with self.tx() as c:
+            row = c.execute("SELECT purpose, created_at, used FROM sso_states WHERE state=?", (state,)).fetchone()
+            if row is None or row["used"] or time.time() - row["created_at"] > max_age_s:
+                return None
+            c.execute("UPDATE sso_states SET used=1 WHERE state=?", (state,))
+            return row["purpose"]
+
+    # -- launches -------------------------------------------------------------------------------
+    def record_launch(self, **fields: Any) -> int:
+        cols = list(fields)
+        return self.execute(
+            f"INSERT INTO launches({','.join(cols)}) VALUES({','.join('?' * len(cols))})",  # noqa: S608
+            tuple(fields.values()),
+        )
+
+    def finish_launch(self, launch_id: int, **fields: Any) -> None:
+        sets = ", ".join(f"{k}=?" for k in fields)
+        self.execute(f"UPDATE launches SET {sets} WHERE id=?", (*fields.values(), launch_id))  # noqa: S608
+
+    def launches(self, limit: int = 20) -> list[dict[str, Any]]:
+        return [dict(r) for r in self.query("SELECT * FROM launches ORDER BY id DESC LIMIT ?", (limit,))]
