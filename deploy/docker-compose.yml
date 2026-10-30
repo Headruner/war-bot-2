@@ -1,0 +1,22 @@
+# Server compose file: runs a prebuilt image (from GHCR, a registry, or `docker load -i evedm-image.tar.gz`).
+#   docker compose -f deploy/docker-compose.yml up -d
+services:
+  evedm:
+    image: ${EVEDM_IMAGE:-evedm:0.3.0}
+    container_name: evedm
+    restart: unless-stopped
+    env_file: [../.env]
+    ports:
+      - "${EVEDM_PUBLISH:-127.0.0.1:8080}:8080"
+    volumes:
+      - evedm-data:/app/data
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1g
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "3" }
+volumes:
+  evedm-data:
