@@ -262,14 +262,14 @@ def test_stats_and_structures_api_in_demo(tmp_path):
     with demo(tmp_path) as c:
         stats = c.get("/api/wars/stats").json()
         assert stats["totals"]["active"] == 8 and stats["census"]["complete"] is True
-        assert stats["structures"]["highsec"] == 8 and stats["top_aggressors"][0]["name"] == "Crimson Ledger Syndicate"
+        assert stats["structures"]["highsec"] == 10 and stats["top_aggressors"][0]["name"] == "Crimson Ledger Syndicate"
         body = c.get("/api/wars/structures").json()
-        assert body["matched"] == 8 and body["characters"] == 9
+        assert body["matched"] == 10 and body["characters"] == 9
         jumps = [r["jumps"] for r in body["rows"]]
         assert jumps == sorted(jumps) and body["rows"][0]["nearest"]["characters"]
         assert {r["system"]["class"] for r in body["rows"]} == {"high"}
-        assert c.get("/api/wars/structures", params={"side": "aggressor"}).json()["matched"] == 1
-        assert c.get("/api/wars/structures", params={"limit": 2, "offset": 7}).json()["rows"][0]
+        assert c.get("/api/wars/structures", params={"side": "aggressor"}).json()["matched"] == 3
+        assert c.get("/api/wars/structures", params={"limit": 2, "offset": 9}).json()["rows"][0]
         assert c.get("/api/wars/structures", params={"min_sec": "high"}).status_code == 422
         assert c.get("/api/wars/990001").json()["war_id"] == 990001  # not shadowed by the new routes
         page = c.get("/wars").text

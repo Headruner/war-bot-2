@@ -152,16 +152,16 @@ def test_wars_tabs_and_filters_survive_a_reload(server, browser):
     assert page.locator(".kpi").first.inner_text().startswith("8")
     assert "Crimson Ledger Syndicate" in page.locator("#top-aggressors").inner_text()
     page.click("#tab-btn-loot")
-    page.wait_for_function("document.querySelectorAll('#loot-rows tr').length === 8")
+    page.wait_for_function("document.querySelectorAll('#loot-rows tr').length === 10")
     first = page.locator("#loot-rows tr").first.inner_text()
     assert first.split()[0] == "0"  # nearest first: a character is in that system
     page.select_option("#f-side", "aggressor")
-    page.wait_for_function("document.querySelectorAll('#loot-rows tr').length === 1")
+    page.wait_for_function("document.querySelectorAll('#loot-rows tr').length === 3")
     page.locator("#loot-rows tr .target-chip").first.click()  # rank the structure's system
     page.wait_for_selector(".row.selected")
-    assert "target=Perimeter" in page.url
+    assert "target=Jita" in page.url
     page.goto(f"{server}/wars")
-    page.wait_for_function("document.querySelectorAll('#loot-rows tr').length === 1")
+    page.wait_for_function("document.querySelectorAll('#loot-rows tr').length === 3")
     assert page.locator(".tab.active").inner_text() == "High-sec structures"
     assert page.input_value("#f-side") == "aggressor"
     cookie = next(c for c in ctx.cookies() if c["name"] == "evedm_prefs")
@@ -211,5 +211,31 @@ def test_broken_prefs_cookie_falls_back_to_defaults(server, browser):
     page.goto(f"{server}/?target=Tama")
     page.wait_for_selector(".row.selected")
     assert page.input_value("#auto-refresh") == "30"
+    assert errors == []
+    ctx.close()
+
+
+def test_structures_page_lists_every_space_and_remembers_filters(server, browser):
+    ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = ctx.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(f"{server}/structures")
+    page.wait_for_function("document.querySelectorAll('#s-rows tr').length === 7")
+    assert "no gates" in page.locator("#s-rows tr").last.inner_text()  # the wormhole structure
+    page.select_option("#s-space", "low")
+    page.wait_for_function("document.querySelectorAll('#s-rows tr').length === 2")
+    page.fill("#s-q", "ember")
+    page.wait_for_function("document.querySelectorAll('#s-rows tr').length === 1")
+    assert (
+        "Ashen Veil" in page.locator("#s-rows").inner_text()
+        and "AT WAR" in page.locator("#s-rows").inner_text().upper()
+    )
+    page.reload()
+    page.wait_for_function("document.querySelectorAll('#s-rows tr').length === 1")
+    assert page.input_value("#s-space") == "low" and page.input_value("#s-q") == "ember"
+    page.locator("#s-rows .target-chip").first.click()
+    page.wait_for_selector(".row.selected")
+    assert "target=Amamake" in page.url
     assert errors == []
     ctx.close()

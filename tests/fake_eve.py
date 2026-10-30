@@ -64,6 +64,11 @@ class FakeState:
     revoked: set[str] = field(default_factory=set)
     calls: dict[str, int] = field(default_factory=dict)
     esi_delay_s: float = 0.0
+    # structure scout: assets per character, structures with the characters on their access list
+    assets: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
+    structures: dict[int, dict[str, Any]] = field(default_factory=dict)
+    corp_names: dict[int, str] = field(default_factory=dict)
+    asset_page_size: int = 1000
 
 
 def make_characters(n: int, seed: int = 7, systems: list[int] | None = None) -> dict[int, FakeCharacter]:
@@ -288,9 +293,53 @@ def create_fake_app(
     @app.post("/universe/names")
     async def names(request: Request) -> Response:
         ids = await request.json()
-        return JSONResponse(
-            [{"id": i, "name": SHIP_NAMES.get(i, f"Type {i}"), "category": "inventory_type"} for i in ids]
-        )
+        out = []
+        for i in ids:
+            if i in st.corp_names:
+                out.append({"id": i, "name": st.corp_names[i], "category": "corporation"})
+            else:
+                out.append({"id": i, "name": SHIP_NAMES.get(i, f"Type {i}"), "category": "inventory_type"})
+        return JSONResponse(out)
+
+    def token_claims(request: Request, scope: str) -> tuple[dict[str, Any] | None, Response | None]:
+        auth = request.headers.get("authorization", "")
+        if not auth.startswith("Bearer "):
+            return None, JSONResponse({"error": "authentication required"}, status_code=401)
+        try:
+            claims = jwt.decode(auth[7:], key.public_key(), algorithms=["RS256"], audience=st.client_id)
+        except jwt.PyJWTError:
+            return None, JSONResponse({"error": "token is not valid"}, status_code=401)
+        if scope not in claims.get("scp", []):
+            return None, JSONResponse({"error": "token not valid for scope"}, status_code=403)
+        return claims, None
+
+    @app.get("/characters/{cid}/assets")
+    async def assets(request: Request, cid: int, page: int = 1) -> Response:
+        count("assets")
+        if (err := esi_auth(request, cid, "esi-assets.read_assets.v1")) is not None:
+            return err
+        items = st.assets.get(cid, [])
+        size = st.asset_page_size
+        pages = max(1, -(-len(items) // size))
+        if page > pages:
+            return JSONResponse({"error": "Requested page does not exist!"}, status_code=404)
+        body = items[(page - 1) * size : page * size]
+        return Response(json.dumps(body), media_type="application/json", headers={"X-Pages": str(pages)})
+
+    @app.get("/universe/structures/{sid}")
+    async def structure(request: Request, sid: int) -> Response:
+        count("structure")
+        claims, err = token_claims(request, "esi-universe.read_structures.v1")
+        if err is not None:
+            return err
+        st_ = st.structures.get(sid)
+        if st_ is None:
+            return JSONResponse({"error": "Structure not found"}, status_code=404)
+        cid = int(str(claims["sub"]).rsplit(":", 1)[1])
+        if st_.get("acl") is not None and cid not in st_["acl"]:
+            return JSONResponse({"error": "Forbidden"}, status_code=403)
+        body = {k: v for k, v in st_.items() if k != "acl"}
+        return esi_json(request, body, 3600)
 
     # ------------------------------------------------------------------ test admin
     @app.post("/_admin/mint")
@@ -329,6 +378,17 @@ def create_fake_app(
             st.esi_delay_s = float(body["esi_delay_s"])
         if "access_ttl" in body:
             st.access_ttl = int(body["access_ttl"])
+        return {"ok": True}
+
+    @app.post("/_admin/structures")
+    async def admin_structures(request: Request) -> dict[str, Any]:
+        body = await request.json()
+        for sid, data in (body.get("structures") or {}).items():
+            st.structures[int(sid)] = data
+        for cid, items in (body.get("assets") or {}).items():
+            st.assets[int(cid)] = items
+        for oid, name in (body.get("corp_names") or {}).items():
+            st.corp_names[int(oid)] = name
         return {"ok": True}
 
     @app.get("/_admin/stats")

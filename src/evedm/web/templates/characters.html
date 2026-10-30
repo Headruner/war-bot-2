@@ -6,7 +6,9 @@
   {% if welcome %}<div class="notice ok">Welcome, {{ user.name }}. Your main is linked. Add your other characters
     with <b>Add character</b>: each one is linked to {{ user.name }} and stays signed in on this site.</div>{% endif %}
   {% if added %}<div class="notice ok">Added {{ added }}.</div>{% endif %}
-  {% if error %}<div class="notice err">EVE SSO error: {{ error }}</div>{% endif %}
+  {% if error %}<div class="notice err">EVE SSO error: {{ error }}
+    {% if error == "invalid_scope" %}<div class="small">The EVE application does not allow every requested scope:
+      tick esi-universe.read_structures.v1 and esi-assets.read_assets.v1 on developers.eveonline.com.</div>{% endif %}</div>{% endif %}
   <div class="toolbar">
     {% if sso_ready %}<a class="btn primary" href="/sso/add">Add character (EVE SSO)</a>
     {% else %}<span class="small">EVE SSO is not configured (set EVE_CLIENT_ID / EVE_CLIENT_SECRET) - demo characters only.</span>{% endif %}
@@ -14,6 +16,9 @@
     <button id="export-btn" class="btn" type="button">Export JSON</button>
     <span class="small">Tick characters to export only those. Exports contain credentials.</span>
   </div>
+  {% if structures_enabled %}<p class="small">Characters that granted the structure scopes share the player-owned
+    structures where they have assets with everyone on this site (<a href="/structures">Structures</a>). Re-authorize a
+    character with <b>Add character</b> to grant them.</p>{% endif %}
   <div id="import-report" class="notice" hidden></div>
   <div class="card">
     <table class="grid">

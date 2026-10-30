@@ -249,3 +249,8 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
   .grid.loot td { border: 0; padding: 2px 0; text-align: left; }
   .filters select { max-width: 140px; }
 }
+
+/* structures page */
+.filters input[type=search] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 8px; font: inherit; width: 200px; max-width: 100%; margin-left: 4px; }
+.structures-page code { font-size: 12px; background: var(--panel-2); padding: 0 4px; border-radius: 4px; }

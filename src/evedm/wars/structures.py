@@ -169,12 +169,34 @@ class StructureIndex:
         self.user_agent = user_agent
         self.refresh_interval = float(refresh_hours) * 3600
         self.transport = transport
-        self.index: dict[int, list[Structure]] | None = None
+        self.index: dict[int, list[Structure]] | None = None  # public dataset + structures the scout found
+        self.public: dict[int, list[Structure]] | None = None
+        self.discovered: dict[int, list[Structure]] = {}
         self.last_refresh = 0.0
+        self.revision = 0  # bumped whenever ``index`` changes (cache key)
 
     @property
     def loaded(self) -> bool:
         return self.index is not None
+
+    def _rebuild(self) -> None:
+        if self.public is None and not self.discovered:
+            return
+        merged: dict[int, list[Structure]] = {o: list(v) for o, v in (self.public or {}).items()}
+        for owner, items in self.discovered.items():
+            known = {s.structure_id for s in merged.get(owner, [])}
+            merged.setdefault(owner, []).extend(s for s in items if s.structure_id not in known)
+        self.index = merged
+        self.revision += 1
+
+    def set_public(self, index: dict[int, list[Structure]]) -> None:
+        self.public = index
+        self._rebuild()
+
+    def set_discovered(self, index: dict[int, list[Structure]]) -> None:
+        """Structures found by the structure scout (private ones included), merged into ``index``."""
+        self.discovered = index
+        self._rebuild()
 
     @property
     def owners(self) -> int:
@@ -199,7 +221,8 @@ class StructureIndex:
                             raise ValueError(f"structure dataset larger than {MAX_DATASET_BYTES} bytes")
                         add_items(index, parser.feed(chunk))
             add_items(index, parser.feed(b"", final=True))
-            self.index = index
+            self.public = index
+            self._rebuild()
             self.last_refresh = now
             log.info("structures: %d owners with public structures loaded (%d KB)", len(index), size // 1024)
         except Exception as e:  # noqa: BLE001 - keep the previous index, retry next cycle

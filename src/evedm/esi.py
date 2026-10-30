@@ -124,6 +124,51 @@ class EsiClient:
             pass
         raise EsiError(resp.status_code, detail)
 
+    async def get_paged(self, path: str, token: str, max_pages: int = 20) -> tuple[list[Any], bool]:
+        """Every page of a paged authenticated list (X-Pages), uncached. Returns (items, truncated)."""
+        headers = dict(self.headers) | {"Authorization": f"Bearer {token}"}
+        items: list[Any] = []
+        pages, page = 1, 1
+        while page <= min(pages, max_pages):
+            resp = await self._send("GET", f"{path}?page={page}", headers)
+            if resp.status_code != 200:
+                self.stats["errors"] += 1
+                detail = ""
+                try:
+                    detail = str(resp.json().get("error", ""))
+                except ValueError:
+                    pass
+                raise EsiError(resp.status_code, detail)
+            items.extend(resp.json())
+            try:
+                pages = max(1, int(resp.headers.get("X-Pages", "1") or 1))
+            except ValueError:
+                pages = 1
+            page += 1
+        return items, pages > max_pages
+
+    async def names_categories(self, ids: list[int]) -> dict[int, tuple[str, str]]:
+        """POST /universe/names in chunks of 1000; an invalid ID (404 for the chunk) is bisected out."""
+        out: dict[int, tuple[str, str]] = {}
+
+        async def resolve(chunk: list[int]) -> None:
+            try:
+                rows = await self.post("/universe/names", chunk)
+            except EsiError as exc:
+                if exc.status != 404:
+                    raise
+                if len(chunk) > 1:
+                    await resolve(chunk[: len(chunk) // 2])
+                    await resolve(chunk[len(chunk) // 2 :])
+                return
+            for r in rows:
+                out[int(r["id"])] = (str(r["name"]), str(r.get("category", "")))
+
+        unique = sorted({int(i) for i in ids if i})
+        for start in range(0, len(unique), 1000):
+            await resolve(unique[start : start + 1000])
+        return out
+
     async def post(self, path: str, payload: Any) -> Any:
         resp = await self._send("POST", path, dict(self.headers), json=payload)
         if resp.status_code != 200:

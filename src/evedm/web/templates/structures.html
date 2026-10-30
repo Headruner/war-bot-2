@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Structures · EVE Distance Meter{% endblock %}
+{% block content %}
+<div class="page structures-page">
+  <h1>Structures</h1>
+  <p class="small">Player-owned structures in every kind of space where any character registered on this site has
+    assets. Everyone signed in sees the whole list. Characters share their structures once they have granted
+    {% for s in scopes %}<code>{{ s }}</code>{% if not loop.last %} and {% endif %}{% endfor %}.</p>
+  <div class="toolbar filters">
+    <label class="small">Search <input id="s-q" type="search" placeholder="name, system or owner" spellcheck="false"></label>
+    <label class="small">Space
+      <select id="s-space"><option value="">all</option><option value="high">high-sec</option><option value="low">low-sec</option>
+        <option value="null">null-sec</option><option value="wormhole">wormhole</option></select></label>
+    <label class="small">Region <select id="s-region"><option value="">all</option></select></label>
+    <label class="small">Type <select id="s-type"><option value="">all</option></select></label>
+    <label class="small"><input id="s-war" type="checkbox"> owner at war</label>
+    <label class="small">Sort
+      <select id="s-sort"><option value="jumps">nearest first</option><option value="system">system</option>
+        <option value="name">name</option><option value="type">type</option><option value="owner">owner</option>
+        <option value="security">security</option><option value="seen">recently seen</option></select></label>
+    <button id="s-reload" class="btn" type="button">Refresh</button>
+  </div>
+  <div id="s-info" class="small"></div>
+  <table class="grid loot structures">
+    <thead><tr><th>Jumps</th><th>System</th><th>Structure</th><th>Owner</th><th>Seen</th></tr></thead>
+    <tbody id="s-rows"></tbody>
+  </table>
+  <button id="s-more" class="btn" type="button" hidden>More</button>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/prefs.js?v={{ version }}"></script>
+<script src="/static/map.js?v={{ version }}"></script>
+<script src="/static/structures.js?v={{ version }}"></script>
+{% endblock %}

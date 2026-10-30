@@ -109,3 +109,58 @@ def test_upgrade_from_a_single_user_database(tmp_path):
             assert all(r["error"] is None for r in rows)  # migrated tokens still refresh
         log = (data / "logs" / "evedm.log").read_text(encoding="utf-8")
         assert "adopted 2 characters stored before accounts existed" in log
+
+
+def test_structures_found_through_assets_are_shared(tmp_path):
+    """Real processes: sign-in grants the structure scopes, the scout reads assets, every main sees the result."""
+    import time
+
+    s1, s2 = 1_035_000_000_001, 1_035_000_000_002
+    port = free_port()
+    with fake_eve(characters=5) as eve:
+        httpx.post(
+            f"{eve}/_admin/structures",
+            json={
+                "structures": {
+                    str(s1): {
+                        "name": "Jita - Alice Hub",
+                        "owner_id": 98123456,
+                        "solar_system_id": 30000142,
+                        "type_id": 35832,
+                        "acl": [FIRST],
+                    },
+                    str(s2): {
+                        "name": "1DQ1-A - Bob Keep",
+                        "owner_id": 98123456,
+                        "solar_system_id": 30004759,
+                        "type_id": 35834,
+                        "acl": [FIRST + 1],
+                    },
+                },
+                "assets": {
+                    str(FIRST): [{"item_id": 1, "location_id": s1, "location_type": "item", "location_flag": "Hangar"}],
+                    str(FIRST + 1): [
+                        {"item_id": 2, "location_id": s2, "location_type": "item", "location_flag": "Hangar"}
+                    ],
+                },
+                "corp_names": {"98123456": "Citadel Owners Inc"},
+            },
+        )
+        env = evedm_env(tmp_path / "data", eve, port, EVEDM_STRUCTURES_INTERVAL_MIN="0.02")
+        with evedm_server(env, log_path=tmp_path / "server.out") as (base, _):
+            alice, bob = httpx.Client(base_url=base), httpx.Client(base_url=base)
+            sso_flow(alice, "/sso/login", FIRST)
+            sso_flow(bob, "/sso/login", FIRST + 1)
+            deadline = time.time() + 30
+            body = {}
+            while time.time() < deadline:
+                body = bob.get("/api/structures", params={"refresh": 0}).json()
+                if body.get("matched") == 2:
+                    break
+                time.sleep(0.3)
+            assert body["matched"] == 2, body
+            names = {r["name"]: r for r in body["rows"]}
+            assert set(names) == {"Jita - Alice Hub", "1DQ1-A - Bob Keep"}  # Bob sees Alice's structure too
+            assert names["Jita - Alice Hub"]["owner"] == "Citadel Owners Inc"
+            assert body["scout"]["contributing_characters"] == 2
+            assert alice.get("/api/structures").json()["matched"] == 2

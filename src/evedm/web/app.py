@@ -31,6 +31,7 @@ from ..esi import EsiClient
 from ..logs import LaunchRecorder, peak_rss_mb, rss_mb, setup_logging, trim_memory
 from ..ranking import DemoProvider, LiveProvider, RankingService
 from ..resolver import TargetResolver
+from ..scout import StructureScout, seed_demo_structures
 from ..selfcheck import check
 from ..sso import AuthService, SsoError
 from ..universe import GateGraph
@@ -57,6 +58,7 @@ class Services:
     launch: LaunchRecorder
     started: float
     wars: WarService | None = None
+    scout: StructureScout | None = None
 
 
 class RequestCounter:
@@ -102,7 +104,10 @@ def build_services(settings: Settings) -> Services:
         if seeded:
             log.info("seeded %s demo characters", seeded)
     launch = LaunchRecorder(db, settings, "demo" if settings.demo else "live")
-    return Services(settings, db, graph, TargetResolver(graph), chars, ranking, auth, esi, http, launch, time.time())
+    svc = Services(settings, db, graph, TargetResolver(graph), chars, ranking, auth, esi, http, launch, time.time())
+    if settings.structures.enabled:
+        svc.scout = StructureScout(settings, db, graph, chars, esi)  # type: ignore[arg-type]
+    return svc
 
 
 def build_wars(settings: Settings, ws: WarsSettings, svc: Services) -> WarService | None:
@@ -117,7 +122,7 @@ def build_wars(settings: Settings, ws: WarsSettings, svc: Services) -> WarServic
         index = seed_demo_census(svc.db, svc.graph)
         svc.db.set_meta("demo_census", "1")
         if wars.structures is not None:  # sample structures; never downloaded in demo mode
-            wars.structures.index = index
+            wars.structures.set_public(index)
             wars.structures.last_refresh = time.time() + 10 * 365 * 86400
     else:
         if wars.store.purge_demo([w[0] for w in DEMO_WARS]):
@@ -148,6 +153,15 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         holder["svc"] = svc
         app.state.svc = svc
         svc.wars = build_wars(settings, ws, svc)
+        if svc.scout is not None:
+            if settings.demo:
+                from ..wars.demo import _entity_ids
+
+                seed_demo_structures(svc.db, svc.graph, _entity_ids())
+            if svc.wars is not None and svc.wars.structures is not None:
+                structures = svc.wars.structures
+                svc.scout.on_change.append(structures.set_discovered)  # private finds join the war lists
+                structures.set_discovered(svc.scout.index())
         svc.launch.start(
             {
                 "universe": svc.graph.build,
@@ -158,9 +172,13 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         )
         if svc.wars is not None and not settings.demo:
             svc.wars.start()
+        if svc.scout is not None and not settings.demo:
+            svc.scout.start()
         try:
             yield
         finally:
+            if svc.scout is not None:
+                await svc.scout.stop()
             if svc.wars is not None:
                 await svc.wars.stop()
             svc.launch.stop()
@@ -249,6 +267,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             "universe": svc.graph.build,
             "session_days": settings.web.session_days,
             "wars_enabled": svc.wars is not None,
+            "structures_enabled": svc.scout is not None,
         }
         return templates.TemplateResponse(request, name, base | ctx)
 
@@ -270,6 +289,14 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             error=request.query_params.get("error"),
             welcome=request.query_params.get("welcome"),
         )
+
+    @app.get("/structures", response_class=HTMLResponse)
+    async def structures_page(request: Request) -> Response:
+        if user_of(request) is None:
+            return RedirectResponse("/login", status_code=303)
+        if svc_of(request).scout is None:
+            raise HTTPException(status_code=404, detail="the structure scout is disabled (structures.enabled)")
+        return page(request, "structures.html", scopes=settings.eve.optional_scopes)
 
     @app.get("/wars", response_class=HTMLResponse)
     async def wars_page(request: Request) -> Response:
@@ -300,17 +327,22 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
     @app.get("/sso/login")
     async def sso_login(request: Request) -> Response:
         # the main is the first linked character, so sign-in asks for the same scopes as Add character
-        return _start_sso(request, "login", settings.eve.required_scopes)
+        return _start_sso(request, "login", settings.eve.requested_scopes)
 
     @app.get("/sso/add")
     async def sso_add(request: Request) -> Response:  # SSO-01
         if user_of(request) is None:
             return RedirectResponse("/login", status_code=303)
-        return _start_sso(request, "add", settings.eve.required_scopes)
+        return _start_sso(request, "add", settings.eve.requested_scopes)
 
     @app.get("/sso/callback")
-    async def sso_callback(request: Request, code: str = "", state: str = "") -> Response:
+    async def sso_callback(request: Request, code: str = "", state: str = "", error: str = "") -> Response:
         svc = svc_of(request)
+        if error:  # EVE SSO refused, e.g. invalid_scope when the EVE application lacks a requested scope
+            purpose = svc.db.consume_state(state) if state else None
+            log.warning("EVE SSO returned an error: %s", error)
+            target = "/characters" if purpose == "add" and user_of(request) else "/login"
+            return RedirectResponse(f"{target}?" + urlencode({"error": error[:60]}), status_code=303)
         purpose = svc.db.consume_state(state) if state else None
         if purpose is None or not code or svc.auth is None:  # SSO-04
             log.warning("rejected SSO callback (state missing, unknown, used or expired)")
@@ -364,6 +396,9 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                 "wars": None
                 if svc.wars is None
                 else {"running": svc.wars.state["running"], "cycles": svc.wars.state["cycles"]},
+                "structure_scout": None
+                if svc.scout is None
+                else {"running": svc.scout.state["running"], "cycles": svc.scout.state["cycles"]},
             }
         )
 
@@ -457,6 +492,63 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         items = wars.store.summaries(limit, max(0, offset), type or None)
         return JSONResponse({"wars": items, "status": wars.status()})
 
+    async def character_sources(svc: Services, uid: int, refresh: int) -> dict[int, list[str]]:
+        """System index -> names of the main's characters there (for jumps from the nearest character)."""
+        chars = [c for c in svc.db.list_characters(uid) if c.enabled and c.status != REAUTH]
+        if refresh and chars:
+            await svc.ranking.refresh_states(chars, 1, uid)  # stale-while-revalidate, as on the ranking page
+        snaps = svc.db.get_snapshots([c.character_id for c in chars])
+        sources: dict[int, list[str]] = {}
+        for c in chars:
+            snap = snaps.get(c.character_id)
+            idx = svc.graph.index.get(snap["solar_system_id"]) if snap and snap["solar_system_id"] else None
+            if idx is not None:
+                sources.setdefault(idx, []).append(c.name)
+        return sources
+
+    # ------------------------------------------------------------------ structures (scout)
+    def scout_of(request: Request) -> StructureScout:
+        require_user(request)
+        scout = svc_of(request).scout
+        if scout is None:
+            raise HTTPException(status_code=404, detail="the structure scout is disabled (structures.enabled)")
+        return scout
+
+    @app.get("/api/structures")
+    async def list_structures(
+        request: Request,
+        q: str = "",
+        region: str = "",
+        type: str = "",  # noqa: A002
+        space: str = "",
+        at_war: int = 0,
+        sort: str = "jumps",
+        limit: int = 100,
+        offset: int = 0,
+        refresh: int = 1,
+    ) -> JSONResponse:
+        """Every player-owned structure the registered characters' assets revealed, shared by all mains."""
+        uid = owner(request)
+        scout = scout_of(request)
+        svc = svc_of(request)
+        sources = await character_sources(svc, uid, refresh)
+        wars = svc.wars.census.corps_at_war() if svc.wars is not None and svc.wars.census is not None else {}
+        result = scout.listing(
+            sources,
+            svc.ranking.avoid,
+            wars,
+            q=q[:60],
+            region=region,
+            type_name=type,
+            space=space,
+            war_only=bool(at_war),
+            sort=sort,
+            limit=max(1, min(limit, 500)),
+            offset=max(0, offset),
+        )
+        result["wars_known"] = svc.wars is not None and svc.wars.census is not None
+        return JSONResponse(result)
+
     def census_of(request: Request) -> Any:
         census = wars_of(request).census
         if census is None:
@@ -488,16 +580,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         census = census_of(request)
         await census.ensure_names(timeout=3)
         svc = svc_of(request)
-        chars = [c for c in svc.db.list_characters(uid) if c.enabled and c.status != REAUTH]
-        if refresh and chars:
-            await svc.ranking.refresh_states(chars, 1, uid)  # stale-while-revalidate, as on the ranking page
-        snaps = svc.db.get_snapshots([c.character_id for c in chars])
-        sources: dict[int, list[str]] = {}
-        for c in chars:
-            snap = snaps.get(c.character_id)
-            idx = svc.graph.index.get(snap["solar_system_id"]) if snap and snap["solar_system_id"] else None
-            if idx is not None:
-                sources.setdefault(idx, []).append(c.name)
+        sources = await character_sources(svc, uid, refresh)
         result = census.loot(
             sources,
             svc.ranking.avoid,

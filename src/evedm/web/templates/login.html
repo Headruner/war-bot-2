@@ -6,7 +6,10 @@
     <h1>Sign in</h1>
     <p>Sign in with your <b>main</b> character. Characters you add later are linked to it, and only you see them.
       You stay signed in on this browser, so you never sign in your alts again.</p>
-    {% if error %}<div class="notice err">Sign-in failed: {{ error }}</div>{% endif %}
+    {% if error %}<div class="notice err">Sign-in failed: {{ error }}
+      {% if error == "invalid_scope" %}<div class="small">The EVE application does not allow every scope this site asks
+        for. Its owner must tick the missing scopes (esi-universe.read_structures.v1, esi-assets.read_assets.v1) on
+        developers.eveonline.com, or set <code>EVE_OPTIONAL_SCOPES=none</code>.</div>{% endif %}</div>{% endif %}
     {% if sso_ready %}<a class="btn primary" href="/sso/login">Sign in with EVE Online</a>
     {% else %}<p class="small">EVE SSO is not configured on this instance.</p>{% endif %}
   </div>

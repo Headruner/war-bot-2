@@ -15,6 +15,9 @@ DEFAULT_SCOPES = [
     "esi-location.read_ship_type.v1",
     "esi-location.read_online.v1",
 ]
+# Asked for at sign-in and Add character, not needed for the ranking: they let the structure scout list the
+# player-owned structures where each character has assets. They must be enabled on the EVE application.
+STRUCTURE_SCOPES = ["esi-universe.read_structures.v1", "esi-assets.read_assets.v1"]
 
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
@@ -29,10 +32,16 @@ class EveSettings:
     client_secret: str = ""
     callback_url: str = "http://localhost:8080/sso/callback"
     required_scopes: list[str] = field(default_factory=lambda: list(DEFAULT_SCOPES))
+    optional_scopes: list[str] = field(default_factory=lambda: list(STRUCTURE_SCOPES))
+
+    @property
+    def requested_scopes(self) -> list[str]:
+        return list(dict.fromkeys([*self.required_scopes, *self.optional_scopes]))
+
     sso_base: str = "https://login.eveonline.com"
     esi_base: str = "https://esi.evetech.net"
     compatibility_date: str = "2025-09-30"
-    user_agent: str = "EVE-Distance-Meter/0.5 (+https://github.com/Headruner/war-bot-2)"
+    user_agent: str = "EVE-Distance-Meter/0.6 (+https://github.com/Headruner/war-bot-2)"
     max_concurrency: int = 20
     timeout_s: float = 10.0
     jwt_issuers: list[str] = field(default_factory=lambda: ["https://login.eveonline.com", "login.eveonline.com"])
@@ -53,6 +62,18 @@ class WebSettings:
 
 
 @dataclass
+class StructureScoutSettings:
+    """The structure scout: player-owned structures found through every registered character's assets."""
+
+    enabled: bool = True
+    interval_min: float = 60.0  # how often the scout runs
+    assets_refresh_hours: float = 24.0  # re-read a character's assets this often
+    structure_refresh_hours: float = 72.0  # re-read a structure's name, owner and system this often
+    max_asset_pages: int = 20  # 1000 assets per page; characters with more are read partly
+    concurrency: int = 4
+
+
+@dataclass
 class Settings:
     instance_label: str = "evedm"
     data_dir: Path = Path("./data")
@@ -64,6 +85,7 @@ class Settings:
     log_level: str = "INFO"
     eve: EveSettings = field(default_factory=EveSettings)
     web: WebSettings = field(default_factory=WebSettings)
+    structures: StructureScoutSettings = field(default_factory=StructureScoutSettings)
 
     @property
     def db_path(self) -> Path:
@@ -87,6 +109,8 @@ class Settings:
             "client_id_set": bool(self.eve.client_id),
             "secret_key_set": bool(self.secret_key),
             "avoid_systems": self.avoid_systems,
+            "optional_scopes": self.eve.optional_scopes,
+            "structure_scout": self.structures.enabled,
         }
 
     def validate_for_serve(self) -> None:
@@ -127,7 +151,7 @@ def _apply(obj: Any, data: dict[str, Any]) -> None:
         if not hasattr(obj, key):
             continue
         current = getattr(obj, key)
-        if isinstance(current, (EveSettings, WebSettings)) and isinstance(value, dict):
+        if isinstance(current, (EveSettings, WebSettings, StructureScoutSettings)) and isinstance(value, dict):
             _apply(current, value)
         elif key in ("data_dir", "universe_file") and value:
             setattr(obj, key, Path(value))
@@ -162,11 +186,23 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
     "EVEDM_ALLOWED_LOGIN_CHARACTERS": ("web", "allowed_login_characters"),
     "EVEDM_REFRESH_INTERVAL_S": ("web", "refresh_interval_s"),
     "EVEDM_MAX_WAIT_AGE_S": ("web", "max_wait_age_s"),
+    "EVE_OPTIONAL_SCOPES": ("eve", "optional_scopes"),
+    "EVEDM_STRUCTURES_ENABLED": ("structures", "enabled"),
+    "EVEDM_STRUCTURES_INTERVAL_MIN": ("structures", "interval_min"),
 }
 
 
 def load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
     """Load settings from YAML (optional) and apply environment overrides."""
+    try:
+        return _load_settings(path)
+    except ConfigError:
+        raise
+    except (TypeError, ValueError, yaml.YAMLError) as exc:  # e.g. EVEDM_PORT=eighty: a message, not a traceback
+        raise ConfigError(f"invalid setting: {exc}") from exc
+
+
+def _load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
     settings = Settings()
     cfg_path = path or os.environ.get("EVEDM_CONFIG")
     if cfg_path and Path(cfg_path).is_file():
@@ -181,6 +217,9 @@ def load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
             obj = getattr(obj, part)
         if target[-1] == "allowed_login_characters":
             setattr(obj, target[-1], [int(v) for v in value.replace(";", ",").split(",") if v.strip()])
+        elif target[-1] == "optional_scopes":  # comma or space separated; "none" asks for no extra scope
+            parts = [v for v in value.replace(",", " ").split() if v.strip()]
+            setattr(obj, target[-1], [] if [p.lower() for p in parts] == ["none"] else parts)
         else:
             _apply(obj, {target[-1]: value})
     settings.web.allowed_login_characters = [int(v) for v in settings.web.allowed_login_characters]

@@ -247,6 +247,22 @@ class WarCensus:
         if rows:
             self.version += 1
 
+    def corps_at_war(self) -> dict[int, list[int]]:
+        """corporation -> active war IDs it is part of (directly, through its alliance, or as an ally)."""
+        alliance_corps = self.alliance_corps()
+        out: dict[int, list[int]] = {}
+        for r in self.active_rows():
+            sides = [(r["aggressor_id"], r["aggressor_type"]), (r["defender_id"], r["defender_type"])]
+            sides += [(a, kind) for a, kind in json.loads(r["allies"])]
+            for eid, kind in sides:
+                if not eid:
+                    continue
+                for corp in alliance_corps.get(int(eid), []) if kind == "alliance" else [int(eid)]:
+                    wars = out.setdefault(int(corp), [])
+                    if r["war_id"] not in wars:
+                        wars.append(r["war_id"])
+        return out
+
     def alliance_corps(self) -> dict[int, list[int]]:
         return {r[0]: json.loads(r[1]) for r in self.db.query("SELECT alliance_id, corps FROM alliance_corps")}
 
@@ -310,7 +326,7 @@ class WarCensus:
         """High-sec structures owned by any side of an active war (cached until census or dataset change)."""
         if self.structures is None or not self.structures.loaded:
             return []
-        key = (self.version, self.structures.last_refresh)
+        key = (self.version, self.structures.last_refresh, self.structures.revision, id(self.structures.index))
         if self._loot is not None and self._loot[0] == key:
             return self._loot[1]
         now_iso = iso()
@@ -458,7 +474,7 @@ class WarCensus:
 
     # -- statistics -----------------------------------------------------------------------------------
     def stats(self) -> dict[str, Any]:
-        loot_key = self.structures.last_refresh if self.structures else 0
+        loot_key = (self.structures.last_refresh, self.structures.revision) if self.structures else 0
         key = (self.version, loot_key, int(time.time() // 60))
         if self._stats is not None and self._stats[0] == key:
             return self._stats[1]

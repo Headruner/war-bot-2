@@ -120,6 +120,8 @@ class CharacterService:
                     "status": DISABLED if not c.enabled and c.status == OK else c.status,
                     "scopes": c.scopes,
                     "missing_scopes": self.missing_scopes(c.scopes),
+                    # not needed for the ranking; without them the character adds nothing to the Structures page
+                    "optional_missing": [s for s in self.settings.eve.optional_scopes if s not in c.scopes],
                     "tags": c.tags,
                     "demo": c.demo,
                     "main": c.character_id == owner_id,

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 log = logging.getLogger("evedm.db")
 
 SCHEMA = """
@@ -65,6 +65,31 @@ CREATE TABLE IF NOT EXISTS snapshots (
     last_logout     TEXT,
     fetched_at      REAL,
     error           TEXT
+);
+-- player-owned structures found by the structure scout (assets of every registered character), shared by all mains
+CREATE TABLE IF NOT EXISTS known_structures (
+    structure_id    INTEGER PRIMARY KEY,
+    name            TEXT,
+    owner_id        INTEGER,
+    solar_system_id INTEGER,
+    type_id         INTEGER,
+    status          TEXT NOT NULL DEFAULT 'new',   -- new | ok | no_access | gone
+    first_seen      REAL NOT NULL,
+    last_seen       REAL NOT NULL,
+    checked_at      REAL NOT NULL DEFAULT 0
+);
+-- which characters have assets in a structure (used only to pick a token that may read it; never shown)
+CREATE TABLE IF NOT EXISTS structure_sightings (
+    structure_id INTEGER NOT NULL,
+    character_id INTEGER NOT NULL,
+    seen_at      REAL NOT NULL,
+    PRIMARY KEY (structure_id, character_id)
+);
+CREATE TABLE IF NOT EXISTS scout_characters (
+    character_id INTEGER PRIMARY KEY,
+    checked_at   REAL NOT NULL,
+    structures   INTEGER NOT NULL DEFAULT 0,
+    error        TEXT
 );
 CREATE TABLE IF NOT EXISTS type_names (
     type_id INTEGER PRIMARY KEY,

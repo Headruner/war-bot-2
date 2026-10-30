@@ -32,6 +32,10 @@ async function load() {
     const tdStatus = el("td");
     tdStatus.append(el("span", `status-pill status-${c.status}`, STATUS_TEXT[c.status] || c.status));
     if (c.missing_scopes.length) tdStatus.append(el("div", "small", "missing: " + c.missing_scopes.map((s) => s.split(".")[1]).join(", ")));
+    if (!c.demo && c.optional_missing && c.optional_missing.length) {
+      tdStatus.append(el("div", "small", "structures not shared (re-authorize to grant " +
+        c.optional_missing.map((s) => s.split(".")[1]).join(", ") + ")"));
+    }
     if (c.status === "REAUTH") {
       const a = el("a", "small", "Re-authorize"); a.href = "/sso/add";
       const wrap = el("div"); wrap.append(a); tdStatus.append(wrap);

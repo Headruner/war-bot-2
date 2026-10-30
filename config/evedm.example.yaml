@@ -16,8 +16,11 @@ eve:
     - esi-location.read_location.v1
     - esi-location.read_ship_type.v1
     - esi-location.read_online.v1
+  optional_scopes:                          # structure scout (Structures page): tick both on your EVE application,
+    - esi-universe.read_structures.v1       # or set EVE_OPTIONAL_SCOPES=none to ask only for the scopes above
+    - esi-assets.read_assets.v1
   compatibility_date: "2025-09-30"
-  user_agent: "EVE-Distance-Meter/0.5 (contact: change-me)"
+  user_agent: "EVE-Distance-Meter/0.6 (contact: change-me)"
   max_concurrency: 20                       # parallel ESI calls (rate limits are per character)
 
 web:
@@ -29,3 +32,11 @@ web:
   cookie_secure: false                      # true when served over HTTPS
   auto_refresh_s: 30
   stale_after_s: 120
+
+structures:                                 # structure scout: player-owned structures found through characters' assets
+  enabled: ${EVEDM_STRUCTURES_ENABLED:-true}
+  interval_min: 60                          # how often the scout runs
+  assets_refresh_hours: 24                  # re-read each character's assets this often
+  structure_refresh_hours: 72               # re-read name, owner and system of each structure this often
+  max_asset_pages: 20                       # 1000 assets per page
+  concurrency: 4
