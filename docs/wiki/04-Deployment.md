@@ -24,8 +24,8 @@ The image is a Linux image; it runs on a Linux VM and on Windows/macOS through D
 | Prebuilt from GHCR (after CI) | `EVEDM_IMAGE=ghcr.io/<owner>/<repo>:latest docker compose -f deploy/docker-compose.yml up -d` |
 | Try without an EVE app | `docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=x evedm:0.7.0` |
 
-Resource limits are part of the compose files: `cpus: 2`, `memory: 1g`. The host port is `EVEDM_PUBLISH` in `.env`
-(default `8080`; `deploy/docker-compose.yml` defaults to `127.0.0.1:8080`).
+Resource limits are part of the compose files: `cpus: 2`, `memory: 1g` (`EVEDM_CPUS`, `EVEDM_MEMORY` in `.env`).
+The host port is `EVEDM_PUBLISH` in `.env` (default `8080`; `deploy/docker-compose.yml` defaults to `127.0.0.1:8080`).
 
 ### Linux VM, build from source
 
@@ -39,6 +39,8 @@ scripts/update.sh --no-pull                         # chown data/ to uid 10001, 
 
 - Port 8080 taken: `EVEDM_PUBLISH=8082` and `EVE_CALLBACK_URL=http://<vm address>:8082/sso/callback`, the address
   you type in the browser. Add exactly that callback URL to your EVE application.
+- `Range of CPUs is from 0.01 to 1.00`: the VM has one vCPU; set `EVEDM_CPUS=1` in `.env` (memory: `EVEDM_MEMORY`,
+  default `1g`). One vCPU is enough for a few players.
 - Firewall: `sudo ufw allow 8082/tcp` (only on a private network; for remote access use Tailscale, section 4).
 - Later updates: `scripts/update.sh` (git pull, rebuild, restart, health check).
 - A second instance has its own database: sign in and add the characters there, or move a whole database

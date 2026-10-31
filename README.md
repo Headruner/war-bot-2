@@ -84,6 +84,7 @@ The shipped image in `image/` is the older 0.3.0 (no accounts, no Wars page); lo
 | `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET` | — | your EVE application |
 | `EVE_CALLBACK_URL` | `http://localhost:8080/sso/callback` | must match the application |
 | `EVEDM_PUBLISH` | `8080` | host port of `docker compose` (e.g. `8082` when 8080 is taken; change the callback too) |
+| `EVEDM_CPUS`, `EVEDM_MEMORY` | `2`, `1g` | container limits of `docker compose` (`EVEDM_CPUS=1` on a 1-vCPU host) |
 | `EVEDM_ALLOWED_LOGIN_CHARACTERS` | empty (anyone) | comma-separated character IDs allowed to sign in as a main |
 | `EVEDM_WARS_CONFIG` | `config/wars.yaml` next to `EVEDM_CONFIG` | war watcher settings file |
 | `EVEDM_WARS_ENABLED` | `true` in `config/wars.yaml` | `0` switches the war watcher off |
