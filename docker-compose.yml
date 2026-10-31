@@ -17,8 +17,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2"
-          memory: 1g
+          cpus: "${EVEDM_CPUS:-2}"      # at most the host's CPU count (a 1-vCPU VM: EVEDM_CPUS=1)
+          memory: ${EVEDM_MEMORY:-1g}
     logging:
       driver: json-file
       options: { max-size: "5m", max-file: "3" }
