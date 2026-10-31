@@ -4,7 +4,7 @@
 services:
   evedm:
     build: .
-    image: evedm:0.6.0
+    image: evedm:0.7.0
     container_name: evedm
     restart: unless-stopped
     env_file: [.env]

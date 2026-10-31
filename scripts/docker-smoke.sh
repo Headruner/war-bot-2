@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Smoke test for the image: 2 CPU / 1 GB limits, host folder mounted as /app/data, demo mode,
 # non-root user, SQLite in WAL mode, war watcher config, data kept across a restart.
-#   scripts/docker-smoke.sh [image]        (default evedm:0.6.0)
+#   scripts/docker-smoke.sh [image]        (default evedm:0.7.0)
 set -euo pipefail
-IMAGE="${1:-evedm:0.6.0}"
+IMAGE="${1:-evedm:0.7.0}"
 NAME="evedm-smoke-$$"
 DATA="$(mktemp -d)"
 chmod 0777 "$DATA"   # the container runs as uid 10001 (non-root)

@@ -43,7 +43,7 @@ class EveSettings:
     sso_base: str = "https://login.eveonline.com"
     esi_base: str = "https://esi.evetech.net"
     compatibility_date: str = "2025-09-30"
-    user_agent: str = "EVE-Distance-Meter/0.6 (+https://github.com/Headruner/war-bot-2)"
+    user_agent: str = "EVE-Distance-Meter/0.7 (+https://github.com/Headruner/war-bot-2)"
     max_concurrency: int = 20
     timeout_s: float = 10.0
     jwt_issuers: list[str] = field(default_factory=lambda: ["https://login.eveonline.com", "login.eveonline.com"])
