@@ -3,10 +3,12 @@
 title C3 · Components of the web app (package evedm)
 LAYOUT_TOP_DOWN()
 
-Container(spa, "Browser UI", "JS", "rank.js, map.js, characters.js")
+Container(spa, "Browser UI", "JS", "rank.js, map.js, characters.js, wars.js, structures.js, alerts.js, prefs.js")
 ContainerDb(db, "SQLite", "evedm.sqlite3")
 System_Ext(sso, "EVE SSO")
 System_Ext(esi, "ESI")
+System_Ext(zkb, "zKillboard R2Z2")
+System_Ext(discord, "Discord webhook")
 
 Container_Boundary(web, "Web app") {
   Component(routes, "Routes", "web/app.py", "Pages, /api/*, /sso/*, session sign-in, CSRF header check")
@@ -19,8 +21,11 @@ Container_Boundary(web, "Web app") {
   Component(auth, "AuthService", "sso.py", "Authorize URL, code exchange, refresh, revoke, JWT validation via JWKS")
   Component(esiclient, "EsiClient", "esi.py", "Expires/ETag cache, request coalescing, 429/420 handling, concurrency limit")
   Component(cipher, "TokenCipher", "crypto.py", "Fernet encryption at rest, log redaction")
-  Component(store, "Database", "db.py", "Schema v1, migrations, batched snapshot writes")
+  Component(store, "Database", "db.py", "Schema v6, migration chain, batched snapshot writes")
   Component(launch, "Logs + LaunchRecorder", "logs.py", "Rotating log, launches table + launches.jsonl, RSS")
+  Component(wars, "WarService", "wars/", "New wars, census, statistics, StructureIndex (EVE Ref + scout finds)")
+  Component(scout, "StructureScout", "scout.py", "Assets of every character -> /universe/structures, positions")
+  Component(alerts, "AlertService + R2Z2Feed", "alerts.py", "Follows the killmail feed, classifies destroyed / combat / firing, stores, posts to Discord")
 }
 
 Rel(spa, routes, "HTTPS")
@@ -42,5 +47,14 @@ Rel(store, db, "sqlite3")
 Rel(auth, sso, "HTTPS")
 Rel(esiclient, esi, "HTTPS")
 Rel(routes, launch, "start / stop")
+Rel(routes, alerts, "alerts by structure")
+Rel(routes, esiclient, "Set destination (POST /ui/autopilot/waypoint)")
+Rel(alerts, zkb, "sequence.json, {n}.json", "HTTPS")
+Rel(alerts, esiclient, "types, groups, killmails, names")
+Rel(alerts, scout, "known structures")
+Rel(alerts, wars, "StructureIndex")
+Rel(alerts, discord, "embeds", "HTTPS")
+Rel(scout, esiclient, "assets, structures")
+Rel(alerts, store, "structure_alerts")
 SHOW_LEGEND()
 @enduml

@@ -1,0 +1,36 @@
+@startuml seq-structure-alert
+title Structure alert -> closest character -> Set destination (0.7)
+autonumber
+actor "Player" as user
+participant "Browser\n(alerts.js)" as ui
+participant "Web app\n(app.py)" as web
+participant "AlertService" as alerts
+participant "zKillboard R2Z2" as zkb
+participant "ESI" as esi
+participant "Discord" as discord
+database "SQLite" as db
+
+== background, every poll_s (>= 6 s) ==
+alerts -> zkb : GET {sequence}.json (User-Agent)
+zkb --> alerts : killmail package (or 404 = caught up)
+alerts -> esi : /universe/types, /universe/groups (cached in type_groups)
+alerts -> alerts : victim is a structure? -> destroyed (+ core drop)\nkill within grid_km of a known structure? -> combat\nstructure among attackers? -> firing
+alerts -> db : INSERT OR IGNORE structure_alerts
+opt Discord enabled
+  alerts -> discord : embed + link /alerts#alert-<id>
+end
+
+== the player looks ==
+ui -> web : GET /api/alerts (every 30 s)
+web -> db : recent alerts, the main's characters + snapshots
+web -> web : one BFS per alert system -> 3 closest characters
+web --> ui : groups by structure, closest characters, can_set_route
+ui -> user : card + desktop notification / sound for new alerts
+
+== Set destination ==
+user -> ui : "Set destination" (online character)
+ui -> web : POST /api/characters/{id}/destination {destination_id}
+web -> esi : POST /ui/autopilot/waypoint (character token,\nclear_other_waypoints=true)
+esi --> web : 204 (404 when offline -> 502 "is the character online?")
+web --> ui : destination set to <system>
+@enduml

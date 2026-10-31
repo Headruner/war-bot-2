@@ -2,7 +2,7 @@
 
 | Task | Command |
 | --- | --- |
-| Health | `curl http://localhost:8080/api/health` (status, RSS, ESI stats, universe build) |
+| Health | `curl http://localhost:8080/api/health` (status, RSS, ESI stats, universe build, war watcher, scout, alert feed) |
 | Launch history | `docker exec evedm evedm launches` or `GET /api/launches` |
 | Logs | `/app/data/logs/evedm.log` (rotating), `docker logs evedm` |
 | Self-check | `docker exec evedm evedm check` (dependencies, absolute resource paths, data dir writable) |
@@ -21,4 +21,8 @@
 | Sign-in refused (`not_allowed`) | add your character ID to `EVEDM_ALLOWED_LOGIN_CHARACTERS` |
 | `invalid_state` after sign-in | the login took longer than 10 minutes or the page was reloaded; start again |
 | Log says `journal_mode=WAL unavailable` | the mounted filesystem cannot share WAL memory (some Windows bind mounts); the app already fell back to `delete`. Use a named volume to get WAL |
+| Alerts page says "live feed not running" or shows `last error` | `docker logs evedm` for `zKillboard`: no internet from the container, or 403/429 (the feed pauses 10 minutes by itself). `GET /api/health` shows `alerts.polls` growing while it works |
+| No **combat** alerts for a structure | combat needs the structure's position: it comes from the Structures page (a registered character has assets there) or the public dataset. Destroyed and firing work without it |
+| **Set destination** greyed out | offline character, or it has not granted `esi-ui.write_waypoint.v1`: tick the scope on the EVE application, then Add character again |
+| **Set destination** answers "ESI refused (404): is the character online?" | ESI only accepts waypoints for a logged-in character; the online state shown can be up to a minute old |
 | `data directory /app/data is not writable by uid 10001` | Linux host folder owned by another user: `sudo chown -R 10001:10001 data`, or use a named volume |

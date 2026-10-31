@@ -4,7 +4,7 @@ EVE Distance Meter answers one question: **when a notification names a solar sys
 fewest stargate jumps away, what is it flying, and which way would it go?** You then log that character in yourself.
 
 Requirements use EARS phrasing. Priority: **M** Must, **S** Should, **C** Could. *Status* and *Verified by* trace each
-requirement to the code and to the automated tests in this repository (0.3.0).
+requirement to the code and to the automated tests in this repository (0.3.0, extended up to 0.7.0).
 
 ## Decisions
 
@@ -17,7 +17,8 @@ requirement to the code and to the automated tests in this repository (0.3.0).
 | D5 | Each instance keeps its own encrypted local store; characters move between instances with a JSON bundle. |
 | D6 | Both UIs use the same SSO flow (authorization code + client secret), so bundles are interchangeable. |
 | D7 | The star map is a 2D top-down projection of SDE coordinates, drawn by the app (canvas). No external map or route site. |
-| D8 | The app never writes to the game client (no autopilot or waypoint calls); characters are assumed to be logged off. |
+| D8 | The app writes to the game client only when the user asks: **Set destination** sets the autopilot destination of an online character (`esi-ui.write_waypoint.v1`, revised in 0.7.0; until then the app never wrote to the client). Nothing else is sent, and nothing is sent on its own. |
+| D9 | Structure attack timers are not public (only the owner corporation's directors get them). Structure alerts use public killmails from zKillboard's live feed instead: destroyed, combat on grid, structure firing (0.7.0). |
 
 ## Use cases
 
@@ -31,6 +32,9 @@ requirement to the code and to the automated tests in this repository (0.3.0).
 | UC-06 | Manage characters (enable/disable, tags, remove) | yes |
 | UC-07 | Re-authorize a character whose token was revoked | yes (via Add character) |
 | UC-08 | Sign in to the Web UI | yes |
+| UC-09 | Sign in with a main; link alts to it; stay signed in | 0.4.0 |
+| UC-10 | Follow wars and high-sec structures of warring corporations | 0.4.0, statistics 0.5.0 |
+| UC-11 | React to a structure alert: see what happened where, pick the closest character, set its destination | 0.7.0 |
 
 ## Functional requirements
 
@@ -94,6 +98,7 @@ requirement to the code and to the automated tests in this repository (0.3.0).
 | RTE-04 | The system shall not route through systems in `avoid_systems` (default Zarzakh); they stay valid origins/targets. | S | done | test_avoided_system_is_not_used_for_transit… |
 | RTE-05 | The system shall load the universe from CCP static data and rebuild it with `evedm universe fetch`. | M | done (manual command) | test_build_from_current_sde_jsonl |
 | RTE-07 | The system shall offer Safer / LessSecure routes through ESI `POST /route`. | C | planned | — |
+| RTE-08 | When the user presses **Set destination** for a character, the system shall call ESI `POST /ui/autopilot/waypoint` with `destination_id` (the target system), `clear_other_waypoints=true`, `add_to_beginning=false`, using that character's token. The button is offered in the ranking route bar and on the Alerts page, disabled for offline characters and for characters without `esi-ui.write_waypoint.v1` (with the reason shown). Only the signed-in main's own characters can be steered (404 otherwise); ESI refusal → 502 "is the character online?", token problem → 409; demo mode answers "simulated". | S | done (0.7.0) | test_destination_requires_the_scope…, test_set_destination_in_demo_and_bad_input, test_esi_post_auth_sets_the_waypoint_in_the_fake, test_alerts_e2e, browser test |
 
 ### Ranking and star map (UC-04)
 
@@ -174,7 +179,26 @@ requirement to the code and to the automated tests in this repository (0.3.0).
 | STR-05 | Structures found by the scout shall also feed the war structure lists (deduplicated with the public dataset). | S | done (0.6.0) | test_discovered_structures_join_the_war_lists, test_structures_page_and_api_in_demo |
 | STR-06 | EVE SSO errors (e.g. `invalid_scope`) shall be shown with a hint instead of "invalid_state". | S | done (0.6.0) | test_sign_in_asks_for_structure_scopes_and_reports_sso_errors |
 | WAR-16 | War statistics and lists shall show names, never bare IDs (names resolved during the scan and on demand, 3 s limit, stand-in "Corporation 98000001" until known), and link wars, corporations and alliances to zKillboard. | M | done (0.6.0) | test_names_are_resolved_on_demand…, test_names_appear_page_by_page…, test_stats_api_resolves_missing_names_first |
-| PRF-01 | The browser shall remember the Wars tab and filters, the map options (names, other characters, stargate links) and the ranking auto-refresh interval in one first-party cookie (`evedm_prefs`, one year, SameSite=Lax); nothing is stored on the server; an unreadable cookie means defaults. | S | done (0.5.0) | test_wars_tabs_and_filters_survive_a_reload, test_map_options_and_auto_refresh_are_remembered, test_broken_prefs_cookie… |
+### Structure alerts (UC-11, added in 0.7.0)
+
+| ID | Requirement | P | Status | Verified by |
+| --- | --- | --- | --- | --- |
+| ALR-01 | Where `alerts.enabled`, the system shall follow zKillboard's live feed R2Z2 (`sequence.json`, then `{n}.json`), start at the published position, keep its position across restarts (restart at the pointer when older than 20 h), skip a missing file when newer ones exist, wait `poll_s` (≥ 6 s) when caught up, read at most `max_per_poll` files per poll and send a User-Agent with version and `alerts.contact`. | M | done | test_feed_starts_at_the_pointer…, test_feed_skips_gaps…, test_feed_restarts_at_the_pointer… |
+| ALR-02 | When R2Z2 answers 403 or 429, the system shall pause the feed for 10 minutes; network errors and odd files shall not stop it. | M | done | test_feed_limits_each_poll_and_backs_off_when_refused, test_poll_once_reads_the_feed_and_posts |
+| ALR-03 | When a killmail's victim is an Upwell structure (inventory category 65), the system shall raise a **destroyed** alert, marked **core drop** for citadels, engineering complexes and refineries, matched to the known structure of that system, owner and type (nearest by position), and mark that structure destroyed. | M | done | test_destroyed_citadel_is_matched_and_drops_a_core |
+| ALR-04 | When a ship dies within `grid_km` (default 1000 km) of a known structure with a known position, the system shall raise a **combat** alert for that structure with the distance. | M | done | test_combat_on_grid_uses_positions |
+| ALR-05 | When an Upwell structure is on a killmail's attacker list, the system shall raise a **firing** alert (known structure matched, otherwise shown as "unknown <type>"). | M | done | test_structures_on_the_attacker_list_are_firing |
+| ALR-06 | Known structures shall come from the public structure dataset and the structure scout (positions from ESI and EVE Ref); killmails without a body are read from ESI by ID and hash; type groups are cached in the database; each killmail raises each alert once. | M | done | test_killmail_body_is_fetched…, test_type_lookups_are_cached_in_the_database |
+| ALR-07 | The Alerts page and `GET /api/alerts` shall group alerts by structure, newest first, with kind counts, owner and killmails linked to zKillboard, and the signed-in main's three closest characters by gates (last known location, online first on ties) with a Set destination button each; filters for kinds, core drops only, space and period, kept in the browser cookie. | M | done | test_alerts_page_and_api_in_demo, test_destination_requires_the_scope…, browser test |
+| ALR-08 | The page shall refresh every 30 s and, when the user allows it, show a desktop notification and/or play a sound for alerts newer than the last one seen in this browser; a Discord link `#alert-<id>` opens the card of that alert. | S | done | test_alerts_page_filters_deep_links_and_offline_characters |
+| ALR-09 | Where `alerts.discord.enabled`, the system shall post alerts of `alerts.discord.kinds` to the webhook with a link to the Alerts page, at most one combat/firing post per structure within `combat_cooldown_min`, pinging `mention_role_id` on destroyed only; a failed post stays queued, an invalid webhook is reported (redacted). | S | done | test_discord_posts_kinds_cooldown_and_mentions, test_discord_failures_keep_alerts_queued |
+| ALR-10 | Alerts shall be kept `retention_days` (default 7); settings are validated at start-up (`poll_s` ≥ 6, positive grid and retention, known kinds, webhook present when Discord is on). | M | done | test_names_describe_and_purge, test_alert_settings_are_validated |
+
+### Browser preferences
+
+| ID | Requirement | P | Status | Verified by |
+| --- | --- | --- | --- | --- |
+| PRF-01 | The browser shall remember the Wars tab and filters, the Structures and Alerts filters, the Alerts notification and sound choice, the map options (names, other characters, stargate links) and the ranking auto-refresh interval in one first-party cookie (`evedm_prefs`, one year, SameSite=Lax); nothing is stored on the server; an unreadable cookie means defaults. | S | done (0.5.0) | test_wars_tabs_and_filters_survive_a_reload, test_map_options_and_auto_refresh_are_remembered, test_broken_prefs_cookie… |
 
 ## Non-functional requirements
 
@@ -185,7 +209,7 @@ requirement to the code and to the automated tests in this repository (0.3.0).
 | NFR-03 | ESI: User-Agent, X-Compatibility-Date, rate-limit headers, Retry-After on 429, back-off on 420. | implemented, tested |
 | NFR-04 | Works without access to CCP static data at runtime. | universe file bundled in the package |
 | NFR-08 | Runs within 2 vCPU / 1 GB RAM. | container peak RSS 77.5 MB (cgroup 55 MiB), p95 83 ms at 422 req/s (WAL) |
-| NFR-06 | Core unit tests for BFS, resolver, bundle, sort order, token refresh, accounts, war watcher. | 0.6.0: 207 unit, 17 integration (6 process + 11 browser), 1 footprint; scenario matrix in 03-Testing |
+| NFR-06 | Core unit tests for BFS, resolver, bundle, sort order, token refresh, accounts, war watcher, structure scout, structure alerts. | 0.7.0: 235 unit, 20 integration (7 process + 13 browser), 1 footprint; scenario matrix in 03-Testing |
 
 ## Acceptance criteria → tests
 
@@ -205,3 +229,4 @@ requirement to the code and to the automated tests in this repository (0.3.0).
 | AC-12 | Web UI access control | test_e2e steps 1–3, test_sso_mode_requires_sign_in |
 | AC-13 | Clicking a character draws its route on the map | test_ui::test_ranking_list_and_map |
 | AC-14 | Runs within 2 vCPU / 1 GB | tests/perf + scripts/docker-smoke.sh |
+| AC-15 | A citadel dies in a feed killmail → Alerts page shows it with core drop and the closest character → Set destination reaches ESI for an online character, offline gives a clear error | test_alerts_e2e::test_feed_alerts_closest_characters_and_set_destination |

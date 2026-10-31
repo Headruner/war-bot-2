@@ -1,17 +1,20 @@
 @startuml c2-containers
 !include <C4/C4_Container>
-title C2 · Containers · EVE Distance Meter 0.3
+title C2 · Containers · EVE Distance Meter 0.7
 LAYOUT_TOP_DOWN()
 
 Person(user, "EVE player", "Browser on PC or phone")
 System_Ext(sso, "EVE SSO", "OAuth 2.0 + JWKS")
 System_Ext(esi, "ESI", "REST API")
 System_Ext(sde, "CCP static data", "SDE JSONL zip")
+System_Ext(zkb, "zKillboard R2Z2", "live killmail feed")
+System_Ext(everef, "EVE Ref", "structure dataset")
+System_Ext(discord, "Discord", "webhooks")
 
 System_Boundary(evedm, "EVE Distance Meter") {
-  Container(spa, "Browser UI", "HTML, vanilla JS, canvas", "Character list on the left, 2D star map on the right, paste dialog, characters page")
-  Container(web, "Web app", "Python 3.12, FastAPI, uvicorn (1 process)", "Pages + JSON API, EVE SSO, token lifecycle, ranking, routing")
-  ContainerDb(db, "Database", "SQLite, one file, WAL, /app/data volume", "characters, encrypted tokens, snapshots, launches, SSO states")
+  Container(spa, "Browser UI", "HTML, vanilla JS, canvas", "Ranking + star map, characters, Wars, Structures and Alerts pages; settings in a browser cookie; desktop notifications")
+  Container(web, "Web app", "Python 3.12, FastAPI, uvicorn (1 process)", "Pages + JSON API, accounts, EVE SSO, token lifecycle, ranking, routing, Set destination; background war watcher, structure scout and alert service")
+  ContainerDb(db, "Database", "SQLite, one file, WAL, /app/data volume", "users, character links, encrypted tokens, snapshots, wars, known structures, structure alerts, names, launches")
   Container(universe, "Universe data", "gzip JSON, 160 KB", "8 036 systems, 6 888 gate links, ship names; bundled, rebuilt from the SDE")
   Container(cli, "CLI", "evedm (same package)", "serve, rank, import/export, db seed-demo, universe fetch/build, launches, healthcheck")
   Container(desktop, "Desktop app (planned, M3)", "PySide6", "Same core library, local store, loopback SSO")
@@ -24,7 +27,10 @@ Rel(web, universe, "loads at start")
 Rel(cli, db, "reads / writes")
 Rel(cli, sde, "universe fetch", "HTTPS")
 Rel(web, sso, "code exchange, refresh, JWKS", "HTTPS")
-Rel(web, esi, "location / ship / online", "HTTPS")
+Rel(web, esi, "character state, assets, structures, wars, killmails, waypoint", "HTTPS")
+Rel(web, zkb, "killmail feed", "HTTPS")
+Rel(web, everef, "structures", "HTTPS")
+Rel(web, discord, "posts", "HTTPS")
 Rel(desktop, universe, "loads")
 SHOW_LEGEND()
 @enduml

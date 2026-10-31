@@ -6,8 +6,9 @@ route of the selected character on a **2D star map**: character list on the left
 ![Ranking view: list left, star map right](docs/screenshots/ranking-desktop.png)
 
 You read a notification (for example in the Discord channel of your existing bot), type the system or paste the message,
-and decide which character to log in. Nothing is sent to the game client; routes are computed in the app from CCP's
-static data (shortest path by gates, same as "Shortest" on route planners).
+and decide which character to log in. Routes are computed in the app from CCP's static data (shortest path by gates,
+same as "Shortest" on route planners). The only thing ever sent to the game client is an autopilot destination, and only
+when you press **Set destination** for an online character.
 
 ## Features
 
@@ -19,7 +20,15 @@ static data (shortest path by gates, same as "Shortest" on route planners).
   both sides sorted by jumps from your nearest character.
 - **Structures page** (structure scout): every player-owned structure in any space where a registered character has
   assets (ESI assets + structure info), shared by all users, nearest first, owners at war marked.
-- **Remembered per browser** (cookie): Wars tab and filters, Structures filters, map options, ranking auto-refresh.
+- **Structure alerts** (Alerts page): zKillboard's live killmail feed shows structures **destroyed** (citadels,
+  engineering complexes and refineries drop their quantum core), **combat** within 1000 km of a known structure, and
+  structures **firing**, in all space. Each alert lists your three closest characters; browser notification, sound
+  and an optional Discord webhook. Attack timers themselves are not public, so these killmail signals are the hint.
+  ([screenshot](docs/screenshots/alerts-desktop.png))
+- **Set destination**: one click sets the in-game autopilot destination of an online character (ranking route bar
+  and Alerts page; scope `esi-ui.write_waypoint.v1`).
+- **Remembered per browser** (cookie): Alerts filters and notification choice, Wars tab and filters, Structures
+  filters, map options, ranking auto-refresh.
 - **JSON import/export** of characters with refresh and access tokens (schema `evedm-characters` v1), with a per-character report.
 - Target by **autocomplete** or by **pasting text**: Dotlan links, in-game `showinfo` links, zKillboard links and plain names.
 - Ranking by jumps (unreachable J-space / Pochven last), ship, docked / in space, online / last seen, **Closest** badge.
@@ -35,8 +44,8 @@ static data (shortest path by gates, same as "Shortest" on route planners).
 ### Demo (no EVE application needed)
 
 ```
-docker build -t evedm:0.6.0 .
-docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo evedm:0.6.0
+docker build -t evedm:0.7.0 .
+docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo evedm:0.7.0
 ```
 
 Open <http://localhost:8080/?target=Tama>. Or without Docker:
@@ -54,7 +63,8 @@ A ready-made demo database is in [`data/demo/evedm.sqlite3`](data/demo) (key `de
 
 1. Create an application at <https://developers.eveonline.com/applications> with callback `http://<host>:8080/sso/callback`
    and scopes `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
-   `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1` (the last two for the Structures page).
+   `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1` (Structures page) and `esi-ui.write_waypoint.v1`
+   (Set destination). Characters signed in before a scope was added: **Add character** again to grant it.
 2. `cp .env.example .env` and fill in `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET`, `EVEDM_SECRET_KEY`, `EVEDM_ALLOWED_LOGIN_CHARACTERS`.
 3. `docker compose up -d --build` (Linux or Windows with Docker Desktop). Data stays in `./data` on the host, mounted at
    `/app/data` (one-file SQLite database in WAL mode + logs). On a Linux host run `sudo chown -R 10001:10001 data` once:
@@ -77,8 +87,12 @@ The shipped image in `image/` is the older 0.3.0 (no accounts, no Wars page); lo
 | `EVEDM_WARS_ENABLED` | `true` in `config/wars.yaml` | `0` switches the war watcher off |
 | `EVEDM_WARS_DISCORD_ENABLED`, `EVEDM_WARS_DISCORD_WEBHOOK` | `0`, empty | post new wars to a Discord channel |
 | `EVEDM_PUBLIC_URL` | from `EVE_CALLBACK_URL` | address of the site, used in Discord links to the Wars page |
-| `EVE_OPTIONAL_SCOPES` | `esi-universe.read_structures.v1 esi-assets.read_assets.v1` | extra scopes for the structure scout; `none` = only the ranking scopes |
+| `EVE_OPTIONAL_SCOPES` | `esi-universe.read_structures.v1 esi-assets.read_assets.v1 esi-ui.write_waypoint.v1` | extra scopes (structure scout, Set destination); `none` = only the ranking scopes |
 | `EVEDM_STRUCTURES_ENABLED` | `1` | `0` switches the structure scout and the Structures page off |
+| `EVEDM_ALERTS_ENABLED` | `1` | `0` switches structure alerts and the Alerts page off |
+| `EVEDM_ALERTS_CONTACT` | empty | added to the User-Agent zKillboard sees |
+| `EVEDM_ALERTS_GRID_KM` | `1000` | a kill this close to a known structure is "combat" |
+| `EVEDM_ALERTS_DISCORD_ENABLED`, `EVEDM_ALERTS_DISCORD_WEBHOOK`, `EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID` | `0`, empty, empty | post alerts to Discord; the role is pinged on "destroyed" |
 | `EVEDM_DEMO` | `0` | `1` = fictional characters, no EVE application |
 | `EVEDM_DATA_DIR` | `/app/data` (image), `./data` (local) | one-file SQLite DB and logs |
 | `EVEDM_SQLITE_JOURNAL` | `wal` | falls back to `delete` automatically (logged) where WAL is unsupported |
@@ -116,7 +130,8 @@ The project follows the [architecture guidelines](docs/guidelines/architecture.m
 ## Project layout
 
 ```
-src/evedm/            core + web app (universe, resolver, sso, esi, characters, bundle, ranking, db, logs, demo, cli, web/)
+src/evedm/            core + web app (universe, resolver, sso, esi, characters, bundle, ranking, scout, alerts, db,
+                      logs, demo, cli, wars/, web/)
 src/evedm/data/       universe.json.gz (systems, gates, ship names from CCP static data)
 tests/                unit/, integration/ (processes + browser), perf/, fake_eve.py
 docs/                 wiki/, c4/ (PlantUML), diagrams/ (SVG/PNG), screenshots/
