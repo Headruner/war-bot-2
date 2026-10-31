@@ -12,7 +12,7 @@ docker version --format '{{.Server.Os}}' >/dev/null 2>&1 \
 mkdir -p data
 if [ "$(stat -c %u data)" != "10001" ]; then  # the container runs as uid 10001 and must write to ./data
   echo "== data/ must belong to uid 10001 (the container user)"
-  sudo chown -R 10001:10001 data
+  if [ "$(id -u)" = "0" ]; then chown -R 10001:10001 data; else sudo chown -R 10001:10001 data; fi
 fi
 
 if [ "${1:-}" != "--no-pull" ]; then
