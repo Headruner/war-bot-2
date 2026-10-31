@@ -1,0 +1,24 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.18, pytest-9.2.0, pluggy-1.7.0
+rootdir: /root/w/evedm
+configfile: pyproject.toml
+plugins: anyio-4.15.1
+collected 235 items
+
+tests/unit/test_accounts_web.py ................                         [  6%]
+tests/unit/test_alerts.py ...........................                    [ 18%]
+tests/unit/test_bundle_ranking.py ..............                         [ 24%]
+tests/unit/test_census.py .................                              [ 31%]
+tests/unit/test_config_crypto_db.py ..................                   [ 39%]
+tests/unit/test_dependencies.py ........                                 [ 42%]
+tests/unit/test_resolver.py ..........                                   [ 46%]
+tests/unit/test_scout.py .............                                   [ 52%]
+tests/unit/test_sso_esi.py .............                                 [ 57%]
+tests/unit/test_universe.py ..................                           [ 65%]
+tests/unit/test_users.py .........                                       [ 69%]
+tests/unit/test_wars.py ................................................ [ 89%]
+.......                                                                  [ 92%]
+tests/unit/test_web_cli.py .................                             [100%]
+
+---- generated xml file: /root/w/evedm/logs/tests/20261031T085636Z-unit.xml ----
+============================= 235 passed in 23.20s =============================
