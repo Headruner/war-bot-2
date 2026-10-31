@@ -1,6 +1,7 @@
 # Build from source and run:   docker compose up -d --build
 # Data (one-file SQLite DB in WAL mode + logs) is kept in ./data on the host, mounted at /app/data.
 # Linux host folder: the container runs as uid 10001 -> sudo chown -R 10001:10001 ./data (Windows: no action).
+# Host port: EVEDM_PUBLISH in .env (default 8080), e.g. EVEDM_PUBLISH=8082 when 8080 is taken; EVE_CALLBACK_URL must match.
 services:
   evedm:
     build: .
@@ -9,7 +10,7 @@ services:
     restart: unless-stopped
     env_file: [.env]
     ports:
-      - "8080:8080"
+      - "${EVEDM_PUBLISH:-8080}:8080"   # [host address:]host port -> container port 8080
     volumes:
       - ./data:/app/data
       - ./config/wars.yaml:/app/config/wars.yaml:ro   # war watcher settings, edit without rebuilding
