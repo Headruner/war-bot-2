@@ -20,6 +20,16 @@ if [ "${1:-}" != "--no-pull" ]; then
   git pull --ff-only
 fi
 
+# Docker refuses a CPU limit above the host's CPU count: cap EVEDM_CPUS (environment, else .env, else 2) at nproc
+host_cpus="$(nproc)"
+want="${EVEDM_CPUS:-$(sed -n 's/^EVEDM_CPUS=//p' .env | tail -n 1 | tr -d '\r" ')}"
+want="${want:-2}"
+if awk -v w="$want" -v h="$host_cpus" 'BEGIN { exit !(w + 0 > h + 0) }'; then
+  echo "== EVEDM_CPUS=$want is more than this host's $host_cpus CPU(s): using $host_cpus"
+  want="$host_cpus"
+fi
+export EVEDM_CPUS="$want"
+
 echo "== docker compose up -d --build"
 docker compose up -d --build
 
