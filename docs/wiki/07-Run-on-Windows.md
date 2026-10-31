@@ -11,7 +11,8 @@ All commands are for **PowerShell**, run from the repository folder `C:\Users\<y
    docker version          # Server: OS/Arch must be linux/amd64
    docker compose version
    ```
-3. Port 8080 free: `netstat -ano | findstr :8080` (no output = free).
+3. Port 8080 free: `netstat -ano | findstr :8080` (no output = free). Otherwise pick another port for `EVEDM_PUBLISH`
+   in `.env` (step 4).
 
 ## 1. Get the image (pick A or B)
 
@@ -66,6 +67,7 @@ EVEDM_SECRET_KEY=<the generated value - keep it; tokens cannot be decrypted with
 EVE_CLIENT_ID=<client id>
 EVE_CLIENT_SECRET=<secret key>
 EVE_CALLBACK_URL=http://localhost:8080/sso/callback
+EVEDM_PUBLISH=8080          # port 8080 taken: 8081 here, and :8081 in EVE_CALLBACK_URL and on the EVE application
 EVEDM_ALLOWED_LOGIN_CHARACTERS=<your main character ID, comma-separated for several>
 EVEDM_DEMO=0
 EVEDM_SQLITE_JOURNAL=wal
@@ -77,7 +79,7 @@ EVEDM_WARS_DISCORD_WEBHOOK=
 ```
 Character ID: the number in your character's URL on zkillboard.com or evewho.com.
 Empty `EVEDM_ALLOWED_LOGIN_CHARACTERS` = any EVE character can sign in and get its own account (see section 9).
-Then bind the port to this PC only: `"127.0.0.1:8081:8080"` in `docker-compose.yml`.
+To reach the app from this PC only, bind it to the loopback address: `EVEDM_PUBLISH=127.0.0.1:8081`.
 
 ## 5. Start
 
@@ -124,7 +126,7 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
 | `checksum mismatch` | a part file is incomplete: delete `image\evedm-image-0.3.0-amd64.tar.gz`, restore the parts with `git checkout -- image`, retry |
 | `pull access denied for evedm, repository does not exist` | the image is not in Docker yet, so Docker tries Docker Hub. Do step 1 first (`docker build -t evedm:0.7.0 .`), check with `docker image ls evedm` |
 | `no matching manifest for windows/amd64` | Docker Desktop is in Windows-containers mode; switch to Linux containers |
-| `port is already allocated` | change `"8080:8080"` to `"8081:8080"` in `docker-compose.yml` and update `EVE_CALLBACK_URL` and the callback in your EVE application to port 8081 |
+| `port is already allocated` | set `EVEDM_PUBLISH=8081` in `.env` and update `EVE_CALLBACK_URL` and the callback in your EVE application to port 8081 |
 | `missing required settings` | `.env` lacks `EVEDM_SECRET_KEY`, `EVE_CLIENT_ID` or `EVE_CLIENT_SECRET` |
 | Sign-in refused (`not_allowed`) | add your character ID to `EVEDM_ALLOWED_LOGIN_CHARACTERS`, then `docker compose up -d` |
 | SSO error about redirect / callback | callback URL in the EVE application and `EVE_CALLBACK_URL` differ (scheme, host, port) |

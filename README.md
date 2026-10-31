@@ -66,7 +66,8 @@ A ready-made demo database is in [`data/demo/evedm.sqlite3`](data/demo) (key `de
    `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1` (Structures page) and `esi-ui.write_waypoint.v1`
    (Set destination). Characters signed in before a scope was added: **Add character** again to grant it.
 2. `cp .env.example .env` and fill in `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET`, `EVEDM_SECRET_KEY`, `EVEDM_ALLOWED_LOGIN_CHARACTERS`.
-3. `docker compose up -d --build` (Linux or Windows with Docker Desktop). Data stays in `./data` on the host, mounted at
+3. `docker compose up -d --build` (Linux or Windows with Docker Desktop; updates: `scripts/update.sh` on Linux,
+   `scripts\update.ps1` on Windows). Data stays in `./data` on the host, mounted at
    `/app/data` (one-file SQLite database in WAL mode + logs). On a Linux host run `sudo chown -R 10001:10001 data` once:
    the container runs as the non-root user 10001.
 4. Sign in, then **Characters > Add character** or **Import JSON**.
@@ -82,6 +83,7 @@ The shipped image in `image/` is the older 0.3.0 (no accounts, no Wars page); lo
 | `EVEDM_SECRET_KEY` | — (required) | encrypts tokens, signs sessions |
 | `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET` | — | your EVE application |
 | `EVE_CALLBACK_URL` | `http://localhost:8080/sso/callback` | must match the application |
+| `EVEDM_PUBLISH` | `8080` | host port of `docker compose` (e.g. `8082` when 8080 is taken; change the callback too) |
 | `EVEDM_ALLOWED_LOGIN_CHARACTERS` | empty (anyone) | comma-separated character IDs allowed to sign in as a main |
 | `EVEDM_WARS_CONFIG` | `config/wars.yaml` next to `EVEDM_CONFIG` | war watcher settings file |
 | `EVEDM_WARS_ENABLED` | `true` in `config/wars.yaml` | `0` switches the war watcher off |
@@ -136,7 +138,7 @@ src/evedm/data/       universe.json.gz (systems, gates, ship names from CCP stat
 tests/                unit/, integration/ (processes + browser), perf/, fake_eve.py
 docs/                 wiki/, c4/ (PlantUML), diagrams/ (SVG/PNG), screenshots/
 deploy/               docker-compose.yml for servers (named volume at /app/data)
-scripts/              run-tests, docker-smoke, render-diagrams, load-image
+scripts/              run-tests, docker-smoke, render-diagrams, load-image, update (.sh Linux, .ps1 Windows)
 data/demo/            prepopulated demo database
 logs/                 test, performance and launch logs
 ```
