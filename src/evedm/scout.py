@@ -181,14 +181,18 @@ class StructureScout:
                         return  # ESI trouble: retry next run
             now = time.time()
             if outcome == "ok" and body:
+                pos = body.get("position") or {}
                 self.db.execute(
                     "UPDATE known_structures SET name=?, owner_id=?, solar_system_id=?, type_id=?, status='ok', "
-                    "checked_at=? WHERE structure_id=?",
+                    "pos_x=?, pos_y=?, pos_z=?, checked_at=? WHERE structure_id=?",
                     (
                         body.get("name"),
                         body.get("owner_id"),
                         body.get("solar_system_id"),
                         body.get("type_id"),
+                        pos.get("x"),
+                        pos.get("y"),
+                        pos.get("z"),
                         now,
                         sid,
                     ),
@@ -260,6 +264,8 @@ class StructureScout:
                     "last_seen": r["last_seen"],
                     "checked_at": r["checked_at"],
                     "access": r["status"] == "ok",
+                    "position": (r["pos_x"], r["pos_y"], r["pos_z"]) if r["pos_x"] is not None else None,
+                    "destroyed_at": r["destroyed_at"],
                 }
             )
         self._rows = (self.version, out)
@@ -274,7 +280,12 @@ class StructureScout:
             if r["owner_id"]:
                 idx.setdefault(int(r["owner_id"]), []).append(
                     Structure(
-                        r["structure_id"], r["name"], int(r["type_id"] or 0), r["system"]["id"], int(r["owner_id"])
+                        r["structure_id"],
+                        r["name"],
+                        int(r["type_id"] or 0),
+                        r["system"]["id"],
+                        int(r["owner_id"]),
+                        r["position"],
                     )
                 )
         return idx
@@ -307,7 +318,7 @@ class StructureScout:
         rows = []
         for r in base:
             i, o = r["system_index"], origin[r["system_index"]]
-            item = {k: v for k, v in r.items() if k != "system_index"}
+            item = {k: v for k, v in r.items() if k not in ("system_index", "position")}
             item["jumps"] = dist[i] if dist[i] >= 0 else None
             item["nearest"] = None if o < 0 else {"system": self.g.names[o], "characters": sources.get(o, [])}
             item["wars"] = at_war.get(int(r["owner_id"] or 0), [])

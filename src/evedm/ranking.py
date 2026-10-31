@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .characters import REAUTH, CharacterService
+from .config import WAYPOINT_SCOPE
 from .db import CharacterRow, Database
 from .esi import EsiClient, EsiError
 from .sso import SsoError
@@ -227,6 +228,7 @@ class RankingService:
                 "route": None,
                 "route_summary": None,
                 "recommended": False,
+                "can_set_route": WAYPOINT_SCOPE in c.scopes or c.demo,
             }
             idx = self.g.index.get(s["solar_system_id"]) if s and s["solar_system_id"] else None
             if s is not None:

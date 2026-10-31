@@ -16,11 +16,12 @@ eve:
     - esi-location.read_location.v1
     - esi-location.read_ship_type.v1
     - esi-location.read_online.v1
-  optional_scopes:                          # structure scout (Structures page): tick both on your EVE application,
-    - esi-universe.read_structures.v1       # or set EVE_OPTIONAL_SCOPES=none to ask only for the scopes above
-    - esi-assets.read_assets.v1
+  optional_scopes:                          # tick these on your EVE application too, or set EVE_OPTIONAL_SCOPES=none
+    - esi-universe.read_structures.v1       # structure scout (Structures page)
+    - esi-assets.read_assets.v1             # structure scout (Structures page)
+    - esi-ui.write_waypoint.v1              # "Set destination" buttons (ranking route bar, Alerts page)
   compatibility_date: "2025-09-30"
-  user_agent: "EVE-Distance-Meter/0.6 (contact: change-me)"
+  user_agent: "EVE-Distance-Meter/0.7 (contact: change-me)"
   max_concurrency: 20                       # parallel ESI calls (rate limits are per character)
 
 web:
@@ -40,3 +41,18 @@ structures:                                 # structure scout: player-owned stru
   structure_refresh_hours: 72               # re-read name, owner and system of each structure this often
   max_asset_pages: 20                       # 1000 assets per page
   concurrency: 4
+
+alerts:                                     # structure alerts from zKillboard's live killmail feed (Alerts page)
+  enabled: ${EVEDM_ALERTS_ENABLED:-true}
+  feed_url: https://r2z2.zkillboard.com/ephemeral
+  poll_s: 10                                # wait after "no new killmail" (zKillboard asks for at least 6)
+  grid_km: 1000                             # a kill this close to a known structure counts as combat on its grid
+  retention_days: 7
+  max_per_poll: 300                         # killmails read per poll at most
+  contact: ${EVEDM_ALERTS_CONTACT:-}        # added to the User-Agent zKillboard sees (mail or Discord name)
+  discord:                                  # post alerts to a Discord channel too
+    enabled: ${EVEDM_ALERTS_DISCORD_ENABLED:-false}
+    webhook_url: ${EVEDM_ALERTS_DISCORD_WEBHOOK:-}   # secret: keep it in .env
+    mention_role_id: ${EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID:-}   # pinged on "destroyed" alerts only
+    kinds: [destroyed, combat, firing]
+    combat_cooldown_min: 30                 # one combat/firing post per structure within this time

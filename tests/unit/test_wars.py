@@ -572,12 +572,16 @@ def test_streaming_parser_handles_any_chunk_boundary(chunk):
         }
         for i in range(1, 60)
     }
+    doc["1"]["position"] = {"x": 1.0e12, "y": -5.5e9, "z": 3}  # EVE Ref v2 gives positions in meters
+    doc["2"]["position"] = {"y": 1}  # incomplete: no position
     doc["60"] = {"structure_id": 60, "name": "no owner"}  # ignored
     doc["61"] = {"structure_id": "x", "owner_id": 1, "type_id": 2}  # malformed: skipped
     for text in (json.dumps(doc, ensure_ascii=False), json.dumps(doc, indent=2), json.dumps(list(doc.values()))):
         index = build_index(("﻿" + text).encode("utf-8"), chunk)
         assert sum(len(v) for v in index.values()) == 59
         assert index[8][0].name.startswith("Jita - Ŧ")
+        by_id = {s.structure_id: s for items in index.values() for s in items}
+        assert by_id[1].position == (1.0e12, -5.5e9, 3.0) and by_id[2].position is None and by_id[3].position is None
 
 
 @pytest.mark.parametrize(

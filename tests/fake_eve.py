@@ -37,6 +37,31 @@ SHIP_NAMES = {
     670: "Capsule",
     99999: "Prototype Hull",
 }
+# type_id: (name, group_id); group_id: (name, category_id). Category 65 = Upwell structures.
+TYPES = {
+    35832: ("Astrahus", 1657),
+    35833: ("Fortizar", 1657),
+    35825: ("Raitaru", 1404),
+    35835: ("Athanor", 1406),
+    35836: ("Tatara", 1406),
+    35841: ("Ansiblex Jump Gate", 1408),
+    587: ("Rifter", 25),
+    22456: ("Sabre", 541),
+    29990: ("Loki", 963),
+    24702: ("Hurricane", 419),
+    670: ("Capsule", 29),
+}
+GROUPS = {
+    1657: ("Citadel", 65),
+    1404: ("Engineering Complex", 65),
+    1406: ("Refinery", 65),
+    1408: ("Jump Bridge", 65),
+    25: ("Frigate", 6),
+    541: ("Interdictor", 6),
+    963: ("Strategic Cruiser", 6),
+    419: ("Combat Battlecruiser", 6),
+    29: ("Capsule", 6),
+}
 SYSTEMS = [30000142, 30000144, 30002187, 30002659, 30002510, 30001161, 30004759, 30000163, 30002053]
 
 
@@ -69,6 +94,13 @@ class FakeState:
     structures: dict[int, dict[str, Any]] = field(default_factory=dict)
     corp_names: dict[int, str] = field(default_factory=dict)
     asset_page_size: int = 1000
+    waypoints: list[dict[str, Any]] = field(default_factory=list)  # autopilot destinations set via ESI
+    # killmails readable by id/hash, and zKillboard's R2Z2 feed (sequence -> package)
+    killmails: dict[tuple[int, str], dict[str, Any]] = field(default_factory=dict)
+    r2z2_files: dict[int, dict[str, Any]] = field(default_factory=dict)
+    r2z2_pointer: int = 5000
+    r2z2_next: int = 5000
+    r2z2_user_agents: set[str] = field(default_factory=set)
 
 
 def make_characters(n: int, seed: int = 7, systems: list[int] | None = None) -> dict[int, FakeCharacter]:
@@ -341,6 +373,64 @@ def create_fake_app(
         body = {k: v for k, v in st_.items() if k != "acl"}
         return esi_json(request, body, 3600)
 
+    @app.get("/universe/types/{tid}")
+    async def universe_type(tid: int) -> Response:
+        if tid not in TYPES:
+            return JSONResponse({"error": "Type not found"}, status_code=404)
+        return JSONResponse({"type_id": tid, "name": TYPES[tid][0], "group_id": TYPES[tid][1], "published": True})
+
+    @app.get("/universe/groups/{gid}")
+    async def universe_group(gid: int) -> Response:
+        if gid not in GROUPS:
+            return JSONResponse({"error": "Group not found"}, status_code=404)
+        return JSONResponse({"group_id": gid, "name": GROUPS[gid][0], "category_id": GROUPS[gid][1]})
+
+    @app.get("/killmails/{kid}/{khash}")
+    async def killmail(kid: int, khash: str) -> Response:
+        count("killmail")
+        km = st.killmails.get((kid, khash))
+        if km is None:
+            return JSONResponse({"error": "Invalid killmail_id and/or killmail_hash"}, status_code=422)
+        return JSONResponse(km)
+
+    @app.get("/r2z2/sequence.json")
+    async def r2z2_sequence(request: Request) -> Response:
+        st.r2z2_user_agents.add(request.headers.get("user-agent", ""))
+        return JSONResponse({"sequence": st.r2z2_pointer})
+
+    @app.get("/r2z2/{name}")
+    async def r2z2_file(request: Request, name: str) -> Response:
+        count("r2z2")
+        st.r2z2_user_agents.add(request.headers.get("user-agent", ""))
+        try:
+            seq = int(name.removesuffix(".json"))
+        except ValueError:
+            return Response(status_code=404)
+        pkg = st.r2z2_files.get(seq)
+        return JSONResponse(pkg) if pkg is not None else Response(status_code=404)
+
+    @app.post("/ui/autopilot/waypoint")
+    async def waypoint(
+        request: Request, destination_id: int, add_to_beginning: bool = False, clear_other_waypoints: bool = False
+    ) -> Response:
+        count("waypoint")
+        claims, err = token_claims(request, "esi-ui.write_waypoint.v1")
+        if err is not None:
+            return err
+        cid = int(str(claims["sub"]).rsplit(":", 1)[1])
+        c = st.characters.get(cid)
+        if c is None or not c.online:
+            return JSONResponse({"error": "Character is not online"}, status_code=404)
+        st.waypoints.append(
+            {
+                "character_id": cid,
+                "destination_id": destination_id,
+                "add_to_beginning": add_to_beginning,
+                "clear_other_waypoints": clear_other_waypoints,
+            }
+        )
+        return Response(status_code=204)
+
     # ------------------------------------------------------------------ test admin
     @app.post("/_admin/mint")
     async def admin_mint(request: Request) -> dict[str, Any]:
@@ -369,7 +459,22 @@ def create_fake_app(
         c = st.characters[cid]
         c.solar_system_id = int(body.get("solar_system_id", c.solar_system_id))
         c.ship_type_id = int(body.get("ship_type_id", c.ship_type_id))
+        if "online" in body:
+            c.online = bool(body["online"])
         return {"ok": True}
+
+    @app.post("/_admin/r2z2")
+    async def admin_r2z2(request: Request) -> dict[str, Any]:
+        """Publish killmail packages; sequence.json then points at the first of them (a fresh reader sees all)."""
+        body = await request.json()
+        first = st.r2z2_next
+        for pkg in body.get("packages") or []:
+            st.r2z2_files[st.r2z2_next] = pkg | {"sequence_id": st.r2z2_next}
+            st.r2z2_next += 1
+        st.r2z2_pointer = first
+        for item in body.get("killmails") or []:  # readable through ESI only (packages without the killmail body)
+            st.killmails[(int(item["killmail_id"]), str(item["hash"]))] = item["killmail"]
+        return {"first": first, "next": st.r2z2_next}
 
     @app.post("/_admin/config")
     async def admin_config(request: Request) -> dict[str, Any]:
@@ -393,7 +498,12 @@ def create_fake_app(
 
     @app.get("/_admin/stats")
     async def admin_stats() -> dict[str, Any]:
-        return {"calls": st.calls, "characters": len(st.characters)}
+        return {
+            "calls": st.calls,
+            "characters": len(st.characters),
+            "waypoints": st.waypoints,
+            "r2z2_user_agents": sorted(st.r2z2_user_agents),
+        }
 
     @app.get("/_admin/characters")
     async def admin_characters() -> list[dict[str, Any]]:

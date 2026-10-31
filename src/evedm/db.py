@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 log = logging.getLogger("evedm.db")
 
 SCHEMA = """
@@ -74,6 +74,10 @@ CREATE TABLE IF NOT EXISTS known_structures (
     solar_system_id INTEGER,
     type_id         INTEGER,
     status          TEXT NOT NULL DEFAULT 'new',   -- new | ok | no_access | gone
+    pos_x           REAL,                          -- position in meters (ESI), for "combat on grid"
+    pos_y           REAL,
+    pos_z           REAL,
+    destroyed_at    REAL,                          -- a killmail showed it destroyed
     first_seen      REAL NOT NULL,
     last_seen       REAL NOT NULL,
     checked_at      REAL NOT NULL DEFAULT 0
@@ -90,6 +94,38 @@ CREATE TABLE IF NOT EXISTS scout_characters (
     checked_at   REAL NOT NULL,
     structures   INTEGER NOT NULL DEFAULT 0,
     error        TEXT
+);
+-- structure alerts from zKillboard's live killmail feed
+CREATE TABLE IF NOT EXISTS structure_alerts (
+    alert_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind              TEXT NOT NULL,            -- destroyed | combat | firing
+    killmail_id       INTEGER NOT NULL,
+    killmail_hash     TEXT,
+    killmail_time     TEXT,
+    solar_system_id   INTEGER NOT NULL,
+    structure_id      INTEGER,                  -- known structure, when matched
+    structure_type_id INTEGER,
+    structure_name    TEXT,
+    owner_id          INTEGER,
+    distance_km       REAL,
+    victim_type_id    INTEGER,
+    victim_corp_id    INTEGER,
+    attackers         INTEGER,
+    isk               REAL,
+    core_drop         INTEGER NOT NULL DEFAULT 0,
+    created_at        REAL NOT NULL,
+    posted            INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS structure_alerts_unique ON structure_alerts(
+    kind, killmail_id, COALESCE(structure_id, 0), COALESCE(structure_type_id, 0), COALESCE(owner_id, 0));
+CREATE INDEX IF NOT EXISTS structure_alerts_by_time ON structure_alerts(created_at);
+-- type -> group -> category from ESI (is this an Upwell structure? does it drop a quantum core?)
+CREATE TABLE IF NOT EXISTS type_groups (
+    type_id     INTEGER PRIMARY KEY,
+    name        TEXT,
+    group_id    INTEGER,
+    group_name  TEXT,
+    category_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS type_names (
     type_id INTEGER PRIMARY KEY,
@@ -281,6 +317,12 @@ class Database:
             if stmt and not all(line.strip().startswith("--") or not line.strip() for line in stmt.splitlines()):
                 self._conn.execute(stmt)
 
+    def _add_columns(self, table: str, columns: dict[str, str]) -> None:
+        have = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns.items():
+            if name not in have:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
     def migrate(self) -> None:
         """0 -> create; 1 -> 2 per-main ownership (v1 rows to owner 0); 2 -> 3 war tables. One transaction."""
         with self._lock:
@@ -299,6 +341,10 @@ class Database:
                 else:
                     self._script(SCHEMA)
                 self._script(WAR_SCHEMA)
+                self._add_columns(  # v5 -> v6: structure positions for "combat on grid"
+                    "known_structures",
+                    {"pos_x": "REAL", "pos_y": "REAL", "pos_z": "REAL", "destroyed_at": "REAL"},
+                )
                 self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             except BaseException:
                 self._conn.execute("ROLLBACK")

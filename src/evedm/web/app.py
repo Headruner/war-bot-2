@@ -21,13 +21,14 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .. import __version__
+from ..alerts import AlertService, seed_demo_alerts
 from ..bundle import BundleRejected, export_bundle, import_bundle, report
 from ..characters import REAUTH, CharacterService
-from ..config import ConfigError, Settings
+from ..config import WAYPOINT_SCOPE, ConfigError, Settings
 from ..crypto import TokenCipher
 from ..db import Database
 from ..demo import seed_demo
-from ..esi import EsiClient
+from ..esi import EsiClient, EsiError
 from ..logs import LaunchRecorder, peak_rss_mb, rss_mb, setup_logging, trim_memory
 from ..ranking import DemoProvider, LiveProvider, RankingService
 from ..resolver import TargetResolver
@@ -59,6 +60,7 @@ class Services:
     started: float
     wars: WarService | None = None
     scout: StructureScout | None = None
+    alerts: AlertService | None = None
 
 
 class RequestCounter:
@@ -135,6 +137,31 @@ def build_wars(settings: Settings, ws: WarsSettings, svc: Services) -> WarServic
     return wars
 
 
+def build_alerts(settings: Settings, ws: WarsSettings, svc: Services) -> AlertService | None:
+    """Structure alerts from zKillboard's live killmail feed (demo mode: sample alerts, no feed)."""
+    if not settings.alerts.enabled:
+        return None
+    from ..wars.discord import DiscordNotifier
+    from ..wars.service import public_base
+
+    d = settings.alerts.discord
+    notifier = DiscordNotifier(d.webhook_url, 2) if d.enabled and not settings.demo else None
+    base = public_base(settings, ws)
+    alerts = AlertService(
+        settings.alerts,
+        svc.db,
+        svc.graph,
+        svc.esi,  # type: ignore[arg-type]
+        scout=svc.scout,
+        structure_index=svc.wars.structures if svc.wars is not None else None,
+        notifier=notifier,
+        page_url=f"{base}/alerts" if base else None,
+    )
+    if settings.demo:
+        seed_demo_alerts(svc.db, svc.graph)
+    return alerts
+
+
 def create_app(settings: Settings, wars_settings: WarsSettings | None = None) -> FastAPI:
     settings.validate_for_serve()
     ws = wars_settings if wars_settings is not None else load_wars_settings()
@@ -162,6 +189,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                 structures = svc.wars.structures
                 svc.scout.on_change.append(structures.set_discovered)  # private finds join the war lists
                 structures.set_discovered(svc.scout.index())
+        svc.alerts = build_alerts(settings, ws, svc)
         svc.launch.start(
             {
                 "universe": svc.graph.build,
@@ -174,9 +202,13 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             svc.wars.start()
         if svc.scout is not None and not settings.demo:
             svc.scout.start()
+        if svc.alerts is not None and not settings.demo:
+            svc.alerts.start()
         try:
             yield
         finally:
+            if svc.alerts is not None:
+                await svc.alerts.stop()
             if svc.scout is not None:
                 await svc.scout.stop()
             if svc.wars is not None:
@@ -268,6 +300,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             "session_days": settings.web.session_days,
             "wars_enabled": svc.wars is not None,
             "structures_enabled": svc.scout is not None,
+            "alerts_enabled": svc.alerts is not None,
         }
         return templates.TemplateResponse(request, name, base | ctx)
 
@@ -289,6 +322,14 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             error=request.query_params.get("error"),
             welcome=request.query_params.get("welcome"),
         )
+
+    @app.get("/alerts", response_class=HTMLResponse)
+    async def alerts_page(request: Request) -> Response:
+        if user_of(request) is None:
+            return RedirectResponse("/login", status_code=303)
+        if svc_of(request).alerts is None:
+            raise HTTPException(status_code=404, detail="structure alerts are disabled (alerts.enabled)")
+        return page(request, "alerts.html")
 
     @app.get("/structures", response_class=HTMLResponse)
     async def structures_page(request: Request) -> Response:
@@ -399,6 +440,9 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                 "structure_scout": None
                 if svc.scout is None
                 else {"running": svc.scout.state["running"], "cycles": svc.scout.state["cycles"]},
+                "alerts": None
+                if svc.alerts is None
+                else {"running": svc.alerts.state["running"], "polls": svc.alerts.state["polls"]},
             }
         )
 
@@ -548,6 +592,130 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         )
         result["wars_known"] = svc.wars is not None and svc.wars.census is not None
         return JSONResponse(result)
+
+    # ------------------------------------------------------------------ alerts + destinations
+    def closest_characters(svc: Services, uid: int, target: int, n: int = 3) -> list[dict[str, Any]]:
+        """The main's characters nearest to ``target`` by stargate jumps (last known locations)."""
+        chars = [c for c in svc.db.list_characters(uid) if c.enabled and c.status != REAUTH]
+        snaps = svc.db.get_snapshots([c.character_id for c in chars])
+        parent = svc.ranking._parents(target)  # cached BFS from the target, as the ranking uses
+        out = []
+        for c in chars:
+            snap = snaps.get(c.character_id)
+            idx = svc.graph.index.get(snap["solar_system_id"]) if snap and snap["solar_system_id"] else None
+            if idx is None:
+                continue
+            path = svc.graph.route(parent, idx)
+            if path is None:
+                continue
+            out.append(
+                {
+                    "character_id": c.character_id,
+                    "name": c.name,
+                    "jumps": len(path) - 1,
+                    "system": svc.graph.names[idx],
+                    "online": None if snap["online"] is None else bool(snap["online"]),
+                    "can_set_route": WAYPOINT_SCOPE in c.scopes or c.demo,
+                }
+            )
+        out.sort(key=lambda r: (r["jumps"], 0 if r["online"] else 1, r["name"].lower()))
+        return out[:n]
+
+    @app.get("/api/alerts")
+    async def list_alerts(
+        request: Request, hours: float = 24, kinds: str = "", space: str = "", core_only: int = 0, refresh: int = 1
+    ) -> JSONResponse:
+        """Structure alerts grouped by structure, newest first, each with the caller's closest characters."""
+        uid = owner(request)
+        svc = svc_of(request)
+        if svc.alerts is None:
+            raise HTTPException(status_code=404, detail="structure alerts are disabled (alerts.enabled)")
+        wanted = [k for k in kinds.split(",") if k in ("destroyed", "combat", "firing")]
+        rows = svc.alerts.recent(max(0.1, min(hours, 24 * 7)), wanted or None, limit=500)
+        chars = [c for c in svc.db.list_characters(uid) if c.enabled and c.status != REAUTH]
+        if refresh and chars:
+            await svc.ranking.refresh_states(chars, 1, uid)
+        groups: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            a = svc.alerts.describe(r)
+            idx = svc.graph.index.get(r["solar_system_id"])
+            if idx is None:
+                continue
+            a["system"]["space"] = "wormhole" if svc.graph.ids[idx] >= 31000000 else a["system"]["class"]
+            if space and a["system"]["space"] != space:
+                continue
+            key = (
+                f"s{r['structure_id']}"
+                if r["structure_id"]
+                else f"u{r['solar_system_id']}-{r['structure_type_id']}-{r['owner_id']}"
+            )
+            g = groups.get(key)
+            if g is None:
+                g = groups[key] = {
+                    "key": key,
+                    "structure": a["structure"],
+                    "system": a["system"],
+                    "owner": a["owner"],
+                    "latest": a["time"] or "",
+                    "latest_at": a["created_at"],
+                    "counts": {"destroyed": 0, "combat": 0, "firing": 0},
+                    "core_drop": False,
+                    "alerts": [],
+                    "closest": closest_characters(svc, uid, idx),
+                    "target_index": idx,
+                }
+            g["counts"][a["kind"]] += 1
+            g["core_drop"] = g["core_drop"] or a["core_drop"]
+            if len(g["alerts"]) < 6:
+                g["alerts"].append(a)
+        out = [g for g in groups.values() if not core_only or g["core_drop"]]
+        for g in out:
+            g.pop("target_index", None)
+            g["state"] = "destroyed" if g["counts"]["destroyed"] else ("combat" if g["counts"]["combat"] else "firing")
+        out.sort(key=lambda g: -g["latest_at"])
+        newest = max((r["alert_id"] for r in rows), default=0)
+        return JSONResponse(
+            {"groups": out, "newest_alert_id": newest, "feed": svc.alerts.state | {"stats": svc.alerts.feed.stats}}
+        )
+
+    @app.post("/api/characters/{character_id}/destination")
+    async def set_destination(request: Request, character_id: int) -> JSONResponse:
+        """Set an online character's autopilot destination in the game client (esi-ui.write_waypoint.v1)."""
+        uid = owner(request)
+        require_csrf(request)
+        svc = svc_of(request)
+        c = svc.db.get_character(character_id, uid)
+        if c is None:
+            raise HTTPException(status_code=404, detail="unknown character")
+        body = await json_body(request)
+        try:
+            dest = int(body.get("destination_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400, detail="destination_id must be a solar system or structure ID"
+            ) from None
+        if svc.graph.index.get(dest) is None and dest < 1_000_000_000_000:
+            raise HTTPException(status_code=400, detail="destination_id must be a solar system or structure ID")
+        name = svc.graph.names[svc.graph.index[dest]] if dest in svc.graph.index else str(dest)
+        if c.demo or settings.demo:
+            return JSONResponse({"ok": True, "simulated": True, "destination": name})
+        if WAYPOINT_SCOPE not in c.scopes:
+            raise HTTPException(status_code=400, detail="re-authorize this character to allow setting its destination")
+        try:
+            token = await svc.chars.access_token(character_id, uid)
+            await svc.esi.post_auth(  # type: ignore[union-attr]
+                "/ui/autopilot/waypoint",
+                token,
+                {"destination_id": dest, "add_to_beginning": "false", "clear_other_waypoints": "true"},
+            )
+        except SsoError as exc:
+            raise HTTPException(status_code=409, detail=f"token problem: {exc.code}") from None
+        except EsiError as exc:
+            raise HTTPException(
+                status_code=502, detail=f"ESI refused ({exc.status}): is the character online?"
+            ) from None
+        log.info("destination of character %s set to %s", character_id, dest)
+        return JSONResponse({"ok": True, "destination": name})
 
     def census_of(request: Request) -> Any:
         census = wars_of(request).census

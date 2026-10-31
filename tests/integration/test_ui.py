@@ -239,3 +239,54 @@ def test_structures_page_lists_every_space_and_remembers_filters(server, browser
     assert "target=Amamake" in page.url
     assert errors == []
     ctx.close()
+
+
+def test_alerts_page_filters_deep_links_and_offline_characters(server, browser):
+    ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = ctx.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(f"{server}/alerts")
+    page.wait_for_function("document.querySelectorAll('#a-groups > li').length === 3")
+    cards = page.locator("#a-groups > li")
+    assert "Perimeter - Tollgate Market" in cards.nth(0).inner_text() and "2 combat" in cards.nth(0).inner_text()
+    hek = cards.nth(1).inner_text()
+    assert "CORE DROP" in hek.upper() and "Hek" in hek and "Your closest characters" in hek
+    # offline characters cannot get a destination; the reason is on the button
+    first = cards.nth(0).locator(".closest button").first
+    assert first.is_disabled() and first.get_attribute("title") == "Only for an online character"
+    # filters apply at once and survive a reload (prefs cookie)
+    page.uncheck(".a-kind[value=combat]")
+    page.wait_for_function("document.querySelectorAll('#a-groups > li').length === 2")
+    page.check("#a-core")
+    page.wait_for_function("document.querySelectorAll('#a-groups > li').length === 1")
+    page.reload()
+    page.wait_for_function("document.querySelectorAll('#a-groups > li').length === 1")
+    assert page.is_checked("#a-core") and not page.is_checked(".a-kind[value=combat]")
+    page.uncheck(".a-kind[value=destroyed]")
+    page.uncheck(".a-kind[value=firing]")
+    page.wait_for_selector("#a-empty:not([hidden])")  # nothing chosen: nothing listed
+    # a Discord link to an older alert of a structure opens that structure's card
+    page.check(".a-kind[value=combat]")
+    page.uncheck("#a-core")
+    older = page.evaluate("fetch('/api/alerts').then(r => r.json()).then(d => d.groups[0].alerts[1].alert_id)")
+    page.goto(f"{server}/alerts#alert-{older}")
+    page.wait_for_selector("#a-groups > li.flash")
+    assert "Tollgate Market" in page.locator("#a-groups > li.flash").inner_text()
+    assert errors == []
+    ctx.close()
+
+
+def test_route_bar_sets_the_destination_of_an_online_character(server, browser):
+    page, errors = open_page(browser, f"{server}/?target=Tama", viewport={"width": 1440, "height": 860})
+    page.wait_for_selector(".row.selected")
+    btn = page.locator("#route-bar .set-route button")
+    assert btn.inner_text() == "Set destination: Tama" and btn.is_disabled()  # Kael Varn is offline
+    assert "only for an online character" in page.locator("#route-bar .set-route").inner_text()
+    page.locator(".row", has_text="Juno Krell").click()
+    btn = page.locator("#route-bar .set-route button")
+    assert not btn.is_disabled()
+    btn.click()
+    page.wait_for_function("document.querySelector('#route-bar .set-route').innerText.includes('demo')")
+    assert "demo: destination not sent" in page.locator("#route-bar .set-route").inner_text()
+    assert errors == []

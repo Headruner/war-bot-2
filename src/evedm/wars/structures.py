@@ -35,6 +35,7 @@ class Structure:
     type_id: int
     system_id: int | None
     owner_id: int
+    position: tuple[float, float, float] | None = None  # meters, as ESI and EVE Ref give it
 
 
 class StreamingItems:
@@ -133,7 +134,9 @@ def _structure(key: str | None, item: Any) -> Structure | None:
     try:
         sid = int(item.get("structure_id") or key or 0)
         system = int(item["solar_system_id"]) if item.get("solar_system_id") else None
-        return Structure(sid, str(item.get("name") or f"Structure {sid}"), int(type_id), system, int(owner))
+        p = item.get("position")
+        pos = (float(p["x"]), float(p["y"]), float(p["z"])) if isinstance(p, dict) and "x" in p else None
+        return Structure(sid, str(item.get("name") or f"Structure {sid}"), int(type_id), system, int(owner), pos)
     except (TypeError, ValueError):
         return None  # malformed entry: skip it, keep the rest
 

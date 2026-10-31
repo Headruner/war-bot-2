@@ -16,6 +16,7 @@
       {% if user %}
         <a href="/">Ranking</a>
         <a href="/characters">Characters</a>
+        {% if alerts_enabled %}<a href="/alerts">Alerts</a>{% endif %}
         {% if structures_enabled %}<a href="/structures">Structures</a>{% endif %}
         {% if wars_enabled %}<a href="/wars">Wars</a>{% endif %}
         {% if auth == "sso" %}

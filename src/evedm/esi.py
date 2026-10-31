@@ -169,6 +169,20 @@ class EsiClient:
             await resolve(unique[start : start + 1000])
         return out
 
+    async def post_auth(self, path: str, token: str, params: dict[str, Any] | None = None) -> int:
+        """Authenticated POST without a body (e.g. /ui/autopilot/waypoint); returns the status (204 = done)."""
+        headers = dict(self.headers) | {"Authorization": f"Bearer {token}"}
+        resp = await self._send("POST", path, headers, params=params or {})
+        if resp.status_code >= 400:
+            self.stats["errors"] += 1
+            detail = ""
+            try:
+                detail = str(resp.json().get("error", ""))
+            except ValueError:
+                pass
+            raise EsiError(resp.status_code, detail)
+        return resp.status_code
+
     async def post(self, path: str, payload: Any) -> Any:
         resp = await self._send("POST", path, dict(self.headers), json=payload)
         if resp.status_code != 200:

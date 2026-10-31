@@ -254,3 +254,17 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
 .filters input[type=search] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
   padding: 6px 8px; font: inherit; width: 200px; max-width: 100%; margin-left: 4px; }
 .structures-page code { font-size: 12px; background: var(--panel-2); padding: 0 4px; border-radius: 4px; }
+
+/* set destination */
+.set-route { margin-top: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.btn.small-btn { padding: 4px 10px; font-size: 13px; }
+
+/* alerts page */
+.alert-destroyed { border-left: 3px solid var(--bad); }
+.alert-combat { border-left: 3px solid var(--warn); }
+.alert-firing { border-left: 3px solid var(--muted); }
+.where-line { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.kills { list-style: none; padding: 0; margin: 6px 0; display: flex; flex-direction: column; gap: 2px; }
+.closest ul { list-style: none; padding: 0; margin: 4px 0 0; display: flex; flex-direction: column; gap: 6px; }
+.closest li { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.alerts-page li.flash { outline: 2px solid var(--accent, #4aa3ff); outline-offset: 2px; }

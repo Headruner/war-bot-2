@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from common import mint
-from evedm.config import STRUCTURE_SCOPES, Settings, load_settings
+from evedm.config import STRUCTURE_SCOPES, WAYPOINT_SCOPE, Settings, load_settings
 from evedm.esi import EsiError
 from evedm.scout import StructureScout
 from evedm.wars.config import WarsSettings
@@ -55,6 +55,7 @@ def world(fake_app):
                 "owner_id": CORP,
                 "solar_system_id": JITA,
                 "type_id": 35832,
+                "position": {"x": 1.5e11, "y": -2.0e9, "z": 7.25e10},
                 "acl": [A],
             },
             S_NULL: {"name": "1DQ1-A - Keep", "owner_id": CORP, "solar_system_id": DQ1, "type_id": 35834, "acl": [B]},
@@ -98,6 +99,10 @@ async def test_assets_reveal_structures_for_everyone(settings, services, world, 
     assert by_id[S_NULL]["jumps"] == 0 and by_id[S_HIGH]["jumps"] > 0 and by_id[S_WH]["jumps"] is None
     assert listing["scout"]["contributing_characters"] == 2
     assert [r["structure_id"] for r in listing["rows"]][-1] == S_WH  # unreachable last
+    # positions are kept for "combat on grid" alerts, but not shown in the listing
+    assert rows[S_HIGH]["position"] == (1.5e11, -2.0e9, 7.25e10) and rows[S_NULL]["position"] is None
+    assert {s.structure_id: s.position for s in scout.index()[CORP]}[S_HIGH] == (1.5e11, -2.0e9, 7.25e10)
+    assert "position" not in by_id[S_HIGH]
 
 
 async def test_unreadable_by_one_character_is_read_with_another(settings, services, world):
@@ -180,8 +185,8 @@ def test_discovered_structures_join_the_war_lists(graph):
 
 def test_optional_scopes_setting(monkeypatch, tmp_path):
     s = load_settings(tmp_path / "none.yaml")
-    assert s.eve.optional_scopes == STRUCTURE_SCOPES
-    assert s.eve.requested_scopes[:3] == s.eve.required_scopes and s.eve.requested_scopes[3:] == STRUCTURE_SCOPES
+    assert s.eve.optional_scopes == [*STRUCTURE_SCOPES, WAYPOINT_SCOPE]
+    assert s.eve.requested_scopes[:3] == s.eve.required_scopes and s.eve.requested_scopes[3:] == s.eve.optional_scopes
     monkeypatch.setenv("EVE_OPTIONAL_SCOPES", "none")
     assert load_settings(tmp_path / "none.yaml").eve.optional_scopes == []
     monkeypatch.setenv("EVE_OPTIONAL_SCOPES", "esi-assets.read_assets.v1, esi-universe.read_structures.v1")

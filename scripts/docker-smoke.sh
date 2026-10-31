@@ -32,6 +32,7 @@ curl -fsS "http://127.0.0.1:$PORT/api/wars" | grep -q '"war_id":990001' || { ech
 curl -fsS "http://127.0.0.1:$PORT/api/wars/stats" | grep -q '"active":8' || { echo "war statistics missing"; exit 1; }
 curl -fsS "http://127.0.0.1:$PORT/api/wars/structures" | grep -q '"matched":10' || { echo "high-sec structure list missing"; exit 1; }
 curl -fsS "http://127.0.0.1:$PORT/api/structures" | grep -q '"matched":7' || { echo "Structures page API missing"; exit 1; }
+curl -fsS "http://127.0.0.1:$PORT/api/alerts?refresh=0" | grep -q '"core_drop":true' || { echo "Alerts API missing"; exit 1; }
 curl -fsS "http://127.0.0.1:$PORT/api/health" | grep -q '"journal_mode":"wal"' || { echo "SQLite is not in WAL mode"; exit 1; }
 docker exec "$NAME" evedm check | grep -q '"ok": true' || { echo "evedm check failed"; exit 1; }
 docker stats --no-stream --format 'memory {{.MemUsage}}  cpu {{.CPUPerc}}' "$NAME"

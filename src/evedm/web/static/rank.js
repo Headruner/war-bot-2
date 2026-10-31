@@ -161,7 +161,7 @@ function showSelection() {
       hop.append(secChip(map.sec[i]), el("span", null, map.names[i]));
       path.append(hop);
     });
-    bar.append(title, path);
+    bar.append(title, path, routeButton(row, r.target));
   } else {
     title.textContent = row.system
       ? `${row.name} is in ${row.system.name} (${row.system.region}): no stargate route to ${r.target.name}.`
@@ -169,6 +169,36 @@ function showSelection() {
     bar.append(title);
   }
   bar.hidden = false;
+}
+
+/* ---------------------------------------------------------------- set the in-game destination */
+function routeButton(row, target) {
+  const wrap = el("div", "set-route");
+  const btn = el("button", "btn small-btn", `Set destination: ${target.name}`);
+  btn.type = "button";
+  const note = el("span", "small");
+  if (!row.can_set_route) {
+    btn.disabled = true;
+    note.textContent = " re-authorize this character (Add character) to allow it";
+  } else if (!row.online) {
+    btn.disabled = true;
+    note.textContent = " only for an online character";
+  }
+  btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    btn.disabled = true;
+    try {
+      const res = await api(`/api/characters/${row.character_id}/destination`,
+        { method: "POST", body: JSON.stringify({ destination_id: target.id }) });
+      note.textContent = res.simulated ? " demo: destination not sent" : ` autopilot destination set to ${res.destination}`;
+    } catch (err) {
+      note.textContent = ` ${err.message}`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  wrap.append(btn, note);
+  return wrap;
 }
 
 /* ---------------------------------------------------------------- recent targets */

@@ -55,6 +55,13 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
 
 
 # --------------------------------------------------------------------------- fixtures
+@pytest.fixture(autouse=True)
+def _no_live_alert_feed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Apps built in unit tests never poll the real zKillboard feed; tests marked ``alerts_loop`` drive it."""
+    if "alerts_loop" not in request.keywords:
+        monkeypatch.setattr("evedm.alerts.AlertService.start", lambda self: None)
+
+
 @pytest.fixture(scope="session")
 def anyio_backend() -> str:
     return "asyncio"
