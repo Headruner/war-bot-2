@@ -269,9 +269,12 @@ class Database:
             return self._conn.execute(sql, params).fetchall()
 
     def execute(self, sql: str, params: tuple[Any, ...] | dict[str, Any] = ()) -> int:
+        """Run one statement: the new row ID for an INSERT, the number of rows changed otherwise."""
         with self._lock:
             cur = self._conn.execute(sql, params)
-            return cur.lastrowid or cur.rowcount
+            if sql.lstrip()[:7].upper() in ("INSERT ", "REPLACE"):
+                return cur.lastrowid or 0
+            return cur.rowcount
 
     def _script(self, sql: str) -> None:
         for stmt in (s.strip() for s in sql.split(";\n")):

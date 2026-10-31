@@ -158,3 +158,13 @@ def test_discord_webhook_tokens_are_redacted():
         redact("https://discordapp.com/api/v10/webhooks/42/tok")
         == "https://discordapp.com/api/v10/webhooks/42/<redacted>"
     )
+
+
+def test_execute_returns_row_ids_for_inserts_and_counts_otherwise(db):
+    db.upsert_user(1, "One")
+    rid = db.execute("INSERT INTO sso_states(state, purpose, created_at) VALUES('s1', 'login', 1)")
+    assert rid >= 1
+    db.execute("INSERT INTO sso_states(state, purpose, created_at) VALUES('s2', 'login', 1)")
+    assert db.execute("UPDATE sso_states SET used=1 WHERE state IN ('s1','s2')") == 2
+    assert db.execute("DELETE FROM sso_states WHERE state='nope'") == 0  # not the last insert's row ID
+    assert db.execute("DELETE FROM sso_states") == 2
