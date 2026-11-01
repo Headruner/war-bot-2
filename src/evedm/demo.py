@@ -209,3 +209,43 @@ def seed_demo_roster(roster: Any, owner_id: int = 0) -> int:
         ],
     }
     return int(roster.import_file(json.dumps(doc).encode("utf-8"), owner_id)["summary"]["Added"])
+
+
+# (character_id, type, system, minutes ago) - sample notifications for demo mode (UC-13)
+DEMO_NOTIFICATIONS = [
+    (3900000001, "StructureItemsMovedToSafety", "Hek", 8),
+    (3900000002, "StructureUnderAttack", "Amamake", 23),
+    (3900000003, "StructureLostShields", "Amamake", 41),
+    (3900000001, "StructureFuelAlert", "Perimeter", 95),
+    (3900000004, "TowerAlertMsg", "Tama", 150),
+    (3900000002, "StructureImpendingAbandonmentAssetsAtRisk", "Rens", 400),
+    (3900000003, "InsurancePayoutMsg", "Jita", 600),  # filtered out by default: not a structure type
+]
+
+
+def seed_demo_notifications(db: Database, graph: GateGraph) -> int:
+    """Insert the sample notifications once (demo mode only). Returns how many were inserted."""
+    if db.query("SELECT 1 FROM character_notifications LIMIT 1"):
+        return 0
+    now = time.time()
+    rows = []
+    for n, (cid, ntype, system, minutes) in enumerate(DEMO_NOTIFICATIONS, start=1):
+        idx = graph.find(system)
+        if idx is None:
+            continue
+        when = now - minutes * 60
+        rows.append(
+            {
+                "character_id": cid,
+                "notification_id": 9_000_000 + n,
+                "type": ntype,
+                "sender_id": 1000132,
+                "sender_type": "corporation",
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(when)),
+                "body": f"solarsystemID: {graph.ids[idx]}\nstructureID: 1035000000001\nstructureTypeID: 35832\n",
+                "solar_system_id": graph.ids[idx],
+                "structure_id": 1035000000001,
+                "structure_type_id": 35832,
+            }
+        )
+    return db.save_notifications(rows)

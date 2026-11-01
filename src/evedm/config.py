@@ -10,11 +10,66 @@ from typing import Any
 
 import yaml
 
+# Lets the app read a character's own notifications (Notifications page: asset safety, structure attacks).
+NOTIFICATION_SCOPE = "esi-characters.read_notifications.v1"
 DEFAULT_SCOPES = [
     "esi-location.read_location.v1",
     "esi-location.read_ship_type.v1",
     "esi-location.read_online.v1",
+    NOTIFICATION_SCOPE,
 ]
+
+# ESI notification types, grouped for the filter list. Types ESI sends that are not here show up under
+# "other" once seen, so a new CCP type is never lost - it only starts out switched off.
+NOTIFICATION_GROUPS: dict[str, list[str]] = {
+    "asset_safety": [
+        "StructureItemsMovedToSafety",
+        "StructureItemsDelivered",
+        "StructureImpendingAbandonmentAssetsAtRisk",
+    ],
+    "structure_attack": [
+        "StructureUnderAttack",
+        "StructureLostShields",
+        "StructureLostArmor",
+        "StructureDestroyed",
+        "StructuresReinforcementChanged",
+        "OwnershipTransferred",
+    ],
+    "structure_state": [
+        "StructureFuelAlert",
+        "StructureLowReagentsAlert",
+        "StructureNoReagentsAlert",
+        "StructureWentLowPower",
+        "StructureWentHighPower",
+        "StructureServicesOffline",
+        "StructureAnchoring",
+        "StructureUnanchoring",
+        "StructureOnline",
+    ],
+    "tower": ["TowerAlertMsg", "TowerResourceAlertMsg"],
+    "other_attacks": [
+        "OrbitalAttacked",
+        "OrbitalReinforced",
+        "SkyhookUnderAttack",
+        "SkyhookLostShields",
+        "SkyhookDestroyed",
+        "MercenaryDenAttacked",
+        "MercenaryDenReinforced",
+    ],
+    "sovereignty": [
+        "SovStructureReinforced",
+        "SovStructureDestroyed",
+        "EntosisCaptureStarted",
+        "SovCommandNodeEventStarted",
+        "SovereigntyTCUDamageMsg",
+        "SovereigntySBUDamageMsg",
+        "SovereigntyIHDamageMsg",
+        "InfrastructureHubBillAboutToExpire",
+        "IHubDestroyedByBillFailure",
+    ],
+}
+# switched on without a filter; the rest of the catalogue is one tick away
+DEFAULT_NOTIFICATION_GROUPS = ["asset_safety", "structure_attack", "structure_state", "tower"]
 # Asked for at sign-in and Add character, not needed for the ranking: they let the structure scout list the
 # player-owned structures where each character has assets. They must be enabled on the EVE application.
 STRUCTURE_SCOPES = ["esi-universe.read_structures.v1", "esi-assets.read_assets.v1"]
@@ -99,6 +154,26 @@ class AlertSettings:
 
 
 @dataclass
+class NotificationSettings:
+    """Character notifications from ESI: asset safety and structure attacks (UC-13).
+
+    The section is shown only to a main whose alliance is in ``alliance_ids`` (D16).
+    """
+
+    enabled: bool = True
+    alliance_ids: list[int] = field(default_factory=lambda: [99010320])
+    poll_s: float = 60.0  # the loop runs every minute; ESI caches each character for 600 s
+    character_interval_s: float = 600.0  # a character is asked again when its cached copy expires
+    affiliation_hours: float = 6.0  # how often a main's alliance is read again from ESI
+    retention_days: float = 30.0
+    concurrency: int = 4
+    groups: list[str] = field(default_factory=lambda: list(DEFAULT_NOTIFICATION_GROUPS))
+
+    def default_types(self) -> list[str]:
+        return [t for g in self.groups for t in NOTIFICATION_GROUPS.get(g, [])]
+
+
+@dataclass
 class Settings:
     instance_label: str = "evedm"
     data_dir: Path = Path("./data")
@@ -112,6 +187,7 @@ class Settings:
     web: WebSettings = field(default_factory=WebSettings)
     structures: StructureScoutSettings = field(default_factory=StructureScoutSettings)
     alerts: AlertSettings = field(default_factory=AlertSettings)
+    notifications: NotificationSettings = field(default_factory=NotificationSettings)
 
     @property
     def db_path(self) -> Path:
@@ -139,6 +215,8 @@ class Settings:
             "structure_scout": self.structures.enabled,
             "alerts": self.alerts.enabled,
             "alerts_discord": self.alerts.discord.enabled,
+            "notifications": self.notifications.enabled,
+            "notification_alliances": self.notifications.alliance_ids,
         }
 
     def validate_for_serve(self) -> None:
@@ -167,6 +245,17 @@ class Settings:
             raise ConfigError(f"alerts.discord.kinds: unknown {bad}; use destroyed, combat, firing")
         if a.enabled and a.discord.enabled and not a.discord.webhook_url:
             raise ConfigError("alerts.discord.enabled needs a webhook (EVEDM_ALERTS_DISCORD_WEBHOOK)")
+        n = self.notifications
+        if n.enabled:
+            if n.poll_s < 30:
+                raise ConfigError("notifications.poll_s must be at least 30 (ESI caches notifications 600 s)")
+            if n.retention_days <= 0 or n.character_interval_s < 60:
+                raise ConfigError("notifications.retention_days > 0 and character_interval_s >= 60")
+            unknown = [g for g in n.groups if g not in NOTIFICATION_GROUPS]
+            if unknown:
+                raise ConfigError(
+                    f"notifications.groups: unknown {unknown}; use {', '.join(NOTIFICATION_GROUPS)}"
+                )
 
 
 def _expand(value: Any) -> Any:
@@ -189,7 +278,14 @@ def _apply(obj: Any, data: dict[str, Any]) -> None:
         if not hasattr(obj, key):
             continue
         current = getattr(obj, key)
-        nested = (EveSettings, WebSettings, StructureScoutSettings, AlertSettings, AlertDiscordSettings)
+        nested = (
+            EveSettings,
+            WebSettings,
+            StructureScoutSettings,
+            AlertSettings,
+            AlertDiscordSettings,
+            NotificationSettings,
+        )
         if isinstance(current, nested) and isinstance(value, dict):
             _apply(current, value)
         elif key in ("data_dir", "universe_file") and value:
@@ -235,6 +331,10 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
     "EVEDM_ALERTS_DISCORD_ENABLED": ("alerts", "discord", "enabled"),
     "EVEDM_ALERTS_DISCORD_WEBHOOK": ("alerts", "discord", "webhook_url"),
     "EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID": ("alerts", "discord", "mention_role_id"),
+    "EVEDM_NOTIFICATIONS_ENABLED": ("notifications", "enabled"),
+    "EVEDM_NOTIFICATIONS_ALLIANCES": ("notifications", "alliance_ids"),
+    "EVEDM_NOTIFICATIONS_POLL_S": ("notifications", "poll_s"),
+    "EVEDM_NOTIFICATIONS_GROUPS": ("notifications", "groups"),
 }
 
 
@@ -261,7 +361,11 @@ def _load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
         obj: Any = settings
         for part in target[:-1]:
             obj = getattr(obj, part)
-        if target[-1] == "allowed_login_characters":
+        if target[-1] == "alliance_ids":
+            setattr(obj, target[-1], [int(v) for v in value.replace(";", ",").split(",") if v.strip()])
+        elif target[-1] == "groups":
+            setattr(obj, target[-1], [v for v in value.replace(",", " ").split() if v.strip()])
+        elif target[-1] == "allowed_login_characters":
             setattr(obj, target[-1], [int(v) for v in value.replace(";", ",").split(",") if v.strip()])
         elif target[-1] == "optional_scopes":  # comma or space separated; "none" asks for no extra scope
             parts = [v for v in value.replace(",", " ").split() if v.strip()]
@@ -269,6 +373,7 @@ def _load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
         else:
             _apply(obj, {target[-1]: value})
     settings.web.allowed_login_characters = [int(v) for v in settings.web.allowed_login_characters]
+    settings.notifications.alliance_ids = [int(v) for v in settings.notifications.alliance_ids]
     if (
         settings.demo
         and not settings.eve.client_id

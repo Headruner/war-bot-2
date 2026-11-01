@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 log = logging.getLogger("evedm.db")
 
 SCHEMA = """
@@ -148,6 +148,31 @@ CREATE TABLE IF NOT EXISTS static_characters (
 );
 CREATE INDEX IF NOT EXISTS static_by_system ON static_characters(owner_id, system_id);
 CREATE INDEX IF NOT EXISTS static_by_state ON static_characters(owner_id, resolve_state);
+-- notifications of the registered characters, read from ESI (UC-13); shared by every main that links them
+CREATE TABLE IF NOT EXISTS character_notifications (
+    character_id      INTEGER NOT NULL,
+    notification_id   INTEGER NOT NULL,
+    type              TEXT NOT NULL,
+    sender_id         INTEGER,
+    sender_type       TEXT,
+    timestamp         TEXT NOT NULL,          -- EVE time, ISO-8601 as ESI sends it
+    body              TEXT NOT NULL DEFAULT '',   -- the YAML text of the notification
+    solar_system_id   INTEGER,
+    structure_id      INTEGER,
+    structure_type_id INTEGER,
+    created_at        REAL NOT NULL,
+    PRIMARY KEY (character_id, notification_id)
+);
+CREATE INDEX IF NOT EXISTS notifications_by_time ON character_notifications(timestamp);
+CREATE INDEX IF NOT EXISTS notifications_by_type ON character_notifications(type);
+-- one row per character the notification poller reads (ESI caches notifications 600 s per character)
+CREATE TABLE IF NOT EXISTS notification_characters (
+    character_id  INTEGER PRIMARY KEY,
+    checked_at    REAL NOT NULL DEFAULT 0,
+    next_check_at REAL NOT NULL DEFAULT 0,
+    notifications INTEGER NOT NULL DEFAULT 0,
+    error         TEXT
+);
 CREATE TABLE IF NOT EXISTS target_history (
     owner_id        INTEGER NOT NULL DEFAULT 0,
     solar_system_id INTEGER NOT NULL,
@@ -375,6 +400,9 @@ class Database:
                 else:
                     self._script(SCHEMA)
                 self._script(WAR_SCHEMA)
+                self._add_columns(  # v7 -> v8: the main's affiliation, for the notifications alliance gate
+                    "users", {"corporation_id": "INTEGER", "alliance_id": "INTEGER", "affiliation_at": "REAL"}
+                )
                 self._add_columns(  # v5 -> v6: structure positions for "combat on grid"
                     "known_structures",
                     {"pos_x": "REAL", "pos_y": "REAL", "pos_z": "REAL", "destroyed_at": "REAL"},
@@ -508,6 +536,103 @@ class Database:
             c.execute("DELETE FROM characters WHERE owner_id=? AND character_id=?", (owner_id, character_id))
             if not c.execute("SELECT 1 FROM characters WHERE character_id=?", (character_id,)).fetchone():
                 c.execute("DELETE FROM snapshots WHERE character_id=?", (character_id,))
+
+    # -- character notifications (UC-13) ---------------------------------------------------------
+    def save_notifications(self, rows: list[dict[str, Any]]) -> int:
+        """Store notifications that are not stored yet; returns how many were new."""
+        if not rows:
+            return 0
+        new = 0
+        with self.tx() as c:
+            for r in rows:
+                cur = c.execute(
+                    "INSERT OR IGNORE INTO character_notifications(character_id,notification_id,type,sender_id,"
+                    "sender_type,timestamp,body,solar_system_id,structure_id,structure_type_id,created_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        r["character_id"],
+                        r["notification_id"],
+                        r["type"],
+                        r.get("sender_id"),
+                        r.get("sender_type"),
+                        r["timestamp"],
+                        r.get("body", ""),
+                        r.get("solar_system_id"),
+                        r.get("structure_id"),
+                        r.get("structure_type_id"),
+                        time.time(),
+                    ),
+                )
+                new += cur.rowcount or 0
+        return new
+
+    def notifications(
+        self,
+        character_ids: list[int],
+        types: list[str] | None = None,
+        hours: float = 24 * 30,
+        limit: int = 200,
+    ) -> list[sqlite3.Row]:
+        """Newest first, for the given characters (the links of one main)."""
+        if not character_ids:
+            return []
+        marks = ",".join("?" * len(character_ids))
+        sql = f"SELECT * FROM character_notifications WHERE character_id IN ({marks}) AND created_at > ?"  # noqa: S608
+        params: list[Any] = [*character_ids, time.time() - hours * 3600]
+        if types:
+            sql += f" AND type IN ({','.join('?' * len(types))})"
+            params += types
+        sql += " ORDER BY timestamp DESC, notification_id DESC LIMIT ?"
+        params.append(int(limit))
+        return self.query(sql, tuple(params))
+
+    def notification_types(self, character_ids: list[int]) -> dict[str, int]:
+        """Types actually seen for these characters, with counts (the filter list grows with ESI)."""
+        if not character_ids:
+            return {}
+        marks = ",".join("?" * len(character_ids))
+        rows = self.query(
+            f"SELECT type, COUNT(*) FROM character_notifications WHERE character_id IN ({marks}) GROUP BY type",  # noqa: S608
+            tuple(character_ids),
+        )
+        return {r[0]: r[1] for r in rows}
+
+    def purge_notifications(self, days: float) -> int:
+        return self.execute(
+            "DELETE FROM character_notifications WHERE created_at < ?", (time.time() - days * 86400,)
+        )
+
+    def due_notification_characters(self, character_ids: list[int], now: float | None = None) -> list[int]:
+        """Characters whose cached copy has expired (never read ones first)."""
+        if not character_ids:
+            return []
+        now = time.time() if now is None else now
+        known = {
+            r["character_id"]: r["next_check_at"]
+            for r in self.query("SELECT character_id, next_check_at FROM notification_characters")
+        }
+        due = [cid for cid in character_ids if known.get(cid, 0) <= now]
+        due.sort(key=lambda cid: known.get(cid, 0))
+        return due
+
+    def set_notification_check(
+        self, character_id: int, next_check_at: float, notifications: int = 0, error: str | None = None
+    ) -> None:
+        self.execute(
+            "INSERT INTO notification_characters(character_id,checked_at,next_check_at,notifications,error) "
+            "VALUES(?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET checked_at=excluded.checked_at,"
+            " next_check_at=excluded.next_check_at, notifications=excluded.notifications, error=excluded.error",
+            (character_id, time.time(), next_check_at, notifications, error),
+        )
+
+    def notification_checks(self) -> dict[int, sqlite3.Row]:
+        return {r["character_id"]: r for r in self.query("SELECT * FROM notification_characters")}
+
+    def set_affiliation(self, user_id: int, corporation_id: int | None, alliance_id: int | None) -> None:
+        self.execute(
+            "UPDATE users SET corporation_id=?, alliance_id=?, affiliation_at=? WHERE user_id=?",
+            (corporation_id, alliance_id, time.time(), user_id),
+        )
 
     # -- static roster (UC-12, ROS-04, ROS-09, ROS-12) ------------------------------------------
     @staticmethod

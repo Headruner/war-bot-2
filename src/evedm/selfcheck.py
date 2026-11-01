@@ -41,6 +41,7 @@ STATIC_FILES = [
     "structures.js",
     "alerts.js",
     "roster.js",
+    "notifications.js",
     "favicon.svg",
 ]
 TEMPLATES = [
@@ -52,6 +53,7 @@ TEMPLATES = [
     "structures.html",
     "alerts.html",
     "roster.html",
+    "notifications.html",
 ]
 
 
