@@ -27,9 +27,10 @@ from ..characters import REAUTH, CharacterService
 from ..config import WAYPOINT_SCOPE, ConfigError, Settings
 from ..crypto import TokenCipher
 from ..db import Database
-from ..demo import seed_demo, seed_demo_roster
+from ..demo import seed_demo, seed_demo_notifications, seed_demo_roster
 from ..esi import EsiClient, EsiError
 from ..logs import LaunchRecorder, peak_rss_mb, rss_mb, setup_logging, trim_memory
+from ..notifications import NotificationService
 from ..ranking import DemoProvider, LiveProvider, RankingService
 from ..resolver import TargetResolver
 from ..roster import MAX_BYTES as ROSTER_MAX_BYTES
@@ -64,6 +65,7 @@ class Services:
     wars: WarService | None = None
     scout: StructureScout | None = None
     roster: RosterService | None = None
+    notifications: NotificationService | None = None
     alerts: AlertService | None = None
 
 
@@ -118,6 +120,14 @@ def build_services(settings: Settings) -> Services:
             log.info("seeded %s demo roster entries", seeded_roster)
     if settings.structures.enabled:
         svc.scout = StructureScout(settings, db, graph, chars, esi)  # type: ignore[arg-type]
+    if settings.notifications.enabled:
+        svc.notifications = NotificationService(
+            settings.notifications, db, graph, chars, esi, demo=settings.demo
+        )
+        if settings.demo:
+            seeded = seed_demo_notifications(db, graph)
+            if seeded:
+                log.info("seeded %s demo notifications", seeded)
     return svc
 
 
@@ -213,9 +223,13 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             svc.scout.start()
         if svc.alerts is not None and not settings.demo:
             svc.alerts.start()
+        if svc.notifications is not None and not settings.demo:
+            svc.notifications.start()
         try:
             yield
         finally:
+            if svc.notifications is not None:
+                await svc.notifications.stop()
             if svc.alerts is not None:
                 await svc.alerts.stop()
             if svc.scout is not None:
@@ -310,6 +324,9 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             "wars_enabled": svc.wars is not None,
             "structures_enabled": svc.scout is not None,
             "alerts_enabled": svc.alerts is not None,
+            "notifications_enabled": svc.notifications is not None
+            and user_of(request) is not None
+            and svc.notifications.allowed(int((user_of(request) or {}).get("id", 0))),
         }
         return templates.TemplateResponse(request, name, base | ctx)
 
@@ -337,6 +354,19 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         if user_of(request) is None:
             return RedirectResponse("/login", status_code=303)
         return page(request, "roster.html", max_entries=ROSTER_MAX_ENTRIES, max_kb=ROSTER_MAX_BYTES // 1000)
+
+    @app.get("/notifications", response_class=HTMLResponse)
+    async def notifications_page(request: Request) -> Response:
+        user = user_of(request)
+        if user is None:
+            return RedirectResponse("/login", status_code=303)
+        ns = svc_of(request).notifications
+        if ns is None:
+            raise HTTPException(status_code=404, detail="notifications are disabled (notifications.enabled)")
+        await ns.refresh_affiliation(int(user["id"]))
+        if not ns.allowed(int(user["id"])):
+            raise HTTPException(status_code=404, detail="this section is open to one alliance only")
+        return page(request, "notifications.html", poll_s=int(settings.notifications.poll_s))
 
     @app.get("/alerts", response_class=HTMLResponse)
     async def alerts_page(request: Request) -> Response:
@@ -455,6 +485,9 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                 "structure_scout": None
                 if svc.scout is None
                 else {"running": svc.scout.state["running"], "cycles": svc.scout.state["cycles"]},
+                "notifications": None
+                if svc.notifications is None
+                else {"running": svc.notifications.state["running"], "polls": svc.notifications.state["polls"]},
                 "alerts": None
                 if svc.alerts is None
                 else {"running": svc.alerts.state["running"], "polls": svc.alerts.state["polls"]},
@@ -535,6 +568,66 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             raise HTTPException(status_code=400, detail="the main cannot be removed; delete the account instead")
         await svc.chars.remove(character_id, uid)
         return JSONResponse({"ok": True})
+
+    # ------------------------------------------------------------------ API: notifications (UC-13)
+    async def notifications_of(request: Request, uid: int) -> NotificationService:
+        ns = svc_of(request).notifications
+        if ns is None:
+            raise HTTPException(status_code=404, detail="notifications are disabled (notifications.enabled)")
+        await ns.refresh_affiliation(uid)  # cached; the alliance gate needs it (D16)
+        if not ns.allowed(uid):
+            raise HTTPException(status_code=404, detail="this section is open to one alliance only")
+        return ns
+
+    @app.get("/api/notifications")
+    async def list_notifications(
+        request: Request, hours: float = 168, types: str = "", limit: int = 100, refresh: int = 1
+    ) -> JSONResponse:
+        """The signed-in main's characters' notifications, newest first, each with the closest characters."""
+        uid = owner(request)
+        svc = svc_of(request)
+        ns = await notifications_of(request, uid)
+        links = svc.db.list_characters(uid)
+        names = {c.character_id: c.name for c in links}
+        ids = list(names)
+        wanted = [t.strip() for t in types.split(",") if t.strip()] or ns.default_types()
+        rows = ns.recent(ids, wanted, hours=max(1.0, min(hours, 24 * 90)), limit=max(1, min(limit, 500)))
+        live = [c for c in links if c.enabled and c.status != REAUTH]
+        if refresh and live:
+            await svc.ranking.refresh_states(live, 1, uid)  # last known locations, as on the Alerts page
+        static_origins = svc.roster.origins(uid) if svc.roster is not None else []
+        items = []
+        for r in rows:
+            item = ns.describe(r, names)
+            idx = item.pop("system_index")
+            item["closest"] = closest_characters(svc, uid, idx) if idx is not None else []
+            item["closest_static"] = (
+                RosterService.closest(static_origins, svc.ranking.parents(idx))
+                if idx is not None and static_origins
+                else []
+            )
+            items.append(item)
+        checks = svc.db.notification_checks()
+        reading = [cid for cid in ids if cid in ns.pollable()]
+        return JSONResponse(
+            {
+                "items": items,
+                "groups": ns.catalogue(svc.db.notification_types(ids)),
+                "defaults": ns.default_types(),
+                "poll_s": ns.s.poll_s,
+                "characters": {
+                    "linked": len(ids),
+                    "reading": len(reading),
+                    "errors": [
+                        {"name": names.get(cid, str(cid)), "error": checks[cid]["error"]}
+                        for cid in ids
+                        if cid in checks and checks[cid]["error"]
+                    ],
+                    "last_check": max((checks[cid]["checked_at"] for cid in ids if cid in checks), default=None),
+                },
+                "state": ns.state,
+            }
+        )
 
     # ------------------------------------------------------------------ API: static roster (UC-12)
     def roster_of(request: Request) -> RosterService:

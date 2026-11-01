@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Notifications · EVE Distance Meter{% endblock %}
+{% block content %}
+<div class="page" data-poll-s="{{ poll_s }}">
+  <h1>Notifications</h1>
+  <p class="small">Read from ESI with your characters' own tokens (<code>esi-characters.read_notifications.v1</code>)
+    and refreshed every {{ poll_s }} seconds. Asset safety and structure attacks are shown by default; everything
+    else is one tick away in <b>Filters</b>. Each notification shows the system with its region and the closest
+    characters from your <a href="/characters">Characters</a> and <a href="/roster">Roster</a>.</p>
+  <div class="toolbar">
+    <label class="small">Period
+      <select id="ntf-hours">
+        <option value="24">last 24 h</option>
+        <option value="72">last 3 days</option>
+        <option value="168" selected>last 7 days</option>
+        <option value="720">last 30 days</option>
+      </select>
+    </label>
+    <button id="ntf-filters-btn" class="btn" type="button" aria-expanded="false" aria-controls="ntf-filters">Filters</button>
+    <button id="ntf-refresh" class="btn icon" type="button" title="Refresh now" aria-label="Refresh">&#8635;</button>
+    <span id="ntf-status" class="small"></span>
+  </div>
+  <div id="ntf-filters" class="card" hidden>
+    <p class="small">Types come from the ESI notification list; a type ESI sends that is not in a group below
+      appears under <b>Other notifications</b> once it has been seen.</p>
+    <div id="ntf-groups" class="ntf-groups"></div>
+    <div class="toolbar">
+      <button id="ntf-defaults" class="btn" type="button">Back to the default selection</button>
+      <button id="ntf-all" class="btn" type="button">Select every type</button>
+    </div>
+  </div>
+  <ul id="ntf-list" class="rows ntf-list"></ul>
+  <p id="ntf-empty" class="small" hidden>No notifications of the selected types in this period.</p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/prefs.js?v={{ version }}"></script>
+<script src="/static/map.js?v={{ version }}"></script>  {# security colours #}
+<script src="/static/notifications.js?v={{ version }}"></script>
+{% endblock %}

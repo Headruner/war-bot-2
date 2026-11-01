@@ -286,3 +286,21 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
   border-radius: 8px; color: var(--text); font: inherit; padding: 5px 8px; }
 .suggest-fix { color: var(--muted); font-size: 12.5px; }
 .suggest-fix button { background: none; border: none; color: var(--high); cursor: pointer; font: inherit; padding: 0 4px; }
+
+/* notifications (UC-13) */
+.ntf-list { gap: 10px; margin-top: 12px; }
+.card.ntf { display: flex; flex-direction: column; gap: 6px; }
+.ntf-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ntf-title { font-weight: 650; }
+.card.ntf.asset_safety { border-left: 3px solid var(--accent); }
+.card.ntf.structure_attack, .card.ntf.tower { border-left: 3px solid var(--bad); }
+.card.ntf .when { color: var(--muted); }
+.ntf-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin: 8px 0; }
+.ntf-group { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.ntf-group-title { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
+.ntf-type { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+.ntf-type span { word-break: break-word; }
+/* long type names and scope names must not widen a 360 px screen (WEB-03) */
+.card.ntf, .ntf-groups, .page p code { overflow-wrap: anywhere; }
+.ntf-head .badge { white-space: normal; overflow-wrap: anywhere; max-width: 100%; }
+.card.ntf .where-line { flex-wrap: wrap; }
