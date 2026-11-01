@@ -16,6 +16,7 @@ rectangle "EVE Distance Meter" {
   usecase "UC-04 Rank characters for a target\nand see the route on the star map" as UC4
   usecase "UC-05 Get the target from\npasted notification text" as UC5
   usecase "UC-12 Upload a static roster\n(name + system, no ESI) and rank it" as UC12
+  usecase "UC-13 Watch ESI notifications\n(asset safety, structure attacks)" as UC13
 }
 user --> UC8
 user --> UC1

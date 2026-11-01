@@ -19,6 +19,7 @@ Container_Boundary(web, "Web app") {
   Component(chars, "CharacterService", "characters.py", "Store tokens, refresh when < 60 s left, REAUTH on invalid_grant")
   Component(bundle, "BundleIO", "bundle.py", "JSON bundle v1: schema, per-entry refresh, report, export")
   Component(roster, "RosterService", "roster.py", "Static roster v1: schema, merge by name, system resolution, ranking without ESI, export")
+  Component(ntf, "NotificationService", "notifications.py", "Polls character notifications (ESI cache aware), parses, filters, alliance gate")
   Component(auth, "AuthService", "sso.py", "Authorize URL, code exchange, refresh, revoke, JWT validation via JWKS")
   Component(esiclient, "EsiClient", "esi.py", "Expires/ETag cache, request coalescing, 429/420 handling, concurrency limit")
   Component(cipher, "TokenCipher", "crypto.py", "Fernet encryption at rest, log redaction")

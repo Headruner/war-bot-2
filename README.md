@@ -29,6 +29,10 @@ when you press **Set destination** for an online character.
   and Alerts page; scope `esi-ui.write_waypoint.v1`).
 - **Remembered per browser** (cookie): Alerts filters and notification choice, Wars tab and filters, Structures
   filters, map options, ranking auto-refresh.
+- **Notifications** (Notifications page, one alliance only): your characters' own ESI notifications - assets moved
+  to **asset safety**, structures **under attack**, fuel and state - polled every minute (ESI caches them 600 s per
+  character), each with the system, its region, EVE time and the closest characters from both the Characters and the
+  Roster set. Everything else ESI sends is one tick away in the filters. Needs `esi-characters.read_notifications.v1`.
 - **Static roster** (Roster page): upload a JSON file of character names and systems (50-700 entries, no tokens,
   nothing read from ESI) and rank it by jumps against the same target on the **Roster** tab of the ranking view.
   Unknown systems are kept with suggestions instead of being thrown away; the closest roster characters also appear

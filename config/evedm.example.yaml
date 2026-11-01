@@ -42,6 +42,18 @@ structures:                                 # structure scout: player-owned stru
   max_asset_pages: 20                       # 1000 assets per page
   concurrency: 4
 
+notifications:                              # character notifications from ESI (Notifications page)
+  enabled: ${EVEDM_NOTIFICATIONS_ENABLED:-true}
+  alliance_ids: [99010320]                  # the section is shown only to a main in one of these alliances
+  poll_s: 60                                # the loop runs this often; ESI caches each character 600 s
+  character_interval_s: 600                 # so a character is asked again only after its cache expires
+  affiliation_hours: 6                      # how often a main's alliance is read again from ESI
+  retention_days: 30
+  concurrency: 4
+  # which groups are shown without a filter: asset_safety, structure_attack, structure_state, tower,
+  # other_attacks, sovereignty (every other type ESI sends appears under "Other notifications")
+  groups: [asset_safety, structure_attack, structure_state, tower]
+
 alerts:                                     # structure alerts from zKillboard's live killmail feed (Alerts page)
   enabled: ${EVEDM_ALERTS_ENABLED:-true}
   feed_url: https://r2z2.zkillboard.com/ephemeral

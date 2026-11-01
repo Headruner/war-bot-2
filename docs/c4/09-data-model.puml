@@ -82,6 +82,29 @@ entity static_characters {
   enabled : INTEGER
   uploaded_at : REAL
 }
+entity character_notifications {
+  * character_id : INTEGER <<PK>>
+  * notification_id : INTEGER <<PK>>
+  --
+  type : TEXT
+  sender_id : INTEGER
+  sender_type : TEXT
+  timestamp : TEXT (EVE time)
+  body : TEXT (YAML from ESI)
+  solar_system_id : INTEGER
+  structure_id : INTEGER
+  structure_type_id : INTEGER
+  created_at : REAL
+}
+entity notification_characters {
+  * character_id : INTEGER <<PK>>
+  --
+  checked_at : REAL
+  next_check_at : REAL
+  notifications : INTEGER
+  error : TEXT
+}
 characters ||--|| tokens
 characters ||--o| snapshots
+characters ||--o{ character_notifications
 @enduml

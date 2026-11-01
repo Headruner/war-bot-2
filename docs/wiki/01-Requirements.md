@@ -23,6 +23,9 @@ requirement to the code and to the automated tests in this repository (0.3.0, ex
 | D11 | One roster pool per main, merged on upload and keyed by the normalised character name: an upload adds new names and moves names already there. No named sets, no versions. |
 | D12 | A roster entry whose system does not resolve is stored unresolved with its reason and up to three suggestions, not rejected; only the file as a whole can be rejected. |
 | D13 | Roster characters are ranked on their own tab of the ranking view and listed on the Roster page; they never mix into the live list and never take the place of a live character, on the Alerts page included. |
+| D14 | ESI notifications are used after all (this revises the 0.5.0 decision): asset-safety and structure notices reach the character itself, so no corporation role is needed. `esi-characters.read_notifications.v1` joins the **required** scopes; a character that does not grant it is Limited and is not polled. |
+| D15 | ESI caches notifications 600 s per character, so the poller runs every minute and asks only for the characters whose cached copy has expired (the ESI client revalidates with ETag). A new notification is on the page within about a minute of ESI publishing it. |
+| D16 | The Notifications section belongs to one alliance: it is shown only to a main whose alliance is in `notifications.alliance_ids` (default 99010320, read from ESI and cached). Everyone else sees no link, no page and a 404 from its API. |
 
 ## Use cases
 
@@ -40,6 +43,7 @@ requirement to the code and to the automated tests in this repository (0.3.0, ex
 | UC-10 | Follow wars and high-sec structures of warring corporations | 0.4.0, statistics 0.5.0 |
 | UC-11 | React to a structure alert: see what happened where, pick the closest character, set its destination | 0.7.0 |
 | UC-12 | Upload a static roster (character name + system) and rank it against a target without ESI | 0.8.0 |
+| UC-13 | Watch the characters' ESI notifications: asset safety and structures under attack, with the closest characters | 0.8.0 |
 
 ## Functional requirements
 
@@ -55,6 +59,7 @@ requirement to the code and to the automated tests in this repository (0.3.0, ex
 | SSO-06 | When a stored character is authorized again, the system shall replace its tokens and scopes and keep local settings. | M | done | test_upsert_keeps_local_settings |
 | SSO-07 | Where the instance is the Web UI, the callback shall be `https://<host>/sso/callback`. | M | done | config `EVE_CALLBACK_URL` |
 | SSO-08 | Where the instance is the Desktop UI, the system shall use a loopback callback listener. | M | planned (M3) | — |
+| SSO-09 | The system shall request `esi-characters.read_notifications.v1` as a required scope; a character that does not grant it is stored Limited and is never polled for notifications. | M | done (0.8.0) | test_only_characters_that_granted_the_scope_are_polled, test_sign_in_creates_the_account_and_links_the_main |
 
 ### JSON bundle (UC-02, UC-03)
 
@@ -231,11 +236,32 @@ by gate jumps against the same target as the live ranking, on the **Roster** tab
 | ROS-21 | The Roster page shall offer filters for state (unresolved / resolved), tag and ranked-only, and the chosen ranking tab and these filters shall be kept in the `evedm_prefs` cookie. | S | done | test_roster_page_fixes_an_unresolved_entry (filter survives a reload) |
 | ROS-22 | Entry names, tags and notes shall be rendered as text, never as markup, on every page and in every report. | M | done | roster.js / rank.js (`textContent` only), code review |
 
+### Notifications: asset safety and structures under attack (UC-13, added in 0.8.0)
+
+Each registered character's own ESI notifications are read with its token and shown on one page, newest first, in
+the shape of the in-game notification: title, system with its region, EVE time. Asset-safety and structure types are
+shown by default; every other type is one tick away in the filters.
+
+| ID | Requirement | P | Status | Verified by |
+| --- | --- | --- | --- | --- |
+| NTF-01 | The system shall show the Notifications link, page and API only to a main whose alliance is in `notifications.alliance_ids`; for anyone else the link is absent and the page and API answer 404. The alliance is read from ESI `/characters/{id}` and re-read every `affiliation_hours`. | M | done | test_the_section_is_open_only_to_the_configured_alliance, test_the_page_and_api_are_hidden_from_other_alliances |
+| NTF-02 | Where notifications are enabled, the system shall poll ESI `/characters/{id}/notifications` every `poll_s` seconds (default 60) for the characters whose cached copy has expired, at most `concurrency` at a time. | M | done | test_poll_stores_new_notifications_once |
+| NTF-03 | The system shall ask for a character again only after `character_interval_s` (default 600, the ESI cache window) and shall store each notification once. | M | done | test_poll_stores_new_notifications_once |
+| NTF-04 | The system shall poll only enabled characters that granted `esi-characters.read_notifications.v1`, one link per character. | M | done | test_only_characters_that_granted_the_scope_are_polled |
+| NTF-05 | The system shall read the solar system, structure and structure type from the notification's YAML text (a starbase's `moonID` resolved through ESI); an unreadable text or a notification without a system shall still be stored. | M | done | test_body_is_parsed_and_a_broken_one_is_empty, test_a_notification_without_a_system_is_still_stored |
+| NTF-06 | If one character's notifications cannot be read, then the system shall record the reason against that character and continue with the others. | M | done | test_a_broken_token_is_recorded_and_does_not_stop_the_round |
+| NTF-07 | The page shall list each notification with its title, type, the character that received it, the system with security and region, EVE time and local time. | M | done | test_the_api_lists_notifications_with_region_and_closest_characters, test_notifications_page_shows_region_and_closest_characters |
+| NTF-08 | Each notification shall show the three closest characters from the Characters set (jumps, system, online) and the three closest from the Roster set, from the same cached BFS the ranking uses. | M | done | test_the_api_lists_notifications_with_region_and_closest_characters, browser test |
+| NTF-09 | By default only the configured groups shall be shown (asset safety, structure attacked, structure state and fuel, starbases); every other type shall be filtered out until it is ticked. | M | done | test_the_api_lists_notifications_with_region_and_closest_characters, test_notification_filters_open_other_types_and_survive_a_reload |
+| NTF-10 | The filter list shall offer the grouped ESI notification types and, under "Other notifications", every type ESI has actually sent that is not in a group; the selection and the period are kept in the `evedm_prefs` cookie. | M | done | test_the_catalogue_groups_the_known_types_and_adds_what_was_seen, test_notification_filters_open_other_types_and_survive_a_reload |
+| NTF-11 | The page shall refresh itself every `poll_s` seconds while visible and show how many characters are being read and which could not be. | S | done | notifications.js, test_the_api_lists_notifications_with_region_and_closest_characters |
+| NTF-12 | Notifications shall be kept `retention_days` (default 30) and the page shall work on a 360 px screen. | S | done | test_old_notifications_are_purged, test_notifications_fit_a_phone |
+
 ### Browser preferences
 
 | ID | Requirement | P | Status | Verified by |
 | --- | --- | --- | --- | --- |
-| PRF-01 | The browser shall remember the Wars tab and filters, the Structures and Alerts filters, the Alerts notification and sound choice, the map options (names, other characters, stargate links), the ranking auto-refresh interval, the ranking tab (Characters or Roster) and the Roster page filters in one first-party cookie (`evedm_prefs`, one year, SameSite=Lax); nothing is stored on the server; an unreadable cookie means defaults. | S | done (0.5.0) | test_wars_tabs_and_filters_survive_a_reload, test_map_options_and_auto_refresh_are_remembered, test_broken_prefs_cookie… |
+| PRF-01 | The browser shall remember the Wars tab and filters, the Structures and Alerts filters, the Alerts notification and sound choice, the map options (names, other characters, stargate links), the ranking auto-refresh interval, the ranking tab (Characters or Roster), the Roster page filters and the Notifications types and period in one first-party cookie (`evedm_prefs`, one year, SameSite=Lax); nothing is stored on the server; an unreadable cookie means defaults. | S | done (0.5.0) | test_wars_tabs_and_filters_survive_a_reload, test_map_options_and_auto_refresh_are_remembered, test_broken_prefs_cookie… |
 
 ## Non-functional requirements
 
@@ -247,7 +273,8 @@ by gate jumps against the same target as the live ranking, on the **Roster** tab
 | NFR-04 | Works without access to CCP static data at runtime. | universe file bundled in the package |
 | NFR-08 | Runs within 2 vCPU / 1 GB RAM. | container peak RSS 77.5 MB (cgroup 55 MiB), p95 83 ms at 422 req/s (WAL) |
 | NFR-09 | Static roster: importing 700 entries resolves them without any network call; ranking them adds little to a ranking that already has its BFS. | import 700 entries (46 KB) 54 ms; ranking 700 entries 16 ms; closest-for-an-alert over 700 entries 5.6 ms; 700 rows ≈ 44 KB in SQLite |
-| NFR-06 | Core unit tests for BFS, resolver, bundle, sort order, token refresh, accounts, war watcher, structure scout, structure alerts, static roster. | 0.8.0: 257 unit, 22 integration (7 process + 15 browser), 1 footprint; scenario matrix in 03-Testing |
+| NFR-10 | Notifications: the minute loop costs one ESI call per character per 600 s, and nothing while every character is cached. | 7 demo characters: at most 7 calls per 10 minutes; a round with nothing due makes no call |
+| NFR-06 | Core unit tests for BFS, resolver, bundle, sort order, token refresh, accounts, war watcher, structure scout, structure alerts, static roster, notifications. | 0.8.0: 269 unit, 25 integration (7 process + 18 browser), 1 footprint; scenario matrix in 03-Testing |
 
 ## Acceptance criteria → tests
 
@@ -278,3 +305,8 @@ by gate jumps against the same target as the live ranking, on the **Roster** tab
 | AC-23 | An alert card shows the live characters with Set destination and the roster characters without it | test_closest_static_characters_for_an_alert, alerts.js |
 | AC-24 | A roster name equal to a linked character's name is badged and absent from the alert card | test_closest_static_characters_for_an_alert |
 | AC-25 | Export → clear → import round trip restores the pool | test_export_import_round_trip |
+| AC-26 | An asset-safety notification appears on the Notifications page with its system, region and the closest characters | test_the_api_lists_notifications_with_region_and_closest_characters, test_notifications_page_shows_region_and_closest_characters |
+| AC-27 | A main of another alliance sees no Notifications link and gets 404 from the page and the API | test_the_page_and_api_are_hidden_from_other_alliances |
+| AC-28 | A type outside the default groups is hidden until it is ticked, and the choice survives a reload | test_notification_filters_open_other_types_and_survive_a_reload |
+| AC-29 | A character whose token is refused is reported and the other characters are still read | test_a_broken_token_is_recorded_and_does_not_stop_the_round |
+| AC-30 | A second poll inside the ESI cache window reads nothing | test_poll_stores_new_notifications_once |

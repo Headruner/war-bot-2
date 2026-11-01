@@ -2,9 +2,9 @@
 
 | Suite | Path | What runs | Count |
 | --- | --- | --- | --- |
-| Unit | `tests/unit` | In-process: universe/BFS, resolver, config, crypto, DB, SSO + ESI against the fake (ASGI transport), bundle, ranking, accounts (signed session cookies), war watcher, war census and high-sec structures, structure scout, structure alerts (R2Z2 feed, classification, Discord, Alerts API), Set destination, web API (TestClient), CLI, static roster (import, merge, resolution, ranking without ESI, export), dependency validation | 257 |
+| Unit | `tests/unit` | In-process: universe/BFS, resolver, config, crypto, DB, SSO + ESI against the fake (ASGI transport), bundle, ranking, accounts (signed session cookies), war watcher, war census and high-sec structures, structure scout, structure alerts (R2Z2 feed, classification, Discord, Alerts API), Set destination, web API (TestClient), CLI, static roster (import, merge, resolution, ranking without ESI, export), notifications (polling with the ESI cache, parsing, alliance gate, filters), dependency validation | 269 |
 | Integration | `tests/integration/test_e2e.py`, `test_multi_user.py`, `test_alerts_e2e.py` | Real `evedm serve` process + real fake EVE SSO/ESI process: sign-in, add characters, import, rank, ESI caching, export, revocation, second instance, restart, secrets-not-in-logs; several mains on one site; upgrade of a 0.3.0 database; structures shared through the scout; killmail feed → alerts → closest character → Set destination | 7 |
-| Browser | `tests/integration/test_ui.py`, `test_ui_accounts.py` | Chromium (Playwright): list + map + route bar, autocomplete, paste, characters page, phone layout, Wars page (filter, rank a structure system, phone, statistics and structures tabs), browser-cookie settings, Structures page, Alerts page (filters, deep link, offline characters), Set destination in the route bar, account UI (main badge, remove, delete account), Roster tab and Roster page | 15 |
+| Browser | `tests/integration/test_ui.py`, `test_ui_accounts.py` | Chromium (Playwright): list + map + route bar, autocomplete, paste, characters page, phone layout, Wars page (filter, rank a structure system, phone, statistics and structures tabs), browser-cookie settings, Structures page, Alerts page (filters, deep link, offline characters), Set destination in the route bar, account UI (main badge, remove, delete account), Roster tab and Roster page, Notifications page (cards, filters, phone) | 18 |
 | Footprint | `tests/perf` | 50 characters, 600 requests at concurrency 20, 40 ms ESI latency, server pinned to 2 CPUs; budget peak RSS ≤ 160 MB, p95 ≤ 1 s | 1 |
 | Dependencies | `tests/unit/test_dependencies.py` | every import pinned in `requirements.txt`, exact stable pins, installed = pinned, absolute verified paths, WAL + checkpoint | 8 |
 | Container | `scripts/docker-smoke.sh` | Image with `--cpus 2 --memory 1g`, host folder mounted at `/app/data`, health, ranking, wars, structures, alerts, WAL, `evedm check`, uid 10001, restart keeps data | script |
@@ -50,6 +50,15 @@ rows marked 0.5.0 cover the war census, the high-sec structure list and the brow
 | Roster | export, clear, import | pool restored unchanged | test_export_import_round_trip |
 | Roster | Roster tab in the browser | ranked list, Static badge, route on the map, no Set destination | test_roster_tab_ranks_static_characters_and_draws_a_route |
 | Roster | Roster page in the browser | filter survives a reload, a suggestion fixes an unresolved entry | test_roster_page_fixes_an_unresolved_entry |
+| Notifications | a character's ESI notifications | stored once, parsed for system and structure | test_poll_stores_new_notifications_once |
+| Notifications | second poll inside the 600 s cache window | nothing read, nothing stored | test_poll_stores_new_notifications_once |
+| Notifications | character without the notification scope | never polled | test_only_characters_that_granted_the_scope_are_polled |
+| Notifications | revoked token on one character | reason recorded, the others still read | test_a_broken_token_is_recorded_and_does_not_stop_the_round |
+| Notifications | unreadable YAML, no system in the text | stored anyway, shown without distances | test_body_is_parsed_and_a_broken_one_is_empty, test_a_notification_without_a_system_is_still_stored |
+| Notifications | main of another alliance | no link, 404 from the page and the API | test_the_page_and_api_are_hidden_from_other_alliances |
+| Notifications | page in the browser | title, system, region, EVE time, closest characters and roster line | test_notifications_page_shows_region_and_closest_characters |
+| Notifications | filters | non-default type hidden until ticked, choice kept in the cookie | test_notification_filters_open_other_types_and_survive_a_reload |
+| Notifications | retention | notifications older than retention_days are purged | test_old_notifications_are_purged |
 | Upgrade | legacy main signs in | takes over the legacy characters and recent targets (*fix*: they were hidden) | test_upgrade_from_single_user…, test_upgrade_from_a_single_user_database |
 | Upgrade | other main signs in first / demo characters | gets nothing / demo stays local | test_upgrade_from_single_user…, test_adopting_skips_demo… |
 | Config | `${VAR:-default}` with VAR empty in `.env` | default applies (*fix*) | test_env_defaults_apply_to_empty_variables, test_more_config_cases |

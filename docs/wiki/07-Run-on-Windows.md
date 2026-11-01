@@ -48,7 +48,8 @@ docker run --rm -p 8080:8080 -v "${PWD}\data\demo:/app/data" `
 1. <https://developers.eveonline.com/applications> > Create application (Authentication & API Access).
 2. Callback URL: `http://localhost:8080/sso/callback` (must match `EVE_CALLBACK_URL` exactly).
 3. Scopes: `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
-   for the Structures page `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1`, and for **Set
+   `esi-characters.read_notifications.v1` (Notifications page), for the Structures page
+   `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1`, and for **Set
    destination** `esi-ui.write_waypoint.v1`. EVE SSO refuses the sign-in (`invalid_scope`) while one of them is
    missing on the application; `EVE_OPTIONAL_SCOPES=none` leaves the last three out.
 4. Copy the **Client ID** and **Secret Key**.
@@ -212,3 +213,23 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
   Which kinds are posted: `alerts.discord.kinds` in `config/evedm.example.yaml`.
 - Put your mail or Discord name into `EVEDM_ALERTS_CONTACT` so zKillboard can reach you about your traffic. Switch
   alerts off with `EVEDM_ALERTS_ENABLED=0`. Alerts are kept 7 days.
+
+## Notifications page (0.8.0)
+
+Your characters' own EVE notifications, read from ESI with their tokens: **assets moved to asset safety**,
+**structures under attack**, structure state and fuel, starbase alerts. Each card shows the system with its
+security and region, the EVE time, and the three closest characters from your **Characters** set and from your
+**Roster** set, so you can see at a glance who is near.
+
+- The page is open to one alliance: `notifications.alliance_ids` in `config/evedm.example.yaml`
+  (or `EVEDM_NOTIFICATIONS_ALLIANCES=99010320,...` in `.env`). Mains of other alliances do not see the link.
+- It needs one more scope on your EVE application: tick `esi-characters.read_notifications.v1`, then
+  **Add character** again for every character. A character that has not granted it is marked Limited and is
+  never polled.
+- ESI caches notifications for 600 seconds per character, so the app asks once per character per cache window
+  and the page refreshes every minute; a new notification shows up within about a minute of ESI publishing it.
+- Everything else ESI sends (corporation mail, bills, insurance, sovereignty…) is filtered out until you tick it
+  under **Filters**; types ESI sends that CCP added after this release appear under **Other notifications**.
+  Your selection and the period are remembered in your browser.
+- Notifications are kept 30 days (`notifications.retention_days`). Switch the section off with
+  `EVEDM_NOTIFICATIONS_ENABLED=0`.
