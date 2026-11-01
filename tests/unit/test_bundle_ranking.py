@@ -84,7 +84,11 @@ async def test_import_adds_updates_limits_and_rejects(services, http, settings):
         ("Added", ""),
         ("Rejected", "character_mismatch"),
     ]
-    assert results[1].missing_scopes == ["esi-location.read_ship_type.v1", "esi-location.read_online.v1"]
+    assert results[1].missing_scopes == [
+        "esi-location.read_ship_type.v1",
+        "esi-location.read_online.v1",
+        "esi-characters.read_notifications.v1",
+    ]
     assert services["db"].get_character(2100000001).tags == ["main"]
     rep = report(results)
     assert rep["summary"] == {"Added": 2, "Updated": 0, "Limited": 1, "Rejected": 2}

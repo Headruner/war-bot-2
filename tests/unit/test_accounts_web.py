@@ -11,7 +11,7 @@ import itsdangerous
 import pytest
 from fastapi.testclient import TestClient
 
-from evedm.config import Settings
+from evedm.config import DEFAULT_SCOPES, Settings
 from evedm.wars.config import WarsSettings
 from evedm.web.app import create_app
 
@@ -256,10 +256,10 @@ def test_sign_in_creates_the_account_and_links_the_main(tmp_path):
         assert r.headers["location"] == "/characters?welcome=1"
         assert ids(c) == [A] and c.app.state.svc.db.get_user(A)["name"] == "Alice"
         assert "Welcome, Alice" in c.get("/characters?welcome=1").text
-        r = sso(c, "add", ALT, "Alice Alt", scopes=SCOPES[:1])  # declined two scopes
+        r = sso(c, "add", ALT, "Alice Alt", scopes=SCOPES[:1])  # declined every scope but the first
         assert r.headers["location"] == "/characters?added=Alice+Alt"
         alt = {x["character_id"]: x for x in c.get("/api/characters").json()}[ALT]
-        assert alt["status"] == "LIMITED" and len(alt["missing_scopes"]) == 2
+        assert alt["status"] == "LIMITED" and set(alt["missing_scopes"]) == set(DEFAULT_SCOPES) - set(SCOPES[:1])
         # signing in again: returning main, links kept, renamed main updated
         assert sso(c, "login", A, "Alice Renamed").headers["location"] == "/"
         assert ids(c) == [A, ALT] and c.app.state.svc.db.get_user(A)["name"] == "Alice Renamed"

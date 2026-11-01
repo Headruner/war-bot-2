@@ -330,3 +330,43 @@ def test_roster_page_fixes_an_unresolved_entry(server, browser):
     page.wait_for_selector("#roster-rows tr")
     assert "0 unresolved" in page.inner_text("#roster-stats")
     assert errors == []
+
+
+# --------------------------------------------------------------------------- notifications (UC-13)
+def test_notifications_page_shows_region_and_closest_characters(server, browser):
+    page, errors = open_page(browser, f"{server}/notifications")
+    page.wait_for_selector(".card.ntf")
+    cards = page.locator(".card.ntf")
+    assert cards.count() == 6  # the seventh demo notification is of a type filtered out by default
+
+    first = cards.first.inner_text()
+    assert "Asset Safety" in first and "Hek" in first and "Metropolis" in first  # title, system, region
+    assert "EVE Time" in first
+    assert "Your closest characters:" in first  # from the Characters set
+    assert "Roster:" in page.inner_text("#ntf-list")  # and from the Roster set
+    assert errors == []
+
+
+def test_notification_filters_open_other_types_and_survive_a_reload(server, browser):
+    page, errors = open_page(browser, f"{server}/notifications")
+    page.wait_for_selector(".card.ntf")
+    page.click("#ntf-filters-btn")
+    assert "InsurancePayoutMsg" in page.inner_text("#ntf-groups")  # seen, but not in a default group
+
+    page.click("#ntf-all")
+    page.wait_for_function("document.querySelectorAll('.card.ntf').length === 7")
+    page.reload()
+    page.wait_for_selector(".card.ntf")
+    assert page.locator(".card.ntf").count() == 7  # the choice is kept in this browser (prefs cookie)
+
+    page.click("#ntf-filters-btn")
+    page.click("#ntf-defaults")
+    page.wait_for_function("document.querySelectorAll('.card.ntf').length === 6")
+    assert errors == []
+
+
+def test_notifications_fit_a_phone(server, browser):
+    page, _ = open_page(browser, f"{server}/notifications", viewport={"width": 360, "height": 800},
+                        is_mobile=True, has_touch=True)
+    page.wait_for_selector(".card.ntf")
+    assert page.evaluate("document.documentElement.scrollWidth") <= 360

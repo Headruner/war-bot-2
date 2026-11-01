@@ -27,7 +27,12 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 CLIENT_ID = "test-client-id"
 CLIENT_SECRET = "test-client-secret"
-ALL_SCOPES = ["esi-location.read_location.v1", "esi-location.read_ship_type.v1", "esi-location.read_online.v1"]
+ALL_SCOPES = [
+    "esi-location.read_location.v1",
+    "esi-location.read_ship_type.v1",
+    "esi-location.read_online.v1",
+    "esi-characters.read_notifications.v1",
+]
 SHIP_NAMES = {
     587: "Rifter",
     22456: "Sabre",
@@ -101,6 +106,10 @@ class FakeState:
     r2z2_pointer: int = 5000
     r2z2_next: int = 5000
     r2z2_user_agents: set[str] = field(default_factory=set)
+    # character notifications and public affiliation (Notifications page)
+    notifications: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
+    affiliations: dict[int, dict[str, int]] = field(default_factory=dict)
+    default_alliance: int = 99010320
 
 
 def make_characters(n: int, seed: int = 7, systems: list[int] | None = None) -> dict[int, FakeCharacter]:
@@ -322,6 +331,23 @@ def create_fake_app(
             60,
         )
 
+    @app.get("/characters/{cid}/notifications")
+    async def notifications(request: Request, cid: int) -> Response:
+        count("notifications")
+        await maybe_delay()
+        if (err := esi_auth(request, cid, "esi-characters.read_notifications.v1")) is not None:
+            return err
+        return esi_json(request, st.notifications.get(cid, []), 600)
+
+    @app.get("/characters/{cid}")
+    async def character_public(request: Request, cid: int) -> Response:
+        """Public character sheet: the app reads corporation and alliance from it (the alliance gate)."""
+        count("character")
+        if cid not in st.characters:
+            return JSONResponse({"error": "Character not found"}, status_code=404)
+        body = st.affiliations.get(cid) or {"corporation_id": 98000001, "alliance_id": st.default_alliance}
+        return esi_json(request, {"name": st.characters[cid].name, **body}, 3600)
+
     @app.post("/universe/names")
     async def names(request: Request) -> Response:
         ids = await request.json()
@@ -461,6 +487,36 @@ def create_fake_app(
         c.ship_type_id = int(body.get("ship_type_id", c.ship_type_id))
         if "online" in body:
             c.online = bool(body["online"])
+        return {"ok": True}
+
+    @app.post("/_admin/notifications")
+    async def admin_notifications(request: Request) -> dict[str, Any]:
+        """Give a character notifications: {character_id, items: [{notification_id, type, text, timestamp}]}."""
+        body = await request.json()
+        cid = int(body["character_id"])
+        items = st.notifications.setdefault(cid, [])
+        for item in body.get("items", []):
+            items.insert(
+                0,
+                {
+                    "notification_id": int(item["notification_id"]),
+                    "type": item.get("type", "StructureUnderAttack"),
+                    "sender_id": item.get("sender_id", 1000132),
+                    "sender_type": item.get("sender_type", "corporation"),
+                    "timestamp": item.get("timestamp", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+                    "is_read": False,
+                    "text": item.get("text", ""),
+                },
+            )
+        return {"ok": True, "notifications": len(items)}
+
+    @app.post("/_admin/affiliation")
+    async def admin_affiliation(request: Request) -> dict[str, Any]:
+        body = await request.json()
+        st.affiliations[int(body["character_id"])] = {
+            "corporation_id": int(body.get("corporation_id", 98000001)),
+            "alliance_id": int(body.get("alliance_id", 0)) or None,  # type: ignore[dict-item]
+        }
         return {"ok": True}
 
     @app.post("/_admin/r2z2")

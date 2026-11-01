@@ -186,7 +186,9 @@ def test_discovered_structures_join_the_war_lists(graph):
 def test_optional_scopes_setting(monkeypatch, tmp_path):
     s = load_settings(tmp_path / "none.yaml")
     assert s.eve.optional_scopes == [*STRUCTURE_SCOPES, WAYPOINT_SCOPE]
-    assert s.eve.requested_scopes[:3] == s.eve.required_scopes and s.eve.requested_scopes[3:] == s.eve.optional_scopes
+    required = len(s.eve.required_scopes)
+    assert s.eve.requested_scopes[:required] == s.eve.required_scopes
+    assert s.eve.requested_scopes[required:] == s.eve.optional_scopes
     monkeypatch.setenv("EVE_OPTIONAL_SCOPES", "none")
     assert load_settings(tmp_path / "none.yaml").eve.optional_scopes == []
     monkeypatch.setenv("EVE_OPTIONAL_SCOPES", "esi-assets.read_assets.v1, esi-universe.read_structures.v1")
