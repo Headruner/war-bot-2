@@ -115,7 +115,8 @@ class RankingService:
     def _state(self, owner_id: int) -> _RefreshState:
         return self._states.setdefault(owner_id, _RefreshState())
 
-    def _parents(self, target: int) -> Any:
+    def parents(self, target: int) -> Any:
+        """Cached BFS from ``target`` (RTE-02): one search serves the ranking, the roster and the alerts."""
         parent = self._bfs_cache.get(target)
         if parent is None:
             parent = self.g.bfs(target, self.avoid)
@@ -123,6 +124,8 @@ class RankingService:
                 self._bfs_cache.pop(next(iter(self._bfs_cache)))
             self._bfs_cache[target] = parent
         return parent
+
+    _parents = parents  # the earlier private name, still used by callers
 
     async def _fetch_one(self, c: CharacterRow) -> tuple[int, dict[str, Any] | None, str | None]:
         try:
@@ -207,7 +210,7 @@ class RankingService:
                 chars.remove(c)
                 excluded.append({"character_id": c.character_id, "name": c.name, "reason": "re-auth required"})
         t_fetch = time.perf_counter()
-        parent = self._parents(target)
+        parent = self.parents(target)
         t_bfs = time.perf_counter()
         snaps = self.db.get_snapshots([c.character_id for c in chars])
         ship_names = await self._ship_names({s["ship_type_id"] for s in snaps.values() if s["ship_type_id"]})

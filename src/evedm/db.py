@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 log = logging.getLogger("evedm.db")
 
 SCHEMA = """
@@ -131,6 +131,23 @@ CREATE TABLE IF NOT EXISTS type_names (
     type_id INTEGER PRIMARY KEY,
     name    TEXT NOT NULL
 );
+-- static roster: uploaded char_name + star_system_name pairs of one main, ranked without ESI (UC-12)
+CREATE TABLE IF NOT EXISTS static_characters (
+    owner_id        INTEGER NOT NULL,
+    name_key        TEXT NOT NULL,                 -- char_name trimmed, collapsed and case-folded
+    char_name       TEXT NOT NULL,
+    system_name_raw TEXT NOT NULL,                 -- as uploaded, kept for unresolved entries
+    system_id       INTEGER,                       -- NULL while unresolved
+    resolve_state   TEXT NOT NULL DEFAULT 'resolved',  -- resolved | not_found | ambiguous
+    suggestions     TEXT NOT NULL DEFAULT '[]',
+    tags            TEXT NOT NULL DEFAULT '[]',
+    note            TEXT NOT NULL DEFAULT '',
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    uploaded_at     REAL NOT NULL,
+    PRIMARY KEY (owner_id, name_key)
+);
+CREATE INDEX IF NOT EXISTS static_by_system ON static_characters(owner_id, system_id);
+CREATE INDEX IF NOT EXISTS static_by_state ON static_characters(owner_id, resolve_state);
 CREATE TABLE IF NOT EXISTS target_history (
     owner_id        INTEGER NOT NULL DEFAULT 0,
     solar_system_id INTEGER NOT NULL,
@@ -247,6 +264,23 @@ class CharacterRow:
     owner_hash: str | None
     demo: bool
     added_at: float
+    owner_id: int = 0
+
+
+@dataclass
+class RosterRow:
+    """One static roster entry (UC-12): a name and a system, no tokens and no ESI data."""
+
+    name_key: str
+    char_name: str
+    system_name_raw: str
+    system_id: int | None
+    resolve_state: str
+    suggestions: list[str]
+    tags: list[str]
+    note: str
+    enabled: bool
+    uploaded_at: float
     owner_id: int = 0
 
 
@@ -475,6 +509,127 @@ class Database:
             if not c.execute("SELECT 1 FROM characters WHERE character_id=?", (character_id,)).fetchone():
                 c.execute("DELETE FROM snapshots WHERE character_id=?", (character_id,))
 
+    # -- static roster (UC-12, ROS-04, ROS-09, ROS-12) ------------------------------------------
+    @staticmethod
+    def _roster(row: sqlite3.Row) -> RosterRow:
+        return RosterRow(
+            name_key=row["name_key"],
+            char_name=row["char_name"],
+            system_name_raw=row["system_name_raw"],
+            system_id=row["system_id"],
+            resolve_state=row["resolve_state"],
+            suggestions=json.loads(row["suggestions"]),
+            tags=json.loads(row["tags"]),
+            note=row["note"],
+            enabled=bool(row["enabled"]),
+            uploaded_at=row["uploaded_at"],
+            owner_id=row["owner_id"],
+        )
+
+    @staticmethod
+    def _tags(tags: list[str], limit: int = 5, size: int = 24) -> list[str]:
+        return sorted({t.strip()[:size] for t in tags if t.strip()})[:limit]
+
+    def list_roster(self, owner_id: int = 0) -> list[RosterRow]:
+        rows = self.query(
+            "SELECT * FROM static_characters WHERE owner_id=? ORDER BY char_name COLLATE NOCASE", (owner_id,)
+        )
+        return [self._roster(r) for r in rows]
+
+    def get_roster(self, owner_id: int, name_key: str) -> RosterRow | None:
+        rows = self.query("SELECT * FROM static_characters WHERE owner_id=? AND name_key=?", (owner_id, name_key))
+        return self._roster(rows[0]) if rows else None
+
+    def count_roster(self, owner_id: int = 0) -> int:
+        return int(self.query("SELECT COUNT(*) FROM static_characters WHERE owner_id=?", (owner_id,))[0][0])
+
+    def upsert_roster(
+        self,
+        owner_id: int,
+        *,
+        name_key: str,
+        char_name: str,
+        system_name_raw: str,
+        system_id: int | None,
+        resolve_state: str = "resolved",
+        suggestions: list[str] | None = None,
+        tags: list[str] | None = None,
+        note: str = "",
+        enabled: bool | None = None,
+    ) -> bool:
+        """Merge one entry into the pool; True when it is new. Local enabled and tags are kept (ROS-04)."""
+        now = time.time()
+        with self.tx() as c:
+            exists = c.execute(
+                "SELECT 1 FROM static_characters WHERE owner_id=? AND name_key=?", (owner_id, name_key)
+            ).fetchone()
+            if exists:
+                sets = ["char_name=?", "system_name_raw=?", "system_id=?", "resolve_state=?", "suggestions=?",
+                        "uploaded_at=?"]
+                params: list[Any] = [char_name, system_name_raw, system_id, resolve_state,
+                                     json.dumps(suggestions or []), now]
+                if tags is not None:
+                    sets.append("tags=?")
+                    params.append(json.dumps(self._tags(tags)))
+                if note:
+                    sets.append("note=?")
+                    params.append(note[:120])
+                if enabled is not None:
+                    sets.append("enabled=?")
+                    params.append(int(enabled))
+                c.execute(
+                    f"UPDATE static_characters SET {', '.join(sets)} WHERE owner_id=? AND name_key=?",  # noqa: S608
+                    (*params, owner_id, name_key),
+                )
+                return False
+            c.execute(
+                "INSERT INTO static_characters(owner_id,name_key,char_name,system_name_raw,system_id,resolve_state,"
+                "suggestions,tags,note,enabled,uploaded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    owner_id,
+                    name_key,
+                    char_name,
+                    system_name_raw,
+                    system_id,
+                    resolve_state,
+                    json.dumps(suggestions or []),
+                    json.dumps(self._tags(tags or [])),
+                    note[:120],
+                    1 if enabled is None else int(enabled),
+                    now,
+                ),
+            )
+            return True
+
+    def update_roster(self, owner_id: int, name_key: str, **fields: Any) -> None:
+        """Change single fields of one entry (system fix, tags, enabled)."""
+        allowed = {"char_name", "system_name_raw", "system_id", "resolve_state", "suggestions", "tags", "note",
+                   "enabled"}
+        sets, params = [], []
+        for name, value in fields.items():
+            if name not in allowed:
+                continue
+            if name in ("suggestions", "tags"):
+                value = json.dumps(self._tags(value) if name == "tags" else [str(v) for v in value][:3])
+            elif name == "enabled":
+                value = int(bool(value))
+            sets.append(f"{name}=?")
+            params.append(value)
+        if not sets:
+            return
+        self.execute(
+            f"UPDATE static_characters SET {', '.join(sets)} WHERE owner_id=? AND name_key=?",  # noqa: S608
+            (*params, owner_id, name_key),
+        )
+
+    def delete_roster(self, owner_id: int, name_key: str) -> bool:
+        return bool(
+            self.execute("DELETE FROM static_characters WHERE owner_id=? AND name_key=?", (owner_id, name_key))
+        )
+
+    def clear_roster(self, owner_id: int = 0) -> int:
+        return self.execute("DELETE FROM static_characters WHERE owner_id=?", (owner_id,))
+
     # -- users (mains) --------------------------------------------------------------------------
     def upsert_user(self, user_id: int, name: str) -> bool:
         """Record a sign-in of a main; True when the main is new."""
@@ -504,6 +659,7 @@ class Database:
         with self.tx() as c:
             c.execute("DELETE FROM characters WHERE owner_id=?", (user_id,))
             c.execute("DELETE FROM target_history WHERE owner_id=?", (user_id,))
+            c.execute("DELETE FROM static_characters WHERE owner_id=?", (user_id,))
             c.execute("DELETE FROM users WHERE user_id=?", (user_id,))
             c.execute("DELETE FROM snapshots WHERE character_id NOT IN (SELECT character_id FROM characters)")
 

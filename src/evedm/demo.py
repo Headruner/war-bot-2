@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import time
+from typing import Any
 
 from .characters import CharacterService
 from .crypto import TokenCipher
@@ -176,3 +178,34 @@ def seed_demo(
         inserted += 1
     db.set_meta("demo_seeded_at", str(now))
     return inserted
+
+
+# (name, system, tags, note) - a static roster for demo mode: no tokens, no ESI (UC-12)
+DEMO_ROSTER = [
+    ("Rook Tarsis", "Amarr", ["corp"], "parked"),
+    ("Vey Alland", "Dodixie", ["hauler"], ""),
+    ("Sora Kell", "Perimeter", [], ""),
+    ("Dax Morrow", "Old Man Star", ["pvp"], ""),
+    ("Irel Voss", "Rens", [], ""),
+    ("Juno Sabre", "Tama", ["scout"], ""),
+    ("Kael Varn", "Jita", [], "same name as a linked character"),
+    ("Pax Ilun", "Jit", [], "misspelt on purpose: unresolved, with suggestions"),
+]
+
+
+def seed_demo_roster(roster: Any, owner_id: int = 0) -> int:
+    """Import the demo roster once (idempotent). Returns the number of entries added."""
+    if roster.db.count_roster(owner_id):
+        return 0
+    doc = {
+        "schema": "evedm-static-roster",
+        "version": 1,
+        "label": "Demo roster",
+        "characters": [
+            {"char_name": name, "star_system_name": system}
+            | ({"tags": tags} if tags else {})
+            | ({"note": note} if note else {})
+            for name, system, tags, note in DEMO_ROSTER
+        ],
+    }
+    return int(roster.import_file(json.dumps(doc).encode("utf-8"), owner_id)["summary"]["Added"])

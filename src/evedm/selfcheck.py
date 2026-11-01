@@ -40,9 +40,19 @@ STATIC_FILES = [
     "prefs.js",
     "structures.js",
     "alerts.js",
+    "roster.js",
     "favicon.svg",
 ]
-TEMPLATES = ["base.html", "index.html", "characters.html", "login.html", "wars.html", "structures.html", "alerts.html"]
+TEMPLATES = [
+    "base.html",
+    "index.html",
+    "characters.html",
+    "login.html",
+    "wars.html",
+    "structures.html",
+    "alerts.html",
+    "roster.html",
+]
 
 
 @dataclass
@@ -84,6 +94,7 @@ def check(settings: Settings, data: bool = True) -> CheckReport:
     resources_to_check = {
         "universe_file": universe,
         "bundle_schema": _package_path("schema/evedm-characters.v1.yaml"),
+        "roster_schema": _package_path("schema/evedm-static-roster.v1.yaml"),
         "templates_dir": _package_path("web/templates"),
         "static_dir": _package_path("web/static"),
     }
