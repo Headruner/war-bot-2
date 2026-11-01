@@ -20,16 +20,32 @@
       <p class="hint">Type a target system or paste the notification text. Characters are ranked by stargate jumps; click one to see its route.</p>
     </div>
     <div id="recent" class="chips"></div>
-    <ol id="rows" class="rows"></ol>
-    <div id="excluded" class="excluded"></div>
-    <div class="status-line">
-      <div id="status" class="status"></div>
-      <label class="small auto-refresh">Auto-refresh
-        <select id="auto-refresh" aria-label="Auto-refresh interval">
-          <option value="0">off</option><option value="15">15 s</option><option value="30">30 s</option>
-          <option value="60">1 min</option><option value="120">2 min</option>
-        </select>
-      </label>
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab active" data-tab="live" role="tab" aria-selected="true">Characters</button>
+      <button type="button" class="tab" data-tab="roster" role="tab" aria-selected="false">Roster<span
+        id="roster-count" class="count"></span></button>
+    </div>
+    <div id="live-pane">
+      <ol id="rows" class="rows"></ol>
+      <div id="excluded" class="excluded"></div>
+      <div class="status-line">
+        <div id="status" class="status"></div>
+        <label class="small auto-refresh">Auto-refresh
+          <select id="auto-refresh" aria-label="Auto-refresh interval">
+            <option value="0">off</option><option value="15">15 s</option><option value="30">30 s</option>
+            <option value="60">1 min</option><option value="120">2 min</option>
+          </select>
+        </label>
+      </div>
+    </div>
+    <div id="roster-pane" hidden>
+      <ol id="roster-rows" class="rows"></ol>
+      <div id="roster-empty" class="small" hidden>No roster yet. Upload a JSON file of character names and
+        systems on the <a href="/roster">Roster page</a>; those characters are ranked by jumps without ESI.</div>
+      <div class="status-line">
+        <div id="roster-status" class="status"></div>
+        <a class="small" href="/roster">Manage roster</a>
+      </div>
     </div>
   </section>
   <section class="map-pane" aria-label="Star map">

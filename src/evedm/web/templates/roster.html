@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Roster · EVE Distance Meter{% endblock %}
+{% block content %}
+<div class="page">
+  <h1>Static roster</h1>
+  <p class="small">Upload a JSON file of <code>char_name</code> + <code>star_system_name</code> pairs (at most
+    {{ max_entries }} entries, {{ max_kb }} KB). They are ranked by stargate jumps on the
+    <a href="/">Ranking</a> page, on the <b>Roster</b> tab, and appear under the closest characters on the
+    Alerts page. A roster entry has no tokens: nothing is ever read from ESI for it, so it shows no ship, no
+    online state and no <b>Set destination</b> button. An upload merges into this pool by character name:
+    names already here move to their new system and keep their tags and their <b>Ranked</b> setting.</p>
+  <div class="toolbar">
+    <label class="btn primary">Import JSON<input id="roster-file" type="file" accept="application/json,.json" hidden></label>
+    <button id="roster-export" class="btn" type="button">Export JSON</button>
+    <button id="roster-resolve" class="btn" type="button">Re-resolve unknown systems</button>
+    <button id="roster-clear" class="btn danger" type="button">Clear roster</button>
+    <span id="roster-stats" class="small"></span>
+  </div>
+  <details class="card">
+    <summary class="small">File format (schema evedm-static-roster v1)</summary>
+<pre class="small">{ "schema": "evedm-static-roster", "version": 1, "label": "Alt parking list",
+  "characters": [
+    { "char_name": "Tanya Vermaak", "star_system_name": "Perimeter", "tags": ["hauler"], "note": "Jita alt" },
+    { "char_name": "Rork Sanhai", "star_system_name": "Osmon" } ] }</pre>
+    <p class="small">A bare array of those entries is accepted as the same version. A name that is not a solar
+      system is kept as an unresolved entry with suggestions instead of being rejected; only the file as a
+      whole is rejected (too large, not JSON, not the schema, or more than {{ max_entries }} entries).
+      The file is not kept and its contents are never written to the log.</p>
+  </details>
+  <div id="roster-report" class="notice" hidden></div>
+  <div class="roster-filters">
+    <label class="small">Show
+      <select id="filter-state">
+        <option value="">all entries</option>
+        <option value="unresolved">unresolved only</option>
+        <option value="resolved">resolved only</option>
+      </select>
+    </label>
+    <label class="small">Tag <input id="filter-tag" type="text" placeholder="any" size="10"></label>
+    <label class="small"><input id="filter-enabled" type="checkbox"> ranked only</label>
+  </div>
+  <div class="card">
+    <table class="grid">
+      <thead><tr><th>Character</th><th>System</th><th>Ranked</th><th>Tags</th><th class="hide-sm">Note</th><th></th></tr></thead>
+      <tbody id="roster-rows"></tbody>
+    </table>
+    <p id="roster-empty" class="small" hidden>No entries yet. Import a JSON file to fill the roster.</p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/prefs.js?v={{ version }}"></script>
+<script src="/static/roster.js?v={{ version }}"></script>
+{% endblock %}

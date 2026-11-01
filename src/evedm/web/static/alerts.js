@@ -60,7 +60,11 @@ async function setDestination(c, system, btn, note) {
 function closestList(g) {
   const box = el("div", "closest");
   if (g.system.space === "wormhole") { box.append(el("div", "small", "Wormhole space: no stargate route.")); return box; }
-  if (!g.closest.length) { box.append(el("div", "small", "None of your characters can reach it by gates (or no location yet).")); return box; }
+  if (!g.closest.length) {
+    box.append(el("div", "small", "None of your characters can reach it by gates (or no location yet)."));
+    box.append(staticLine(g));
+    return box;
+  }
   box.append(el("div", "small", "Your closest characters:"));
   const ul = el("ul");
   g.closest.forEach((c) => {
@@ -77,7 +81,19 @@ function closestList(g) {
     ul.append(li);
   });
   box.append(ul);
+  box.append(staticLine(g));  // ALR-11: roster characters come after the live ones, never instead of them
   return box;
+}
+
+/* ALR-11: the closest static roster characters - jumps only, no token, so no Set destination. */
+function staticLine(g) {
+  const line = el("div", "small static-closest");
+  const rows = g.closest_static || [];
+  if (!rows.length) return line;
+  line.append(el("b", null, "Roster: "));
+  line.append(document.createTextNode(
+    rows.map((c) => `${c.name} (${c.jumps} jump${c.jumps === 1 ? "" : "s"})`).join(", ")));
+  return line;
 }
 
 function card(g) {

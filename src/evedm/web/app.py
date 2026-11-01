@@ -27,11 +27,14 @@ from ..characters import REAUTH, CharacterService
 from ..config import WAYPOINT_SCOPE, ConfigError, Settings
 from ..crypto import TokenCipher
 from ..db import Database
-from ..demo import seed_demo
+from ..demo import seed_demo, seed_demo_roster
 from ..esi import EsiClient, EsiError
 from ..logs import LaunchRecorder, peak_rss_mb, rss_mb, setup_logging, trim_memory
 from ..ranking import DemoProvider, LiveProvider, RankingService
 from ..resolver import TargetResolver
+from ..roster import MAX_BYTES as ROSTER_MAX_BYTES
+from ..roster import MAX_ENTRIES as ROSTER_MAX_ENTRIES
+from ..roster import RosterRejected, RosterService
 from ..scout import StructureScout, seed_demo_structures
 from ..selfcheck import check
 from ..sso import AuthService, SsoError
@@ -60,6 +63,7 @@ class Services:
     started: float
     wars: WarService | None = None
     scout: StructureScout | None = None
+    roster: RosterService | None = None
     alerts: AlertService | None = None
 
 
@@ -107,6 +111,11 @@ def build_services(settings: Settings) -> Services:
             log.info("seeded %s demo characters", seeded)
     launch = LaunchRecorder(db, settings, "demo" if settings.demo else "live")
     svc = Services(settings, db, graph, TargetResolver(graph), chars, ranking, auth, esi, http, launch, time.time())
+    svc.roster = RosterService(db, graph, svc.resolver, ranking, settings.instance_label)
+    if settings.demo:
+        seeded_roster = seed_demo_roster(svc.roster)
+        if seeded_roster:
+            log.info("seeded %s demo roster entries", seeded_roster)
     if settings.structures.enabled:
         svc.scout = StructureScout(settings, db, graph, chars, esi)  # type: ignore[arg-type]
     return svc
@@ -323,6 +332,12 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             welcome=request.query_params.get("welcome"),
         )
 
+    @app.get("/roster", response_class=HTMLResponse)
+    async def roster_page(request: Request) -> Response:
+        if user_of(request) is None:
+            return RedirectResponse("/login", status_code=303)
+        return page(request, "roster.html", max_entries=ROSTER_MAX_ENTRIES, max_kb=ROSTER_MAX_BYTES // 1000)
+
     @app.get("/alerts", response_class=HTMLResponse)
     async def alerts_page(request: Request) -> Response:
         if user_of(request) is None:
@@ -521,6 +536,106 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         await svc.chars.remove(character_id, uid)
         return JSONResponse({"ok": True})
 
+    # ------------------------------------------------------------------ API: static roster (UC-12)
+    def roster_of(request: Request) -> RosterService:
+        require_user(request)
+        roster = svc_of(request).roster
+        if roster is None:  # built with the services; only a half-built app has none
+            raise HTTPException(status_code=503, detail="the roster is not ready")
+        return roster
+
+    def target_index(request: Request, target: str) -> int:
+        svc = svc_of(request)
+        idx = svc.graph.index.get(int(target)) if target.isdigit() else svc.graph.find(target)
+        if idx is None:
+            raise HTTPException(status_code=404, detail=f"unknown solar system: {target}")
+        return idx
+
+    @app.post("/api/roster/import")
+    async def import_roster(request: Request, file: UploadFile = File(...)) -> JSONResponse:
+        """ROS-01: merge an uploaded char_name + star_system_name file into this main's pool."""
+        uid = owner(request)
+        require_csrf(request)
+        roster = roster_of(request)
+        raw = await file.read(ROSTER_MAX_BYTES + 1)
+        try:
+            return JSONResponse(roster.import_file(raw, uid))
+        except RosterRejected as exc:
+            return JSONResponse({"rejected": exc.reason, "errors": exc.errors}, status_code=422)
+
+    @app.post("/api/roster/resolve")
+    async def resolve_roster(request: Request) -> JSONResponse:
+        """ROS-11: try the unresolved entries again."""
+        uid = owner(request)
+        require_csrf(request)
+        roster = roster_of(request)
+        return JSONResponse({"resolved": roster.resolve_pending(uid), "stats": roster.stats(uid)})
+
+    @app.get("/api/roster/export")
+    async def export_roster(request: Request) -> Response:
+        """ROS-14: the pool in the same schema. It carries no credentials, so no confirmation is needed."""
+        uid = owner(request)
+        try:
+            doc = roster_of(request).export(uid)
+        except RosterRejected as exc:
+            raise HTTPException(status_code=400, detail=exc.reason) from exc
+        name = f"evedm-roster-{time.strftime('%Y%m%d-%H%M%S')}.json"
+        return Response(
+            json.dumps(doc, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{name}"'},
+        )
+
+    @app.get("/api/roster")
+    async def list_roster(request: Request, target: str = "", state: str = "", tag: str = "") -> JSONResponse:
+        """With a target: the ranked roster (ROS-16). Without: the pool as it is, for the Roster page."""
+        uid = owner(request)
+        roster = roster_of(request)
+        if target:
+            return JSONResponse(roster.rank(target_index(request, target), uid, tag=tag[:24]))
+        return JSONResponse({"rows": roster.list_view(uid, state=state, tag=tag[:24]), "stats": roster.stats(uid)})
+
+    @app.patch("/api/roster/{key:path}")
+    async def patch_roster(request: Request, key: str) -> JSONResponse:
+        """ROS-12: enable/disable, tags, or set the system of one entry."""
+        uid = owner(request)
+        require_csrf(request)
+        roster = roster_of(request)
+        body = await json_body(request)
+        enabled = body.get("enabled")
+        if enabled is not None and not isinstance(enabled, bool):
+            raise HTTPException(status_code=400, detail="enabled must be true or false")
+        tags = None
+        if "tags" in body:
+            raw_tags = body["tags"] if isinstance(body["tags"], list) else str(body["tags"]).split(",")
+            tags = [str(t) for t in raw_tags][:5]
+        system_name = body.get("system_name")
+        if system_name is not None and not isinstance(system_name, str):
+            raise HTTPException(status_code=400, detail="system_name must be a solar system name")
+        row = roster.patch(uid, key, enabled=enabled, tags=tags, system_name=system_name)
+        if row is None:
+            raise HTTPException(status_code=404, detail="unknown roster entry")
+        return JSONResponse(row)
+
+    @app.delete("/api/roster")
+    async def clear_roster(request: Request, confirm: int = 0) -> JSONResponse:
+        """ROS-12: clear the whole pool (confirmed in the browser)."""
+        uid = owner(request)
+        require_csrf(request)
+        roster_of(request)
+        if not confirm:
+            raise HTTPException(status_code=400, detail="confirm=1 required")
+        return JSONResponse({"ok": True, "removed": svc_of(request).db.clear_roster(uid)})
+
+    @app.delete("/api/roster/{key:path}")
+    async def delete_roster(request: Request, key: str) -> JSONResponse:
+        uid = owner(request)
+        require_csrf(request)
+        roster_of(request)
+        if not svc_of(request).db.delete_roster(uid, key):
+            raise HTTPException(status_code=404, detail="unknown roster entry")
+        return JSONResponse({"ok": True})
+
     # ------------------------------------------------------------------ API: wars
     def wars_of(request: Request) -> WarService:
         require_user(request)
@@ -635,6 +750,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         chars = [c for c in svc.db.list_characters(uid) if c.enabled and c.status != REAUTH]
         if refresh and chars:
             await svc.ranking.refresh_states(chars, 1, uid)
+        static_origins = svc.roster.origins(uid) if svc.roster is not None else []  # ALR-11
         groups: dict[str, dict[str, Any]] = {}
         for r in rows:
             a = svc.alerts.describe(r)
@@ -662,6 +778,10 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                     "core_drop": False,
                     "alerts": [],
                     "closest": closest_characters(svc, uid, idx),
+                    # ALR-11: static roster characters, jumps only, never in place of a live character
+                    "closest_static": RosterService.closest(static_origins, svc.ranking.parents(idx))
+                    if static_origins
+                    else [],
                     "target_index": idx,
                 }
             g["counts"][a["kind"]] += 1

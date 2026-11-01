@@ -32,7 +32,7 @@ function ago(iso) {
   return `${Math.round(s / 86400)} d ago`;
 }
 
-const state = { target: null, result: null, selected: null, timer: null, busy: false };
+const state = { target: null, result: null, selected: null, timer: null, busy: false, tab: "live" };
 const main = document.querySelector("main.split");
 const autoRefresh = Number(main.dataset.autoRefresh || 0);
 const map = new StarMap($("#map"), $("#tooltip"));
@@ -55,6 +55,7 @@ async function rank(target, { refresh = 1, keepSelection = false } = {}) {
     history.replaceState(null, "", url);
     $("#target").value = result.target.name;
     render();
+    rosterChanged();  // the roster is ranked against the same target (ROS-19)
     loadRecent();
     const st = result.stats;
     $("#status").textContent = `Updated ${new Date().toLocaleTimeString()} · ${st.characters} characters · ` +
@@ -332,3 +333,158 @@ $("#auto-refresh").addEventListener("change", (ev) => {
   const t = new URLSearchParams(location.search).get("target");
   if (t) rank(t);
 })();
+
+/* ---------------------------------------------------------------- static roster (UC-12, ROS-16..ROS-21)
+   Uploaded char_name + star_system_name entries: ranked against the same target, never sent to ESI. */
+const roster = { target: null, result: null, selected: null, stats: null, busy: false };
+
+function rosterCount() {
+  const span = $("#roster-count");
+  span.textContent = roster.stats && roster.stats.entries ? ` ${roster.stats.entries}` : "";
+}
+
+async function loadRosterStats() {
+  try {
+    roster.stats = (await api("/api/roster")).stats;
+    rosterCount();
+  } catch (_) { /* optional */ }
+}
+
+function rosterChanged() {
+  roster.result = null;
+  if (state.tab === "roster") rankRoster();
+}
+
+async function rankRoster() {
+  if (!state.target || roster.busy) return;
+  if (roster.result && roster.target === state.target.name) { renderRoster(); return; }
+  roster.busy = true;
+  $("#roster-status").textContent = "Updating…";
+  try {
+    const result = await api(`/api/roster?target=${encodeURIComponent(state.target.name)}`);
+    roster.result = result;
+    roster.target = state.target.name;
+    roster.stats = result.stats;
+    rosterCount();
+    if (!result.rows.some((r) => r.key === roster.selected)) {
+      const pick = result.rows.find((r) => r.recommended) || result.rows[0];
+      roster.selected = pick ? pick.key : null;
+    }
+    renderRoster();
+    const st = result.stats;
+    $("#roster-status").textContent = `${st.ranked} of ${st.entries} roster characters · ${st.reachable} reachable` +
+      `${st.unresolved ? ` · ${st.unresolved} unresolved` : ""} · ${st.total_ms} ms`;
+  } catch (err) {
+    $("#roster-status").textContent = `Error: ${err.message}`;
+  } finally {
+    roster.busy = false;
+  }
+}
+
+function renderRoster() {
+  const list = $("#roster-rows");
+  list.innerHTML = "";
+  const rows = roster.result ? roster.result.rows : [];
+  $("#roster-empty").hidden = rows.length > 0;
+  rows.forEach((row, n) => list.append(renderRosterRow(row, n + 1)));
+  showRosterSelection();
+}
+
+function renderRosterRow(row, n) {
+  const li = el("li", "row static");
+  li.dataset.key = row.key;
+  if (!row.reachable) li.classList.add("unreachable");
+  if (row.key === roster.selected) li.classList.add("selected");
+  li.tabIndex = 0;
+
+  const who = el("div", "who");
+  const name = el("div", "name", row.name);
+  if (row.recommended) name.append(el("span", "badge closest", "Closest"));
+  name.append(el("span", "badge static", "Static"));
+  if (row.shadowed) name.append(el("span", "badge shadowed", "Also linked"));
+  if (row.resolve_state !== "resolved") name.append(el("span", "badge unresolved", row.reason));
+  who.append(name);
+
+  const where = el("div", "where");
+  if (row.system) {
+    where.append(secChip(row.system.security), el("span", null, `${row.system.name} · ${row.system.region}`));
+  } else {
+    where.append(el("span", null, `"${row.system_name}" — ${row.reason}`));
+    if (row.suggestions && row.suggestions.length) {
+      where.append(el("span", "suggest-fix", `did you mean ${row.suggestions.join(", ")}?`));
+    }
+  }
+  who.append(where);
+
+  const extra = [row.tags.join(", "), row.note].filter(Boolean).join(" · ");
+  who.append(el("div", "meta", extra || "static entry · no ship or online state"));
+
+  const jumps = el("div", "jumps");
+  if (row.reachable) {
+    jumps.append(el("b", null, String(row.jumps)), el("span", null, row.jumps === 1 ? "jump" : "jumps"));
+  } else {
+    jumps.append(el("b", null, row.system ? "No gate route" : "Unknown system"));
+  }
+
+  li.append(el("div", "rank", String(n)), who, jumps);
+  li.addEventListener("click", () => selectStatic(row.key));
+  li.addEventListener("keydown", (ev) => { if (ev.key === "Enter") selectStatic(row.key); });
+  return li;
+}
+
+function selectStatic(key) {
+  roster.selected = key;
+  document.querySelectorAll("#roster-rows .row").forEach((li) => li.classList.toggle("selected", li.dataset.key === key));
+  showRosterSelection();
+}
+
+function showRosterSelection() {
+  const r = roster.result;
+  if (!r) return;
+  const row = r.rows.find((x) => x.key === roster.selected);
+  const markers = r.rows.filter((x) => x.system).map((x) => ({ systemId: x.system.id, name: x.name }));
+  map.setScene({ targetId: r.target.id, routeIds: row && row.route, originName: row && row.name, markers });
+  const bar = $("#route-bar");
+  bar.innerHTML = "";
+  if (!row) { bar.hidden = true; return; }
+  const title = el("div", "title");
+  if (row.reachable) {
+    const s = row.route_summary;
+    title.append(document.createTextNode(`${row.name}: ${row.system.name} → ${r.target.name} · ${row.jumps} jumps `),
+      el("span", "muted", `(${s.high} high · ${s.low} low · ${s.null} null)`));
+    const path = el("div", "path");
+    row.route.forEach((id, k) => {
+      const i = map.indexOf(id);
+      if (k) path.append(el("span", "arrow", "›"));
+      const hop = el("span", "hop");
+      hop.append(secChip(map.sec[i]), el("span", null, map.names[i]));
+      path.append(hop);
+    });
+    // no Set destination: a static entry has no token (D10)
+    bar.append(title, path, el("div", "small", "Roster entry: jumps only, no ship, online state or destination."));
+  } else {
+    title.textContent = row.system
+      ? `${row.name} is in ${row.system.name} (${row.system.region}): no stargate route to ${r.target.name}.`
+      : `${row.name}: "${row.system_name}" is not a known solar system — fix it on the Roster page.`;
+    bar.append(title);
+  }
+  bar.hidden = false;
+}
+
+/* ---------------------------------------------------------------- tabs (remembered in this browser) */
+function setTab(tab) {
+  state.tab = tab;
+  Prefs.set("rank", { tab });
+  document.querySelectorAll(".tab").forEach((b) => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", String(on));
+  });
+  $("#live-pane").hidden = tab !== "live";
+  $("#roster-pane").hidden = tab !== "roster";
+  if (tab === "roster") rankRoster();
+  else showSelection();
+}
+document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
+setTab(Prefs.get("rank", { tab: "live" }).tab === "roster" ? "roster" : "live");
+loadRosterStats();
