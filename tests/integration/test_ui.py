@@ -290,3 +290,43 @@ def test_route_bar_sets_the_destination_of_an_online_character(server, browser):
     page.wait_for_function("document.querySelector('#route-bar .set-route').innerText.includes('demo')")
     assert "demo: destination not sent" in page.locator("#route-bar .set-route").inner_text()
     assert errors == []
+
+
+# --------------------------------------------------------------------------- static roster (UC-12)
+def test_roster_tab_ranks_static_characters_and_draws_a_route(server, browser):
+    page, errors = open_page(browser, f"{server}/?target=Jita")
+    page.wait_for_selector(".row")
+    page.click('.tab[data-tab="roster"]')
+    page.wait_for_selector("#roster-rows .row")
+    rows = page.locator("#roster-rows .row")
+    assert rows.count() >= 6
+    first = rows.first.inner_text().lower()  # badges are upper-cased by the stylesheet
+    assert "static" in first and "closest" in first
+    assert "jump" in first  # ranked by gates, like the live list
+    assert "Set destination" not in page.inner_text("#route-bar")  # a static entry has no token (D10)
+    assert canvas_has_pixels(page)  # the route of the selected static character is on the map
+
+    last = rows.last.inner_text().lower()  # unresolved, ranked last, with suggestions
+    assert "unknown system" in last and "did you mean jita" in last
+    assert page.locator("#roster-count").inner_text().strip() != ""
+    assert errors == []
+
+
+def test_roster_page_fixes_an_unresolved_entry(server, browser):
+    page, errors = open_page(browser, f"{server}/roster")
+    page.wait_for_selector("#roster-rows tr")
+    assert "unresolved" in page.inner_text("#roster-stats")
+    page.select_option("#filter-state", "unresolved")
+    page.wait_for_function("document.querySelectorAll('#roster-rows tr').length === 1")
+    assert "Pax Ilun" in page.inner_text("#roster-rows")
+
+    page.reload()  # the filter is kept in this browser (prefs cookie, ROS-21)
+    page.wait_for_selector("#roster-rows tr")
+    assert page.input_value("#filter-state") == "unresolved"
+
+    page.click("#roster-rows .suggest-fix button")  # "did you mean Jita?"
+    page.wait_for_function("document.querySelectorAll('#roster-rows tr').length === 0")
+    page.select_option("#filter-state", "")
+    page.wait_for_selector("#roster-rows tr")
+    assert "0 unresolved" in page.inner_text("#roster-stats")
+    assert errors == []
