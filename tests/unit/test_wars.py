@@ -352,7 +352,9 @@ def test_cli_wars_list_stats_check(tmp_path, monkeypatch, capsys, graph):
     out = capsys.readouterr().out
     assert "#990001" in out and "[Tama, Kedama, Nourvukaiken]" in out
     assert main(["wars", "stats"]) == 0
-    assert json.loads(capsys.readouterr().out.splitlines()[0])["total"] == 3
+    # the three demo wars were declared 3, 9 and 20 hours ago: across a month boundary they land in two rows
+    months = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert sum(m["total"] for m in months) == 3
     assert main(["wars", "check", "--wars-config", str(tmp_path / "none.yaml")]) == 0
     assert json.loads(capsys.readouterr().out)["enabled"] is False
 
