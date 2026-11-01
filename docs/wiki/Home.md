@@ -4,7 +4,7 @@ EVE Distance Meter ranks your EVE Online characters by **stargate jumps** to a t
 flying, and draws the route of the selected character on a **2D star map**. You read a notification (for example in the
 Discord channel of your existing bot), type or paste the system, and decide which character to log in. Since 0.7.0 the
 Alerts page also watches zKillboard's live feed for structures destroyed (quantum core drops), combat next to known
-structures and structures firing, lists your closest characters and can set an online character's destination.
+structures and structures firing, lists your closest characters and can set an online character's destination. Since 0.8.0 you can also upload a **static roster** (character name + system, no ESI) and rank it against the same target on the Roster tab.
 
 | Page | What it covers |
 | --- | --- |

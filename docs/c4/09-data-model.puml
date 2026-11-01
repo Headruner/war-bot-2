@@ -68,6 +68,20 @@ entity meta {
   --
   value : TEXT
 }
+entity static_characters {
+  * owner_id : INTEGER <<PK>>
+  * name_key : TEXT <<PK>>
+  --
+  char_name : TEXT
+  system_name_raw : TEXT
+  system_id : INTEGER (NULL while unresolved)
+  resolve_state : resolved | not_found | ambiguous
+  suggestions : TEXT (JSON)
+  tags : TEXT (JSON)
+  note : TEXT
+  enabled : INTEGER
+  uploaded_at : REAL
+}
 characters ||--|| tokens
 characters ||--o| snapshots
 @enduml

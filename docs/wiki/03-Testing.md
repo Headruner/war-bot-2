@@ -2,9 +2,9 @@
 
 | Suite | Path | What runs | Count |
 | --- | --- | --- | --- |
-| Unit | `tests/unit` | In-process: universe/BFS, resolver, config, crypto, DB, SSO + ESI against the fake (ASGI transport), bundle, ranking, accounts (signed session cookies), war watcher, war census and high-sec structures, structure scout, structure alerts (R2Z2 feed, classification, Discord, Alerts API), Set destination, web API (TestClient), CLI, dependency validation | 235 |
+| Unit | `tests/unit` | In-process: universe/BFS, resolver, config, crypto, DB, SSO + ESI against the fake (ASGI transport), bundle, ranking, accounts (signed session cookies), war watcher, war census and high-sec structures, structure scout, structure alerts (R2Z2 feed, classification, Discord, Alerts API), Set destination, web API (TestClient), CLI, static roster (import, merge, resolution, ranking without ESI, export), dependency validation | 257 |
 | Integration | `tests/integration/test_e2e.py`, `test_multi_user.py`, `test_alerts_e2e.py` | Real `evedm serve` process + real fake EVE SSO/ESI process: sign-in, add characters, import, rank, ESI caching, export, revocation, second instance, restart, secrets-not-in-logs; several mains on one site; upgrade of a 0.3.0 database; structures shared through the scout; killmail feed → alerts → closest character → Set destination | 7 |
-| Browser | `tests/integration/test_ui.py`, `test_ui_accounts.py` | Chromium (Playwright): list + map + route bar, autocomplete, paste, characters page, phone layout, Wars page (filter, rank a structure system, phone, statistics and structures tabs), browser-cookie settings, Structures page, Alerts page (filters, deep link, offline characters), Set destination in the route bar, account UI (main badge, remove, delete account) | 13 |
+| Browser | `tests/integration/test_ui.py`, `test_ui_accounts.py` | Chromium (Playwright): list + map + route bar, autocomplete, paste, characters page, phone layout, Wars page (filter, rank a structure system, phone, statistics and structures tabs), browser-cookie settings, Structures page, Alerts page (filters, deep link, offline characters), Set destination in the route bar, account UI (main badge, remove, delete account), Roster tab and Roster page | 15 |
 | Footprint | `tests/perf` | 50 characters, 600 requests at concurrency 20, 40 ms ESI latency, server pinned to 2 CPUs; budget peak RSS ≤ 160 MB, p95 ≤ 1 s | 1 |
 | Dependencies | `tests/unit/test_dependencies.py` | every import pinned in `requirements.txt`, exact stable pins, installed = pinned, absolute verified paths, WAL + checkpoint | 8 |
 | Container | `scripts/docker-smoke.sh` | Image with `--cpus 2 --memory 1g`, host folder mounted at `/app/data`, health, ranking, wars, structures, alerts, WAL, `evedm check`, uid 10001, restart keeps data | script |
@@ -38,6 +38,18 @@ rows marked 0.5.0 cover the war census, the high-sec structure list and the brow
 | Input | invalid JSON, non-object JSON, non-boolean `enabled`, bad IDs, missing confirm | 400, never 500 (*fix*) | test_bad_input_is_a_4xx_never_a_500 |
 | Input | state change without the X-EVEDM header | 403 | test_state_changes_need_the_csrf_header |
 | Upgrade | 0.3.0 database (schema v1) | migrated in place to owner 0, FK check clean | test_v1_database_is_migrated_to_owner_0 |
+| Roster | upload 50-700 name + system pairs | merged into the main's pool, report per entry | test_roster_api_import_rank_and_manage |
+| Roster | upload again after characters moved | systems updated, tags and Ranked setting kept | test_import_merges_and_keeps_local_settings |
+| Roster | bad name, duplicate name in one file | those entries rejected, the rest imported | test_bad_entries_are_rejected_one_by_one |
+| Roster | file too large, not JSON, unknown property, over 1000 entries | whole file rejected with JSON paths | test_file_level_rejections, test_more_than_the_maximum_entries_is_rejected |
+| Roster | unknown or ambiguous system | stored unresolved with up to three suggestions, ranked last | test_unknown_system_is_stored_unresolved_with_suggestions, test_several_systems_in_one_field_are_ambiguous |
+| Roster | station name as the system | resolved to the system it names | test_a_station_name_resolves_to_its_system |
+| Roster | rank against a target | reachable first by jumps, no ESI call, no extra BFS | test_ranking_order_route_and_no_esi |
+| Roster | pool per main, account deleted | invisible to other mains, deleted with the account | test_the_pool_is_per_main_and_goes_with_the_account |
+| Roster | name equal to a linked character | badged "also linked", left out of the alert card | test_closest_static_characters_for_an_alert |
+| Roster | export, clear, import | pool restored unchanged | test_export_import_round_trip |
+| Roster | Roster tab in the browser | ranked list, Static badge, route on the map, no Set destination | test_roster_tab_ranks_static_characters_and_draws_a_route |
+| Roster | Roster page in the browser | filter survives a reload, a suggestion fixes an unresolved entry | test_roster_page_fixes_an_unresolved_entry |
 | Upgrade | legacy main signs in | takes over the legacy characters and recent targets (*fix*: they were hidden) | test_upgrade_from_single_user…, test_upgrade_from_a_single_user_database |
 | Upgrade | other main signs in first / demo characters | gets nothing / demo stays local | test_upgrade_from_single_user…, test_adopting_skips_demo… |
 | Config | `${VAR:-default}` with VAR empty in `.env` | default applies (*fix*) | test_env_defaults_apply_to_empty_variables, test_more_config_cases |

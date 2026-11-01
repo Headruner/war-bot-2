@@ -19,6 +19,10 @@ requirement to the code and to the automated tests in this repository (0.3.0, ex
 | D7 | The star map is a 2D top-down projection of SDE coordinates, drawn by the app (canvas). No external map or route site. |
 | D8 | The app writes to the game client only when the user asks: **Set destination** sets the autopilot destination of an online character (`esi-ui.write_waypoint.v1`, revised in 0.7.0; until then the app never wrote to the client). Nothing else is sent, and nothing is sent on its own. |
 | D9 | Structure attack timers are not public (only the owner corporation's directors get them). Structure alerts use public killmails from zKillboard's live feed instead: destroyed, combat on grid, structure firing (0.7.0). |
+| D10 | A static roster entry is never sent to ESI: it has no tokens, no ship, no online state and never enters the refresh or rate-limit paths. Its only data are a name, a system and the moment it was uploaded (0.8.0). |
+| D11 | One roster pool per main, merged on upload and keyed by the normalised character name: an upload adds new names and moves names already there. No named sets, no versions. |
+| D12 | A roster entry whose system does not resolve is stored unresolved with its reason and up to three suggestions, not rejected; only the file as a whole can be rejected. |
+| D13 | Roster characters are ranked on their own tab of the ranking view and listed on the Roster page; they never mix into the live list and never take the place of a live character, on the Alerts page included. |
 
 ## Use cases
 
@@ -35,6 +39,7 @@ requirement to the code and to the automated tests in this repository (0.3.0, ex
 | UC-09 | Sign in with a main; link alts to it; stay signed in | 0.4.0 |
 | UC-10 | Follow wars and high-sec structures of warring corporations | 0.4.0, statistics 0.5.0 |
 | UC-11 | React to a structure alert: see what happened where, pick the closest character, set its destination | 0.7.0 |
+| UC-12 | Upload a static roster (character name + system) and rank it against a target without ESI | 0.8.0 |
 
 ## Functional requirements
 
@@ -193,12 +198,44 @@ requirement to the code and to the automated tests in this repository (0.3.0, ex
 | ALR-08 | The page shall refresh every 30 s and, when the user allows it, show a desktop notification and/or play a sound for alerts newer than the last one seen in this browser; a Discord link `#alert-<id>` opens the card of that alert. | S | done | test_alerts_page_filters_deep_links_and_offline_characters |
 | ALR-09 | Where `alerts.discord.enabled`, the system shall post alerts of `alerts.discord.kinds` to the webhook with a link to the Alerts page, at most one combat/firing post per structure within `combat_cooldown_min`, pinging `mention_role_id` on destroyed only; a failed post stays queued, an invalid webhook is reported (redacted). | S | done | test_discord_posts_kinds_cooldown_and_mentions, test_discord_failures_keep_alerts_queued |
 | ALR-10 | Alerts shall be kept `retention_days` (default 7); settings are validated at start-up (`poll_s` ≥ 6, positive grid and retention, known kinds, webhook present when Discord is on). | M | done | test_names_describe_and_purge, test_alert_settings_are_validated |
+| ALR-11 | The alert card shall keep the three closest live characters with **Set destination** and show the closest static roster characters below them, with jumps only and no button; a roster character shall never replace a live one. | S | done (0.8.0) | test_closest_static_characters_for_an_alert, alerts.js |
+
+### Static roster: uploaded character / system list (UC-12, added in 0.8.0)
+
+A main uploads a JSON file of `char_name` + `star_system_name` pairs (schema `evedm-static-roster` v1, typically
+50-700 entries). The entries are **static**: no SSO, no tokens, no ESI. They are resolved to systems once and ranked
+by gate jumps against the same target as the live ranking, on the **Roster** tab; the **Roster** page manages them.
+
+| ID | Requirement | P | Status | Verified by |
+| --- | --- | --- | --- | --- |
+| ROS-01 | The system shall provide an Import roster action that accepts a UTF-8 JSON file conforming to schema `evedm-static-roster` v1 and links every entry to the signed-in main. | M | done | test_roster_api_import_rank_and_manage |
+| ROS-02 | If the file is over 256 KB, not UTF-8 JSON, not schema-valid, or holds more than 1000 entries, then the system shall reject it whole and report each violation with its JSON path. | M | done | test_file_level_rejections, test_more_than_the_maximum_entries_is_rejected |
+| ROS-03 | The system shall accept both the enveloped form and a bare array of entries as v1. | M | done | test_a_bare_array_is_the_same_schema |
+| ROS-04 | When an entry's name is new, the system shall add it; when the name is already in the pool, the system shall update its system, note and upload time, keep its enabled flag, and keep its tags unless the file carries tags for that entry. | M | done | test_import_merges_and_keeps_local_settings |
+| ROS-05 | If an entry's name is not 3-37 letters, digits, spaces, hyphens or apostrophes, or repeats a name used earlier in the same file, then the system shall reject that entry alone and report it with its JSON path and reason. | M | done | test_bad_entries_are_rejected_one_by_one |
+| ROS-06 | If `star_system_name` does not resolve to exactly one solar system, then the system shall store the entry unresolved with the raw name, the reason (not found / ambiguous) and up to three suggestions; a station or structure name that contains exactly one system name resolves to that system. | M | done | test_unknown_system_is_stored_unresolved_with_suggestions, test_several_systems_in_one_field_are_ambiguous, test_a_station_name_resolves_to_its_system |
+| ROS-07 | The system shall report Added, Updated, Unresolved and Rejected counts and one line per entry that needs attention. | M | done | test_roster_api_import_rank_and_manage |
+| ROS-08 | The system shall not keep the uploaded file and shall not log entry contents; only counts and reasons are logged. | M | done | roster.py (`import_file`), code review |
+| ROS-09 | The system shall hold one pool per main of at most 1000 entries, and shall show, rank, change and export only the pool of the signed-in main. | M | done | test_pool_cap_rejects_the_whole_file, test_the_pool_is_per_main_and_goes_with_the_account |
+| ROS-10 | A roster entry shall never be sent to ESI: no tokens, never refreshed, no ship, online or docked state, never marked Stale, and no share of the ESI rate-limit budget. | M | done | test_ranking_order_route_and_no_esi (a provider that fails the test if it is called) |
+| ROS-11 | The system shall provide Re-resolve for unresolved entries and shall resolve them again after a universe rebuild. | S | done | test_re_resolve_picks_up_a_corrected_universe, test_roster_page_fixes_an_unresolved_entry |
+| ROS-12 | The system shall let the user enable/disable an entry, edit its tags, set its system (by name or by clicking a suggestion), remove one entry and clear the pool behind a confirmation. | S | done | test_roster_api_import_rank_and_manage, test_roster_page_fixes_an_unresolved_entry |
+| ROS-13 | When the account is deleted, the system shall delete the pool of that main. | M | done | test_the_pool_is_per_main_and_goes_with_the_account |
+| ROS-14 | The system shall offer a download of the pool in schema `evedm-static-roster` v1; it carries no credentials, so no confirmation is required. | S | done | test_export_import_round_trip |
+| ROS-15 | If an entry's name equals the name of a character linked to the same main, then the system shall mark it "also linked" and leave it out of the Alerts card, while keeping it on the Roster tab. | S | done | test_closest_static_characters_for_an_alert |
+| ROS-16 | The Roster tab shall rank the enabled entries against the current target, reading every distance from the BFS already computed for that target; no extra BFS shall be run. | M | done | test_ranking_order_route_and_no_esi, test_ranking_can_be_filtered_by_tag |
+| ROS-17 | Rows shall be sorted reachable first by jumps, then by name; entries with no gate route and unresolved entries shall be last, with their reason. | M | done | test_ranking_order_route_and_no_esi |
+| ROS-18 | Each row shall show rank, name, system (security, region), jumps, tags, note and the Static badge, and no ship, online, docked or Set destination control. | M | done | test_ranking_order_route_and_no_esi, test_roster_tab_ranks_static_characters_and_draws_a_route |
+| ROS-19 | The Roster tab shall take the target from the shared target input and from `?target=<name>`, and a new target shall rank both lists. | M | done | test_roster_tab_ranks_static_characters_and_draws_a_route |
+| ROS-20 | When a roster row is selected, the map shall draw its route, mark origin and target and zoom to fit, with the roster entries' systems marked. | S | done | test_roster_tab_ranks_static_characters_and_draws_a_route (canvas pixels) |
+| ROS-21 | The Roster page shall offer filters for state (unresolved / resolved), tag and ranked-only, and the chosen ranking tab and these filters shall be kept in the `evedm_prefs` cookie. | S | done | test_roster_page_fixes_an_unresolved_entry (filter survives a reload) |
+| ROS-22 | Entry names, tags and notes shall be rendered as text, never as markup, on every page and in every report. | M | done | roster.js / rank.js (`textContent` only), code review |
 
 ### Browser preferences
 
 | ID | Requirement | P | Status | Verified by |
 | --- | --- | --- | --- | --- |
-| PRF-01 | The browser shall remember the Wars tab and filters, the Structures and Alerts filters, the Alerts notification and sound choice, the map options (names, other characters, stargate links) and the ranking auto-refresh interval in one first-party cookie (`evedm_prefs`, one year, SameSite=Lax); nothing is stored on the server; an unreadable cookie means defaults. | S | done (0.5.0) | test_wars_tabs_and_filters_survive_a_reload, test_map_options_and_auto_refresh_are_remembered, test_broken_prefs_cookie… |
+| PRF-01 | The browser shall remember the Wars tab and filters, the Structures and Alerts filters, the Alerts notification and sound choice, the map options (names, other characters, stargate links), the ranking auto-refresh interval, the ranking tab (Characters or Roster) and the Roster page filters in one first-party cookie (`evedm_prefs`, one year, SameSite=Lax); nothing is stored on the server; an unreadable cookie means defaults. | S | done (0.5.0) | test_wars_tabs_and_filters_survive_a_reload, test_map_options_and_auto_refresh_are_remembered, test_broken_prefs_cookie… |
 
 ## Non-functional requirements
 
@@ -209,7 +246,8 @@ requirement to the code and to the automated tests in this repository (0.3.0, ex
 | NFR-03 | ESI: User-Agent, X-Compatibility-Date, rate-limit headers, Retry-After on 429, back-off on 420. | implemented, tested |
 | NFR-04 | Works without access to CCP static data at runtime. | universe file bundled in the package |
 | NFR-08 | Runs within 2 vCPU / 1 GB RAM. | container peak RSS 77.5 MB (cgroup 55 MiB), p95 83 ms at 422 req/s (WAL) |
-| NFR-06 | Core unit tests for BFS, resolver, bundle, sort order, token refresh, accounts, war watcher, structure scout, structure alerts. | 0.7.0: 235 unit, 20 integration (7 process + 13 browser), 1 footprint; scenario matrix in 03-Testing |
+| NFR-09 | Static roster: importing 700 entries resolves them without any network call; ranking them adds little to a ranking that already has its BFS. | import 700 entries (46 KB) 54 ms; ranking 700 entries 16 ms; closest-for-an-alert over 700 entries 5.6 ms; 700 rows ≈ 44 KB in SQLite |
+| NFR-06 | Core unit tests for BFS, resolver, bundle, sort order, token refresh, accounts, war watcher, structure scout, structure alerts, static roster. | 0.8.0: 257 unit, 22 integration (7 process + 15 browser), 1 footprint; scenario matrix in 03-Testing |
 
 ## Acceptance criteria → tests
 
@@ -230,3 +268,13 @@ requirement to the code and to the automated tests in this repository (0.3.0, ex
 | AC-13 | Clicking a character draws its route on the map | test_ui::test_ranking_list_and_map |
 | AC-14 | Runs within 2 vCPU / 1 GB | tests/perf + scripts/docker-smoke.sh |
 | AC-15 | A citadel dies in a feed killmail → Alerts page shows it with core drop and the closest character → Set destination reaches ESI for an online character, offline gives a clear error | test_alerts_e2e::test_feed_alerts_closest_characters_and_set_destination |
+| AC-16 | A 700-entry file imports and is ranked against Jita | test_roster.py (import + rank), NFR-09 measurement |
+| AC-17 | Re-uploading a file where a character moved updates that entry and keeps its tags and Ranked setting | test_import_merges_and_keeps_local_settings |
+| AC-18 | An unknown system is stored unresolved with suggestions and is fixed by clicking one | test_unknown_system_is_stored_unresolved_with_suggestions, test_roster_page_fixes_an_unresolved_entry |
+| AC-19 | A file that is too large, not JSON, not the schema or over 1000 entries is rejected whole | test_file_level_rejections, test_more_than_the_maximum_entries_is_rejected |
+| AC-20 | One malformed entry in an otherwise good file is rejected alone | test_bad_entries_are_rejected_one_by_one |
+| AC-21 | Ranking a roster makes no ESI request and runs no extra BFS | test_ranking_order_route_and_no_esi |
+| AC-22 | Another main sees an empty roster; deleting the account clears the pool | test_the_pool_is_per_main_and_goes_with_the_account |
+| AC-23 | An alert card shows the live characters with Set destination and the roster characters without it | test_closest_static_characters_for_an_alert, alerts.js |
+| AC-24 | A roster name equal to a linked character's name is badged and absent from the alert card | test_closest_static_characters_for_an_alert |
+| AC-25 | Export → clear → import round trip restores the pool | test_export_import_round_trip |

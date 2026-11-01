@@ -29,6 +29,10 @@ when you press **Set destination** for an online character.
   and Alerts page; scope `esi-ui.write_waypoint.v1`).
 - **Remembered per browser** (cookie): Alerts filters and notification choice, Wars tab and filters, Structures
   filters, map options, ranking auto-refresh.
+- **Static roster** (Roster page): upload a JSON file of character names and systems (50-700 entries, no tokens,
+  nothing read from ESI) and rank it by jumps against the same target on the **Roster** tab of the ranking view.
+  Unknown systems are kept with suggestions instead of being thrown away; the closest roster characters also appear
+  under the live ones on the Alerts page.
 - **JSON import/export** of characters with refresh and access tokens (schema `evedm-characters` v1), with a per-character report.
 - Target by **autocomplete** or by **pasting text**: Dotlan links, in-game `showinfo` links, zKillboard links and plain names.
 - Ranking by jumps (unreachable J-space / Pochven last), ship, docked / in space, online / last seen, **Closest** badge.
