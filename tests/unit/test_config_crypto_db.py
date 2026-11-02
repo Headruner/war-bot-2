@@ -168,3 +168,17 @@ def test_execute_returns_row_ids_for_inserts_and_counts_otherwise(db):
     assert db.execute("UPDATE sso_states SET used=1 WHERE state IN ('s1','s2')") == 2
     assert db.execute("DELETE FROM sso_states WHERE state='nope'") == 0  # not the last insert's row ID
     assert db.execute("DELETE FROM sso_states") == 2
+
+
+def test_example_config_requests_the_default_required_scopes(monkeypatch):
+    # The Docker image ships config/evedm.example.yaml as /app/config/evedm.yaml, so its scope list replaces
+    # the code defaults: a scope missing there is never requested (e.g. notifications never polled).
+    from pathlib import Path
+
+    from evedm.config import DEFAULT_SCOPES
+
+    for k in [k for k in __import__("os").environ if k.startswith(("EVE_", "EVEDM_"))]:
+        monkeypatch.delenv(k, raising=False)
+    example = Path(__file__).resolve().parents[2] / "config" / "evedm.example.yaml"
+    s = load_settings(example)
+    assert set(DEFAULT_SCOPES) <= set(s.eve.required_scopes)
