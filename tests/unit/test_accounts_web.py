@@ -313,3 +313,23 @@ def test_upgrade_from_single_user_version_adopts_legacy_characters(tmp_path):
         assert [t["name"] for t in c.get("/api/targets/recent").json()] == ["Tama"]
         token = svc.chars.cipher.decrypt(svc.db.get_tokens(A, A)["refresh_token"])
         assert token.startswith(f"refresh-{A}-")  # the fresh sign-in token, not the legacy one
+
+
+def test_sign_in_reads_the_alliance_so_the_notifications_link_shows(tmp_path):
+    s = settings(tmp_path)
+    s.notifications.alliance_ids = [99010320]
+    with TestClient(create_app(s, WarsSettings(enabled=False))) as c:
+        svc = c.app.state.svc
+        calls = []
+
+        class Esi:
+            async def get(self, path, *a, **kw):
+                calls.append(path)
+                return {"corporation_id": 98000001, "alliance_id": 99010320 if f"{A}" in path else 99009999}
+
+        svc.notifications.esi = Esi()
+        sso(c, "login", A, "Alice")
+        assert calls == [f"/characters/{A}"]
+        assert 'href="/notifications"' in c.get("/").text
+        sso(c, "login", B, "Bob")  # another alliance: no link
+        assert 'href="/notifications"' not in c.get("/").text

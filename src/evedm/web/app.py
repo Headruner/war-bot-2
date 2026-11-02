@@ -452,6 +452,12 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                 moved = svc.db.reassign_owner(0, ident.character_id)
                 log.info("main %s adopted %s characters stored before accounts existed", ident.character_id, moved)
             svc.chars.store(ts, owner_id=ident.character_id)  # the main is linked to itself
+            if svc.notifications is not None:
+                # read the main's alliance now, so the Notifications link shows on the first page (NTF-01)
+                try:
+                    await svc.notifications.refresh_affiliation(ident.character_id, force=True)
+                except Exception as exc:  # never block a sign-in on ESI
+                    log.info("could not read the affiliation of main %s at sign-in: %s", ident.character_id, exc)
             request.session.clear()
             request.session["user"] = {"id": ident.character_id, "name": ident.name}
             request.session["seen"] = int(time.time())
