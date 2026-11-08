@@ -1,0 +1,56 @@
+{
+  "label": "local-final",
+  "started_at": "2026-10-29T14:45:12Z",
+  "host": {
+    "python": "3.13.18",
+    "platform": "Linux-6.18.44-fc-v185-x86_64-with-glibc2.39"
+  },
+  "params": {
+    "characters": 50,
+    "requests": 600,
+    "concurrency": 20,
+    "esi_delay_ms": 40
+  },
+  "idle": {
+    "VmHWM": 78.734375,
+    "VmRSS": 78.38671875
+  },
+  "import": {
+    "Added": 50,
+    "Updated": 0,
+    "Limited": 0,
+    "Rejected": 0
+  },
+  "cold_rank_ms": 463.8,
+  "load": {
+    "requests": 600,
+    "concurrency": 20,
+    "errors": 0,
+    "wall_s": 2.08,
+    "rps": 288.0,
+    "p50_ms": 59.8,
+    "p95_ms": 115.0,
+    "p99_ms": 154.2,
+    "max_ms": 170.8,
+    "mean_ms": 66.0,
+    "server_cpu_s": 1.55,
+    "server_cores_avg": 0.75
+  },
+  "after": {
+    "VmHWM": 82.18359375,
+    "VmRSS": 82.18359375
+  },
+  "fake_calls": {
+    "token": 50,
+    "jwks": 1,
+    "location": 50,
+    "ship": 50,
+    "online": 50
+  },
+  "peak_rss_mb": 82.2,
+  "budget": {
+    "peak_rss_mb_max": 200.0,
+    "p95_ms_max": 1500.0,
+    "ok": true
+  }
+}

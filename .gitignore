@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.perf-data/
+build/
+dist/
+.env
+/data/*
+!/data/demo/
+*.tar
+*.tar.gz
+image/

@@ -1,0 +1,57 @@
+{
+  "label": "pytest-local",
+  "started_at": "2026-10-31T08:57:35Z",
+  "host": {
+    "python": "3.13.18",
+    "platform": "Linux-6.18.44-fc-v185-x86_64-with-glibc2.39"
+  },
+  "params": {
+    "characters": 50,
+    "requests": 600,
+    "concurrency": 20,
+    "esi_delay_ms": 40
+  },
+  "idle": {
+    "VmHWM": 82.4609375,
+    "VmRSS": 82.4609375
+  },
+  "import": {
+    "Added": 50,
+    "Updated": 0,
+    "Limited": 0,
+    "Rejected": 0
+  },
+  "cold_rank_ms": 505.5,
+  "load": {
+    "requests": 600,
+    "concurrency": 20,
+    "errors": 0,
+    "wall_s": 2.39,
+    "rps": 251.0,
+    "p50_ms": 59.3,
+    "p95_ms": 186.4,
+    "p99_ms": 252.8,
+    "max_ms": 384.4,
+    "mean_ms": 74.4,
+    "server_cpu_s": 1.77,
+    "server_cores_avg": 0.74
+  },
+  "after": {
+    "VmHWM": 85.65234375,
+    "VmRSS": 85.65234375
+  },
+  "fake_calls": {
+    "r2z2": 1,
+    "token": 50,
+    "jwks": 1,
+    "location": 50,
+    "ship": 50,
+    "online": 50
+  },
+  "peak_rss_mb": 85.7,
+  "budget": {
+    "peak_rss_mb_max": 160.0,
+    "p95_ms_max": 1000.0,
+    "ok": true
+  }
+}

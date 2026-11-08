@@ -1,0 +1,92 @@
+@startuml c4-code
+title C4 · Code · main classes (evedm 0.3.0)
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam class {
+  BackgroundColor #FDFDFD
+  BorderColor #5B6B82
+}
+hide empty members
+
+class GateGraph {
+  +ids : array[int]
+  +names : list[str]
+  +sec, mx, my : array[float]
+  +adj_off, adj_nb : array[int]  (CSR)
+  +load(path) : GateGraph
+  +find(name) : int
+  +bfs(target, avoid) : array[int]
+  +route(parent, origin) : list[int]
+  +route_summary(path) : dict
+  +map_payload() : (bytes, etag)
+}
+class TargetResolver {
+  +autocomplete(text, limit) : list
+  +extract(text) : list
+}
+class RankingService {
+  -refresh_interval_s = 5
+  -max_wait_age_s = 30
+  +refresh_states(chars, mode) : dict
+  +rank(target, refresh) : dict
+}
+interface StateProvider {
+  +fetch(character) : dict
+}
+class LiveProvider
+class DemoProvider
+class CharacterService {
+  +store(tokenset) : (bool, status)
+  +access_token(id) : str
+  +remove(id)
+  +list_view() : list
+}
+class AuthService {
+  +authorize_url(state, scopes) : str
+  +exchange_code(code) : TokenSet
+  +refresh(refresh_token) : TokenSet
+  +verify(jwt, allow_expired) : Identity
+  +revoke(refresh_token)
+}
+class EsiClient {
+  -_cache : OrderedDict
+  -_inflight : dict
+  +get(path, token) : Any
+  +character_state(id, token, scopes) : dict
+  +names(ids) : dict
+}
+class Database {
+  +upsert_character(...)
+  +save_tokens(...)
+  +save_snapshots(items)
+  +consume_state(state) : purpose
+  +record_launch(...) : id
+}
+class TokenCipher {
+  +encrypt(str) : bytes
+  +decrypt(bytes) : str
+}
+class "bundle (module)" as bundle {
+  +parse(raw) : dict
+  +import_bundle(raw, chars) : list[EntryResult]
+  +export_bundle(chars, ids) : dict
+}
+class Identity
+class TokenSet
+
+StateProvider <|.. LiveProvider
+StateProvider <|.. DemoProvider
+RankingService --> GateGraph
+RankingService --> StateProvider
+RankingService --> Database
+LiveProvider --> CharacterService
+LiveProvider --> EsiClient
+CharacterService --> AuthService
+CharacterService --> Database
+CharacterService --> TokenCipher
+AuthService ..> TokenSet
+TokenSet *-- Identity
+bundle ..> CharacterService
+TargetResolver --> GateGraph
+DemoProvider --> Database
+@enduml

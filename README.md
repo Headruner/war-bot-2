@@ -1,0 +1,170 @@
+# EVE Distance Meter
+
+Rank your EVE Online characters by **stargate jumps** to a target system, see what each one is flying, and follow the
+route of the selected character on a **2D star map**: character list on the left, map on the right.
+
+![Ranking view: list left, star map right](docs/screenshots/ranking-desktop.png)
+
+You read a notification (for example in the Discord channel of your existing bot), type the system or paste the message,
+and decide which character to log in. Routes are computed in the app from CCP's static data (shortest path by gates,
+same as "Shortest" on route planners). The only thing ever sent to the game client is an autopilot destination, and only
+when you press **Set destination** for an online character.
+
+## Features
+
+- **Accounts**: each player signs in with a main character; characters added later are linked to that main and only
+  that player sees them. The sign-in lasts 90 days per browser; tokens are stored encrypted (Fernet) in SQLite.
+- **Wars page** (merged eve-war-bot-2): new war declarations from ESI with the systems of both sides' public
+  structures; one click ranks your characters to such a system. Optional Discord posting. Settings in `config/wars.yaml`.
+- **War statistics and loot list**: every active war in New Eden (census), and the public high-sec structures of
+  both sides sorted by jumps from your nearest character.
+- **Structures page** (structure scout, members of one alliance only): every player-owned structure in any space
+  where any registered character holds an asset (ESI assets, then ESI structure info), pooled for all members,
+  nearest first, owners at war marked.
+- **Structure alerts** (Alerts page): zKillboard's live killmail feed shows structures **destroyed** (citadels,
+  engineering complexes and refineries drop their quantum core), **combat** within 1000 km of a known structure, and
+  structures **firing**, in all space. Each alert lists your three closest characters; browser notification, sound
+  and an optional Discord webhook. Attack timers themselves are not public, so these killmail signals are the hint.
+  ([screenshot](docs/screenshots/alerts-desktop.png))
+- **Set destination**: one click sets the in-game autopilot destination of an online character (ranking route bar
+  and Alerts page; scope `esi-ui.write_waypoint.v1`).
+- **Thera / Turnur filter** (Ranking page): tick *Thera / Turnur (EVE-Scout)* and the ranking also considers the
+  wormholes that [EVE-Scout](https://www.eve-scout.com/#/) lists. For each character it takes the listed system
+  closest by gates (higher security wins a tie), the wormhole in and out, and the listed system closest to the
+  target, then gates on; the two-leg route replaces the gate route only when it is shorter and is drawn on the map
+  (gold gate legs, dashed purple wormhole). The list is read at most every 5 minutes; if EVE-Scout is down the
+  last list is used.
+- **Remembered per browser** (cookie): Alerts filters and notification choice, Wars tab and filters, Structures
+  filters, map options, ranking auto-refresh.
+- **Notifications** (Notifications page, members of one alliance only): the ESI notifications of **every registered
+  character with a valid token**, whoever linked it - assets moved to **asset safety**, structures **under attack**,
+  fuel and state - polled every minute (ESI caches them 600 s per character), each with the character (and its main),
+  the system, its region, EVE time and your closest characters from both the Characters and the Roster set.
+  Everything else ESI sends is one tick away in the filters. Needs `esi-characters.read_notifications.v1`.
+- **Members-only tabs**: Notifications and Structures are visible only when the main that signed in belongs to the
+  configured alliance (BB, `access.alliance_ids`, default 99010320; read from ESI at sign-in and every 6 h). For any
+  other character both links are hidden and the pages answer 404.
+- **Static roster** (Roster page): upload a JSON file of character names and systems (50-700 entries, no tokens,
+  nothing read from ESI) and rank it by jumps against the same target on the **Roster** tab of the ranking view.
+  Unknown systems are kept with suggestions instead of being thrown away; the closest roster characters also appear
+  under the live ones on the Alerts page.
+- **JSON import/export** of characters with refresh and access tokens (schema `evedm-characters` v1), with a per-character report.
+- Target by **autocomplete** or by **pasting text**: Dotlan links, in-game `showinfo` links, zKillboard links and plain names.
+- Ranking by jumps (unreachable J-space / Pochven last), ship, docked / in space, online / last seen, **Closest** badge.
+- 2D **star map** (canvas): zoom, pan, pinch, route with security colours, all characters marked; phone layout puts the map on top.
+- Runs comfortably on **2 vCPU / 1 GB RAM**: ~74 MB idle, ~78 MB peak, 420 req/s in a container limited to 2 CPUs / 1 GB
+  ([measurements](docs/wiki/05-Performance.md)).
+- Every launch recorded (DB table + `logs/launches.jsonl`); rotating log with secrets redacted.
+- Pinned, stable dependencies in `requirements.txt`, verified by tests and by `evedm check` (dependencies + absolute,
+  existing resource paths) at start-up and at image build time.
+
+## Quick start
+
+### Demo (no EVE application needed)
+
+```
+docker build -t evedm:0.7.0 .
+docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo evedm:0.7.0
+```
+
+Open <http://localhost:8080/?target=Tama>. Or without Docker:
+
+```
+python -m venv .venv && . .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -e .
+evedm --demo serve                                     # http://localhost:8080
+evedm --demo rank Tama                                 # console ranking
+```
+
+A ready-made demo database is in [`data/demo/evedm.sqlite3`](data/demo) (key `demo-secret-key-change-me`).
+
+### Your characters
+
+1. Create an application at <https://developers.eveonline.com/applications> with callback `http://<host>:8080/sso/callback`
+   and scopes `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
+   `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1` (Structures page) and `esi-ui.write_waypoint.v1`
+   (Set destination). Characters signed in before a scope was added: **Add character** again to grant it.
+2. `cp .env.example .env` and fill in `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET`, `EVEDM_SECRET_KEY`, `EVEDM_ALLOWED_LOGIN_CHARACTERS`.
+3. `docker compose up -d --build` (Linux or Windows with Docker Desktop; updates: `scripts/update.sh` on Linux,
+   `scripts\update.ps1` on Windows). Data stays in `./data` on the host, mounted at
+   `/app/data` (one-file SQLite database in WAL mode + logs). On a Linux host run `sudo chown -R 10001:10001 data` once:
+   the container runs as the non-root user 10001.
+4. Sign in, then **Characters > Add character** or **Import JSON**.
+
+The shipped image in `image/` is the older 0.3.0 (no accounts, no Wars page); load it with
+`docker load -i evedm-image-0.3.0-amd64.tar.gz`
+(split into parts: `scripts/load-image.sh` or `scripts\load-image.ps1`).
+
+## Configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `EVEDM_SECRET_KEY` | — (required) | encrypts tokens, signs sessions |
+| `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET` | — | your EVE application |
+| `EVE_CALLBACK_URL` | `http://localhost:8080/sso/callback` | must match the application |
+| `EVEDM_PUBLISH` | `8080` | host port of `docker compose` (e.g. `8082` when 8080 is taken; change the callback too) |
+| `EVEDM_CPUS`, `EVEDM_MEMORY` | `2`, `1g` | container limits of `docker compose` (`EVEDM_CPUS=1` on a 1-vCPU host) |
+| `EVEDM_ALLOWED_LOGIN_CHARACTERS` | empty (anyone) | comma-separated character IDs allowed to sign in as a main |
+| `EVEDM_WARS_CONFIG` | `config/wars.yaml` next to `EVEDM_CONFIG` | war watcher settings file |
+| `EVEDM_WARS_ENABLED` | `true` in `config/wars.yaml` | `0` switches the war watcher off |
+| `EVEDM_WARS_DISCORD_ENABLED`, `EVEDM_WARS_DISCORD_WEBHOOK` | `0`, empty | post new wars to a Discord channel |
+| `EVEDM_PUBLIC_URL` | from `EVE_CALLBACK_URL` | address of the site, used in Discord links to the Wars page |
+| `EVE_OPTIONAL_SCOPES` | `esi-universe.read_structures.v1 esi-assets.read_assets.v1 esi-ui.write_waypoint.v1` | extra scopes (structure scout, Set destination); `none` = only the ranking scopes |
+| `EVEDM_STRUCTURES_ENABLED` | `1` | `0` switches the structure scout and the Structures page off |
+| `EVEDM_ACCESS_ALLIANCES` | `99010320` | comma-separated alliance IDs whose mains see the Notifications and Structures tabs; empty list = every signed-in main (the 0.8.0 name `EVEDM_NOTIFICATIONS_ALLIANCES` still works) |
+| `EVEDM_NOTIFICATIONS_ENABLED` | `1` | `0` switches the notification poller and the Notifications page off |
+| `EVEDM_ALERTS_ENABLED` | `1` | `0` switches structure alerts and the Alerts page off |
+| `EVEDM_EVESCOUT_ENABLED` | `1` | `0` removes the Thera / Turnur filter |
+| `EVEDM_EVESCOUT_URL`, `EVEDM_EVESCOUT_REFRESH_S` | `https://api.eve-scout.com/v2/public/signatures`, `300` | where and how often the wormhole list is read |
+| `EVEDM_ALERTS_CONTACT` | empty | added to the User-Agent zKillboard sees |
+| `EVEDM_ALERTS_GRID_KM` | `1000` | a kill this close to a known structure is "combat" |
+| `EVEDM_ALERTS_DISCORD_ENABLED`, `EVEDM_ALERTS_DISCORD_WEBHOOK`, `EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID` | `0`, empty, empty | post alerts to Discord; the role is pinged on "destroyed" |
+| `EVEDM_DEMO` | `0` | `1` = fictional characters, no EVE application |
+| `EVEDM_DATA_DIR` | `/app/data` (image), `./data` (local) | one-file SQLite DB and logs |
+| `EVEDM_SQLITE_JOURNAL` | `wal` | falls back to `delete` automatically (logged) where WAL is unsupported |
+| `EVEDM_WEB_AUTH` | `sso` | `none` only on a private network |
+| `EVEDM_COOKIE_SECURE` | `0` | `1` when served over HTTPS |
+| `EVEDM_ESI_CONCURRENCY` | `20` | parallel ESI calls |
+| `EVEDM_REFRESH_INTERVAL_S` / `EVEDM_MAX_WAIT_AGE_S` | `5` / `30` | background refresh cadence / max age served without waiting |
+
+All settings can also go into a YAML file (`config/evedm.example.yaml`, `EVEDM_CONFIG`).
+
+## Development
+
+```
+pip install -r requirements-dev.txt && pip install -e . --no-deps && python -m playwright install chromium
+scripts/run-tests.sh                 # unit + integration + browser + footprint; logs in logs/tests and logs/perf
+ruff check src tests scripts
+scripts/render-diagrams.sh           # C4 diagrams (PlantUML) -> docs/diagrams
+```
+
+CI (`.github/workflows/ci.yml`): lint → unit (Linux + Windows, Python 3.12/3.13) → integration + browser → footprint →
+image build, smoke test under `--cpus 2 --memory 1g`, container footprint, image tarball artifact, multi-arch push to GHCR.
+
+## Guidelines
+
+The project follows the [architecture guidelines](docs/guidelines/architecture.md) (one-file SQLite in WAL mode on
+`data/` → `/app/data`, stable pinned dependencies, verified paths, multi-stage non-root image) and the
+[git guidelines](docs/guidelines/git.md) (atomic conventional commits, subjects under 50 characters).
+
+## Documentation
+
+[Wiki home](docs/wiki/Home.md) · [Requirements](docs/wiki/01-Requirements.md) · [Architecture (C4)](docs/wiki/02-Architecture-C4.md) ·
+[Testing](docs/wiki/03-Testing.md) · [Deployment](docs/wiki/04-Deployment.md) · [Performance](docs/wiki/05-Performance.md) ·
+[Operations](docs/wiki/06-Operations.md)
+
+## Project layout
+
+```
+src/evedm/            core + web app (universe, resolver, sso, esi, characters, bundle, ranking, scout, alerts, db,
+                      logs, demo, cli, wars/, web/)
+src/evedm/data/       universe.json.gz (systems, gates, ship names from CCP static data)
+tests/                unit/, integration/ (processes + browser), perf/, fake_eve.py
+docs/                 wiki/, c4/ (PlantUML), diagrams/ (SVG/PNG), screenshots/
+deploy/               docker-compose.yml for servers (named volume at /app/data)
+scripts/              run-tests, docker-smoke, render-diagrams, load-image, update (.sh Linux, .ps1 Windows)
+data/demo/            prepopulated demo database
+logs/                 test, performance and launch logs
+```
+
+EVE Online and all related names are trademarks of CCP hf. Universe data comes from CCP's Static Data Export.

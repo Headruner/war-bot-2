@@ -1,0 +1,40 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.18, pytest-9.2.0, pluggy-1.7.0
+rootdir: <repo>
+configfile: pyproject.toml
+plugins: anyio-4.15.1
+collected 1 item
+
+tests/perf/test_footprint.py {
+  "label": "pytest-local",
+  "idle": {
+    "VmHWM": 80.62109375,
+    "VmRSS": 80.1796875
+  },
+  "peak_rss_mb": 84.0,
+  "load": {
+    "requests": 600,
+    "concurrency": 20,
+    "errors": 0,
+    "wall_s": 1.33,
+    "rps": 450.8,
+    "p50_ms": 36.2,
+    "p95_ms": 78.1,
+    "p99_ms": 133.9,
+    "max_ms": 167.7,
+    "mean_ms": 41.8,
+    "server_cpu_s": 1.15,
+    "server_cores_avg": 0.86
+  },
+  "budget": {
+    "peak_rss_mb_max": 160.0,
+    "p95_ms_max": 1000.0,
+    "ok": true
+  }
+}
+report: <repo>/logs/perf/20261030T001605Z-pytest-local.json
+
+.
+
+- generated xml file: <repo>/logs/tests/20261030T001543Z-perf.xml --
+============================== 1 passed in 5.53s ===============================

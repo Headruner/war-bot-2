@@ -1,0 +1,1 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="1" time="5.530" timestamp="2026-10-30T01:16:04.952497+01:00" hostname="ci-host"><testcase classname="tests.perf.test_footprint" name="test_local_process_stays_within_budget" time="5.509" /></testsuite></testsuites>

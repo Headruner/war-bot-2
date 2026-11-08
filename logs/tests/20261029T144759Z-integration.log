@@ -1,0 +1,11 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.18, pytest-9.2.0, pluggy-1.7.0
+rootdir: <repo>
+configfile: pyproject.toml
+plugins: anyio-4.15.1
+collected 3 items
+
+tests/integration/test_e2e.py ...                                        [100%]
+
+- generated xml file: <repo>/logs/tests/20261029T144759Z-integration.xml -
+============================== 3 passed in 7.35s ===============================

@@ -1,0 +1,179 @@
+# CI: lint, unit tests (Linux + Windows), integration tests, 2 CPU / 1 GB footprint check,
+# Docker image (amd64 + arm64) with a smoke test under --cpus 2 --memory 1g, push to GHCR.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==0.17.3
+      - run: ruff check src tests scripts
+      - name: Commit messages follow the git guidelines
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: |
+          git fetch --no-tags --depth=200 origin ${{ github.base_ref || 'main' }} || true
+          base=$(git merge-base HEAD FETCH_HEAD 2>/dev/null || git rev-list --max-parents=0 HEAD)
+          bad=$(git log --format=%s "$base"..HEAD | awk 'length >= 50 || !/^(feat|fix|refactor|perf|test|docs|build|ci|chore)(\([a-z0-9-]+\))?: /')
+          if [ -n "$bad" ]; then echo "Commit subjects not following docs/guidelines/git.md:"; echo "$bad"; exit 1; fi
+
+  unit:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install -r requirements-dev.txt && pip install -e . --no-deps
+      - name: Unit tests
+        shell: bash
+        run: |
+          mkdir -p logs/tests
+          python -m pytest tests/unit -m "not integration and not perf" \
+            --junitxml=logs/tests/junit-unit-${{ matrix.os }}-${{ matrix.python }}.xml \
+            2>&1 | tee logs/tests/pytest-unit-${{ matrix.os }}-${{ matrix.python }}.log
+          exit "${PIPESTATUS[0]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-logs-unit-${{ matrix.os }}-${{ matrix.python }}
+          path: logs/tests/
+
+  integration:
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt && pip install -e . --no-deps
+      - run: python -m playwright install --with-deps chromium
+      - name: Integration + browser tests (real evedm + fake EVE SSO/ESI processes, Chromium)
+        run: |
+          mkdir -p logs/tests
+          python -m pytest tests/integration -m integration \
+            --junitxml=logs/tests/junit-integration.xml 2>&1 | tee logs/tests/pytest-integration.log
+          exit "${PIPESTATUS[0]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-logs-integration
+          path: logs/tests/
+
+  footprint:
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt && pip install -e . --no-deps
+      - name: 2 CPU / 1 GB budget (server pinned to 2 CPUs)
+        run: |
+          mkdir -p logs/tests
+          python -m pytest tests/perf -m perf -s 2>&1 | tee logs/tests/pytest-perf.log
+          exit "${PIPESTATUS[0]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-report
+          path: |
+            logs/perf/
+            logs/tests/
+
+  image:
+    needs: [integration, footprint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build amd64 image for the smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: evedm:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test (--cpus 2 --memory 1g, mounted /app/data, WAL, restart keeps data)
+        run: scripts/docker-smoke.sh evedm:ci
+      - name: Footprint inside the container
+        run: |
+          pip install -r requirements-dev.txt && pip install -e . --no-deps
+          python tests/perf/footprint.py --label ci-docker --docker evedm:ci --max-rss 200 --max-p95 1500
+      - name: Save image as a portable tarball (docker load -i on Linux or Windows)
+        run: docker save evedm:ci | gzip -9 > evedm-image-amd64.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evedm-image-amd64
+          path: evedm-image-amd64.tar.gz
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docker-logs
+          path: |
+            logs/launches/
+            logs/perf/
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        if: github.event_name != 'pull_request'
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=sha,format=short
+      - name: Push multi-arch image (linux/amd64 + linux/arm64)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

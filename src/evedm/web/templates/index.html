@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Ranking · EVE Distance Meter{% endblock %}
+{% block bodyclass %}rank-page{% endblock %}
+{% block topbar %}
+<form id="target-form" class="target" autocomplete="off">
+  <label for="target" class="sr-only">Target system</label>
+  <div class="combo">
+    <input id="target" name="target" placeholder="Target system, e.g. Tama" spellcheck="false" autocapitalize="off">
+    <ul id="suggest" class="suggest" hidden></ul>
+  </div>
+  <button type="submit" class="btn primary">Rank</button>
+  <button type="button" id="paste-btn" class="btn">Paste text</button>
+  <button type="button" id="refresh-btn" class="btn icon" title="Refresh locations" aria-label="Refresh">&#8635;</button>
+  {% if evescout_enabled %}
+  <label class="thera-toggle" title="Route through the Thera / Turnur wormholes listed by EVE-Scout when that is shorter">
+    <input type="checkbox" id="thera"> Thera / Turnur <span class="small">(EVE-Scout)</span>
+  </label>
+  {% endif %}
+</form>
+{% endblock %}
+{% block content %}
+<main class="split" data-auto-refresh="{{ auto_refresh_s }}">
+  <section class="list-pane" aria-label="Characters ranked by jumps">
+    <div id="target-info" class="target-info">
+      <p class="hint">Type a target system or paste the notification text. Characters are ranked by stargate jumps; click one to see its route.</p>
+    </div>
+    <div id="thera-info" class="small thera-info" hidden></div>
+    <div id="recent" class="chips"></div>
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab active" data-tab="live" role="tab" aria-selected="true">Characters</button>
+      <button type="button" class="tab" data-tab="roster" role="tab" aria-selected="false">Roster<span
+        id="roster-count" class="count"></span></button>
+    </div>
+    <div id="live-pane">
+      <ol id="rows" class="rows"></ol>
+      <div id="excluded" class="excluded"></div>
+      <div class="status-line">
+        <div id="status" class="status"></div>
+        <label class="small auto-refresh">Auto-refresh
+          <select id="auto-refresh" aria-label="Auto-refresh interval">
+            <option value="0">off</option><option value="15">15 s</option><option value="30">30 s</option>
+            <option value="60">1 min</option><option value="120">2 min</option>
+          </select>
+        </label>
+      </div>
+    </div>
+    <div id="roster-pane" hidden>
+      <ol id="roster-rows" class="rows"></ol>
+      <div id="roster-empty" class="small" hidden>No roster yet. Upload a JSON file of character names and
+        systems on the <a href="/roster">Roster page</a>; those characters are ranked by jumps without ESI.</div>
+      <div class="status-line">
+        <div id="roster-status" class="status"></div>
+        <a class="small" href="/roster">Manage roster</a>
+      </div>
+    </div>
+  </section>
+  <section class="map-pane" aria-label="Star map">
+    <canvas id="map" role="img" aria-label="2D star map with the selected route"></canvas>
+    <div class="legend">
+      <span><i class="dot high"></i>High</span><span><i class="dot low"></i>Low</span><span><i class="dot null"></i>Null</span>
+      <span id="legend-wh" hidden><i class="wh-line"></i>Wormhole</span>
+      <span><i class="mk origin"></i>Selected character</span><span><i class="mk target"></i>Target</span>
+    </div>
+    <div class="map-tools">
+      <button id="zoom-in" class="btn icon" type="button" aria-label="Zoom in">+</button>
+      <button id="zoom-out" class="btn icon" type="button" aria-label="Zoom out">&minus;</button>
+      <button id="zoom-fit" class="btn icon" type="button" aria-label="Fit route" title="Fit route">&#10530;</button>
+      <button id="map-opts-btn" class="btn icon" type="button" aria-label="Map options" title="Map options"
+        aria-expanded="false" aria-controls="map-opts">&#9881;</button>
+    </div>
+    <div id="map-opts" class="map-opts" hidden>
+      <label><input type="checkbox" data-opt="labels"> System and region names</label>
+      <label><input type="checkbox" data-opt="chars"> Other characters</label>
+      <label><input type="checkbox" data-opt="gates"> Stargate links</label>
+    </div>
+    <div id="route-bar" class="route-bar" hidden></div>
+    <div id="tooltip" class="tooltip" hidden></div>
+  </section>
+</main>
+<dialog id="paste-dialog">
+  <form method="dialog" class="dlg">
+    <h2>Paste notification text</h2>
+    <textarea id="paste-text" rows="8" placeholder="Paste the Discord message here. Dotlan links and plain system names are recognised."></textarea>
+    <div id="paste-result"></div>
+    <div class="dlg-actions">
+      <button value="cancel" class="btn">Close</button>
+      <button id="paste-find" value="default" class="btn primary">Find system</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}
+<script src="/static/prefs.js?v={{ version }}"></script>
+<script src="/static/map.js?v={{ version }}"></script>
+<script src="/static/rank.js?v={{ version }}"></script>
+{% endblock %}

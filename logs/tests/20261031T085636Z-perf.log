@@ -1,0 +1,40 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.18, pytest-9.2.0, pluggy-1.7.0
+rootdir: /root/w/evedm
+configfile: pyproject.toml
+plugins: anyio-4.15.1
+collected 1 item
+
+tests/perf/test_footprint.py {
+  "label": "pytest-local",
+  "idle": {
+    "VmHWM": 82.4609375,
+    "VmRSS": 82.4609375
+  },
+  "peak_rss_mb": 85.7,
+  "load": {
+    "requests": 600,
+    "concurrency": 20,
+    "errors": 0,
+    "wall_s": 2.39,
+    "rps": 251.0,
+    "p50_ms": 59.3,
+    "p95_ms": 186.4,
+    "p99_ms": 252.8,
+    "max_ms": 384.4,
+    "mean_ms": 74.4,
+    "server_cpu_s": 1.77,
+    "server_cores_avg": 0.74
+  },
+  "budget": {
+    "peak_rss_mb_max": 160.0,
+    "p95_ms_max": 1000.0,
+    "ok": true
+  }
+}
+report: /root/w/evedm/logs/perf/20261031T085735Z-pytest-local.json
+
+.
+
+---- generated xml file: /root/w/evedm/logs/tests/20261031T085636Z-perf.xml ----
+============================== 1 passed in 7.61s ===============================

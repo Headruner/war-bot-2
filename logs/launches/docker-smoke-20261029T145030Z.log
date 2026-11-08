@@ -1,0 +1,5 @@
+2026-10-29T14:50:24+0000 INFO    uvicorn.error: Started server process [1]
+2026-10-29T14:50:24+0000 INFO    uvicorn.error: Waiting for application startup.
+2026-10-29T14:50:24+0000 INFO    evedm: launch #2: {"event": "start", "started_at": "2026-10-29T14:50:24Z", "version": "0.3.0", "pid": 1, "mode": "demo", "python": "3.12.3", "platform": "Linux 6.18.44-fc-v185 x86_64", "cpu_count": 2, "rss_mb_start": 73.5, "config": {"instance": "vm-web", "data_dir": "/data", "demo": true, "sqlite_journal": "delete", "web_auth": "none", "bind": "0.0.0.0:8080", "esi_base": "https://esi.evetech.net", "sso_base": "https://login.eveonline.com", "client_id_set": false, "secret_key_set": true, "avoid_systems": ["Zarzakh"], "universe": "legacy-2024-06 (npm eve-online-sde 126.6.18)", "systems": 8036, "journal_mode": "delete"}}
+2026-10-29T14:50:24+0000 INFO    uvicorn.error: Application startup complete.
+2026-10-29T14:50:24+0000 INFO    uvicorn.error: Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
