@@ -1,0 +1,41 @@
+# EVE Distance Meter - war watcher (the eve-war-bot-2 logic), kept apart from evedm.yaml.
+# Location: config/wars.yaml (repo), /app/config/wars.yaml (image), or $EVEDM_WARS_CONFIG.
+# Values like ${NAME} or ${NAME:-default} are read from the environment; EVEDM_WARS_* variables override this file.
+# Secrets (the Discord webhook) belong in .env, not here.
+
+enabled: ${EVEDM_WARS_ENABLED:-true}       # poll ESI for new war declarations and show them on the Wars page
+poll_interval_min: 15                      # how often to check ESI for new wars
+max_new_per_cycle: 50
+bootstrap_hours: 24                        # on a clean database, also show wars declared in the last N hours
+max_war_age_hours: 48                      # skip "new" war IDs declared longer ago (ESI re-issues old wars)
+# statuses: [mutual, open_for_allies]      # only keep these war types (none, mutual, open_for_allies); unset = all
+contact: ${EVEDM_WARS_CONTACT:-}           # your e-mail or character, sent in the User-Agent to ESI and EVE Ref
+public_url: ${EVEDM_PUBLIC_URL:-}          # address of this site for links in Discord (default: from EVE_CALLBACK_URL)
+
+report_enabled: true                       # score, timeline, allies, recent kills, hot systems
+report_recent_kills: 5
+report_kill_details_limit: 25
+report_max_killmail_pages: 1
+alliance_member_count_max_corps: 20        # sum member counts only for alliances up to this many corporations
+
+structures_enabled: true                   # public structures of both sides (EVE Ref dataset)
+structures_refresh_hours: 24
+structures_url: "https://data.everef.net/structures/structures-latest.v2.json"
+
+page_limit: 200                            # most wars one Wars page request returns
+
+# Census: every active war in New Eden, for the Statistics tab and the high-sec structures list.
+# Active wars can be old (mutual wars run for years), so the census walks back through the newest war IDs.
+census_enabled: true
+census_max_ids: 20000                      # newest war IDs to examine (0 = only new ones from now on)
+census_pages_per_cycle: 2                  # first scan: pages of 2000 IDs per cycle (spreads the ESI load)
+census_refresh_hours: 6                    # re-read active wars (scores, retractions, end times)
+census_concurrency: 8                      # parallel ESI requests
+
+discord:
+  enabled: ${EVEDM_WARS_DISCORD_ENABLED:-false}   # also post new wars to a Discord channel
+  webhook_url: ${EVEDM_WARS_DISCORD_WEBHOOK:-}    # Channel settings > Integrations > Webhooks
+  mention_role_id: ${EVEDM_WARS_DISCORD_MENTION_ROLE_ID:-}
+  dry_run: false                                  # log the messages instead of posting
+  batch_embeds: 5                                 # wars per message (max 10)
+  min_seconds_between_posts: 2

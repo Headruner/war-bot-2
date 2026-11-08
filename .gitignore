@@ -1,17 +1,15 @@
-config/credentials.json
+.venv/
 __pycache__/
 *.py[cod]
-.env
-.vscode/
-.idea/
-*.log
-
-# Runtime sqlite database (mounted into the container)
-data/*.db
-data/*.db-journal
-data/*.db-wal
-data/*.db-shm
-
-# Test artifacts
-test_data/
+*.egg-info/
 .pytest_cache/
+.ruff_cache/
+.perf-data/
+build/
+dist/
+.env
+/data/*
+!/data/demo/
+*.tar
+*.tar.gz
+image/

@@ -1,0 +1,80 @@
+# EVE Distance Meter configuration. Values like ${NAME} or ${NAME:-default} are read from the
+# environment; environment variables (EVEDM_*, EVE_*) always override this file.
+instance_label: ${EVEDM_INSTANCE:-vm-web}
+data_dir: ${EVEDM_DATA_DIR:-/app/data}      # one-file SQLite DB, logs/evedm.log, logs/launches.jsonl
+secret_key: ${EVEDM_SECRET_KEY}             # encrypts tokens at rest and signs sessions (required)
+demo: false                                 # true = fictional characters, no EVE application needed
+sqlite_journal: wal                         # WAL; falls back to delete (logged) if the filesystem cannot
+avoid_systems: [Zarzakh]                    # never used as transit systems
+log_level: INFO
+
+eve:
+  client_id: ${EVE_CLIENT_ID}               # your application at https://developers.eveonline.com
+  client_secret: ${EVE_CLIENT_SECRET}
+  callback_url: ${EVE_CALLBACK_URL:-http://localhost:8080/sso/callback}
+  required_scopes:
+    - esi-location.read_location.v1
+    - esi-location.read_ship_type.v1
+    - esi-location.read_online.v1
+    - esi-characters.read_notifications.v1   # Notifications page (tick it on your EVE application too)
+  optional_scopes:                          # tick these on your EVE application too, or set EVE_OPTIONAL_SCOPES=none
+    - esi-universe.read_structures.v1       # structure scout (Structures page)
+    - esi-assets.read_assets.v1             # structure scout (Structures page)
+    - esi-ui.write_waypoint.v1              # "Set destination" buttons (ranking route bar, Alerts page)
+  compatibility_date: "2025-09-30"
+  user_agent: "EVE-Distance-Meter/0.7 (contact: change-me)"
+  max_concurrency: 20                       # parallel ESI calls (rate limits are per character)
+
+web:
+  host: 0.0.0.0
+  port: 8080
+  auth: sso                                 # sso | none (none only on a private network or in demo)
+  allowed_login_characters: []              # character IDs allowed to sign in, e.g. [2112345678]
+  session_days: 90                          # rolling sign-in: renewed on every visit
+  cookie_secure: false                      # true when served over HTTPS
+  auto_refresh_s: 30
+  stale_after_s: 120
+
+structures:                                 # structure scout: player-owned structures found through characters' assets
+  enabled: ${EVEDM_STRUCTURES_ENABLED:-true}
+  interval_min: 60                          # how often the scout runs
+  assets_refresh_hours: 24                  # re-read each character's assets this often
+  structure_refresh_hours: 72               # re-read name, owner and system of each structure this often
+  max_asset_pages: 20                       # 1000 assets per page
+  concurrency: 4
+
+access:                                     # who sees the members-only tabs: Notifications and Structures
+  alliance_ids: [99010320]                  # only a main in one of these alliances (BB); [] = every signed-in main
+  affiliation_hours: 6                      # the alliance is read from ESI at sign-in and again this often
+
+notifications:                              # notifications of every registered character with a valid token (Notifications page)
+  enabled: ${EVEDM_NOTIFICATIONS_ENABLED:-true}
+  poll_s: 60                                # the loop runs this often; ESI caches each character 600 s
+  character_interval_s: 600                 # so a character is asked again only after its cache expires
+  retention_days: 30
+  concurrency: 4
+  # which groups are shown without a filter: asset_safety, structure_attack, structure_state, tower,
+  # other_attacks, sovereignty (every other type ESI sends appears under "Other notifications")
+  groups: [asset_safety, structure_attack, structure_state, tower]
+
+alerts:                                     # structure alerts from zKillboard's live killmail feed (Alerts page)
+  enabled: ${EVEDM_ALERTS_ENABLED:-true}
+  feed_url: https://r2z2.zkillboard.com/ephemeral
+  poll_s: 10                                # wait after "no new killmail" (zKillboard asks for at least 6)
+  grid_km: 1000                             # a kill this close to a known structure counts as combat on its grid
+  retention_days: 7
+  max_per_poll: 300                         # killmails read per poll at most
+  contact: ${EVEDM_ALERTS_CONTACT:-}        # added to the User-Agent zKillboard sees (mail or Discord name)
+  discord:                                  # post alerts to a Discord channel too
+    enabled: ${EVEDM_ALERTS_DISCORD_ENABLED:-false}
+    webhook_url: ${EVEDM_ALERTS_DISCORD_WEBHOOK:-}   # secret: keep it in .env
+    mention_role_id: ${EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID:-}   # pinged on "destroyed" alerts only
+    kinds: [destroyed, combat, firing]
+    combat_cooldown_min: 30                 # one combat/firing post per structure within this time
+
+evescout:                                   # Thera / Turnur filter on the Ranking page (EVE-Scout)
+  enabled: ${EVEDM_EVESCOUT_ENABLED:-true}
+  url: ${EVEDM_EVESCOUT_URL:-https://api.eve-scout.com/v2/public/signatures}
+  refresh_s: ${EVEDM_EVESCOUT_REFRESH_S:-300}      # the list is read at most this often
+  timeout_s: 8
+  hubs: [Thera, Turnur]

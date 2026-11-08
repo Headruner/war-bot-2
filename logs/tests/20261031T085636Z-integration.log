@@ -1,0 +1,15 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.18, pytest-9.2.0, pluggy-1.7.0
+rootdir: /root/w/evedm
+configfile: pyproject.toml
+plugins: anyio-4.15.1
+collected 20 items
+
+tests/integration/test_alerts_e2e.py .                                   [  5%]
+tests/integration/test_e2e.py ...                                        [ 20%]
+tests/integration/test_multi_user.py ...                                 [ 35%]
+tests/integration/test_ui.py ............                                [ 95%]
+tests/integration/test_ui_accounts.py .                                  [100%]
+
+- generated xml file: /root/w/evedm/logs/tests/20261031T085636Z-integration.xml -
+============================= 20 passed in 32.82s ==============================

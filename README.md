@@ -1,106 +1,362 @@
-# EVE War Bot v2
+# EVE Distance Meter
 
-EVE War Bot is a high-performance Python service designed to monitor and report **EVE Online war declarations** in real-time. It reads new war declarations directly from **CCP's official EVE Online API (ESI)** and posts them to a **Discord channel** as rich messages containing logos, banners, live-updating scorecards, and detailed reports.
+Rank your EVE Online characters by **stargate jumps** to a target system, see what each one is flying, and follow the
+route of the selected character on a **2D star map**: character list on the left, map on the right.
 
-## 🌟 Overview
+![Ranking view: list left, star map right](docs/screenshots/ranking-desktop.png)
 
-Unlike standard trackers, EVE War Bot v2 is optimized for **high-concurrency** and **low-latency**. It handles "war rushes" efficiently using an asynchronous core, an entity caching system to minimize API load, and a batching database layer to ensure smooth updates even during intense combat periods.
+You read a notification (for example in the Discord channel of your existing bot), type the system or paste the message,
+and decide which character to log in. Routes are computed in the app from CCP's static data (shortest path by gates,
+same as "Shortest" on route planners). The only thing ever sent to the game client is an autopilot destination, and only
+when you press **Set destination** for an online character.
 
-### Key Features
-- **Real-Time Notifications:** Instant Discord alerts with rich embeds.
-- **Live Scorecards:** Automated updates to Discord messages as ships are killed and ISK is destroyed.
-- **Visual Branding:** Dynamically generated banners and logos for both Aggressor and Defender sides.
-- **Structure Visibility:** Displays publicly known structures for both parties in the conflict.
-- **Hot System Tracking:** Identifies the top 3 systems with the most active combat.
-- **Async Core:** Powered by `httpx` and `asyncio` for parallel data fetching.
-- **Intelligent Caching:** Caches tickers, names, and member counts to stay within ESI rate limits while maintaining speed.
+## Features
 
----
+- **Accounts**: each player signs in with a main character; characters added later are linked to that main and only
+  that player sees them. The sign-in lasts 90 days per browser; tokens are stored encrypted (Fernet) in SQLite.
+- **Wars page** (merged eve-war-bot-2): new war declarations from ESI with the systems of both sides' public
+  structures; one click ranks your characters to such a system. Optional Discord posting. Settings in `config/wars.yaml`.
+- **War statistics and loot list**: every active war in New Eden (census), and the public high-sec structures of
+  both sides sorted by jumps from your nearest character.
+- **Structures page** (structure scout, members of one alliance only): every player-owned structure in any space
+  where any registered character holds an asset (ESI assets, then ESI structure info), pooled for all members,
+  nearest first, owners at war marked.
+- **Structure alerts** (Alerts page): zKillboard's live killmail feed shows structures **destroyed** (citadels,
+  engineering complexes and refineries drop their quantum core), **combat** within 1000 km of a known structure, and
+  structures **firing**, in all space. Each alert lists your three closest characters; browser notification, sound
+  and an optional Discord webhook. Attack timers themselves are not public, so these killmail signals are the hint.
+  ([screenshot](docs/screenshots/alerts-desktop.png))
+- **Set destination**: one click sets the in-game autopilot destination of an online character (ranking route bar
+  and Alerts page; scope `esi-ui.write_waypoint.v1`).
+- **Thera / Turnur filter** (Ranking page): tick *Thera / Turnur (EVE-Scout)* and the ranking also considers the
+  wormholes that [EVE-Scout](https://www.eve-scout.com/#/) lists. For each character it takes the listed system
+  closest by gates (higher security wins a tie), the wormhole in and out, and the listed system closest to the
+  target, then gates on; the two-leg route replaces the gate route only when it is shorter and is drawn on the map
+  (gold gate legs, dashed purple wormhole). The list is read at most every 5 minutes; if EVE-Scout is down the
+  last list is used.
+- **Remembered per browser** (cookie): Alerts filters and notification choice, Wars tab and filters, Structures
+  filters, map options, ranking auto-refresh.
+- **Notifications** (Notifications page, members of one alliance only): the ESI notifications of **every registered
+  character with a valid token**, whoever linked it - assets moved to **asset safety**, structures **under attack**,
+  fuel and state - polled every minute (ESI caches them 600 s per character), each with the character (and its main),
+  the system, its region, EVE time and your closest characters from both the Characters and the Roster set.
+  Everything else ESI sends is one tick away in the filters. Needs `esi-characters.read_notifications.v1`.
+- **Members-only tabs**: Notifications and Structures are visible only when the main that signed in belongs to the
+  configured alliance (BB, `access.alliance_ids`, default 99010320; read from ESI at sign-in and every 6 h). For any
+  other character both links are hidden and the pages answer 404.
+- **Static roster** (Roster page): upload a JSON file of character names and systems (50-700 entries, no tokens,
+  nothing read from ESI) and rank it by jumps against the same target on the **Roster** tab of the ranking view.
+  Unknown systems are kept with suggestions instead of being thrown away; the closest roster characters also appear
+  under the live ones on the Alerts page.
+- **JSON import/export** of characters with refresh and access tokens (schema `evedm-characters` v1), with a per-character report.
+- Target by **autocomplete** or by **pasting text**: Dotlan links, in-game `showinfo` links, zKillboard links and plain names.
+- Ranking by jumps (unreachable J-space / Pochven last), ship, docked / in space, online / last seen, **Closest** badge.
+- 2D **star map** (canvas): zoom, pan, pinch, route with security colours, all characters marked; phone layout puts the map on top.
+- Runs comfortably on **2 vCPU / 1 GB RAM**: ~74 MB idle, ~78 MB peak, 420 req/s in a container limited to 2 CPUs / 1 GB
+  ([measurements](docs/wiki/05-Performance.md)).
+- Every launch recorded (DB table + `logs/launches.jsonl`); rotating log with secrets redacted.
+- Pinned, stable dependencies in `requirements.txt`, verified by tests and by `evedm check` (dependencies + absolute,
+  existing resource paths) at start-up and at image build time.
 
-## 🚀 Quick Start Guide
+## Quick start
 
-Follow these steps to get the bot running on your server.
+### Demo (no EVE application needed)
 
-### Prerequisites
-- **Docker** and **Docker Compose** installed.
-- A **Discord Webhook URL** (Created in *Channel Settings -> Integrations -> Webhooks*).
-
-### 1. Clone and Prepare
-```bash
-# Clone the repository
-git clone https://github.com/Headruner/eve-war-bot-2.git
-cd eve-war-bot-2
-
-# Create the configuration files
-cp config/credentials.example.json config/credentials.json
-cp config/config.yaml.example config/config.yaml # If applicable
+```
+docker build -t evedm:0.7.0 .
+docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo evedm:0.7.0
 ```
 
-### 2. Configure Credentials
-Edit `config/credentials.json` with your specific details:
-```json
-{
-  "discord": {
-    "webhook_url": "YOUR_DISCORD_WEBHOOK_URL",
-    "mention_role_id": "OPTIONAL_ROLE_ID"
-  },
-  "esi": {
-    "contact": "your-email@example.com"
-  }
-}
+Open <http://localhost:8080/?target=Tama>. Or without Docker:
+
+```
+python -m venv .venv && . .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -e .
+evedm --demo serve                                     # http://localhost:8080
+evedm --demo rank Tama                                 # console ranking
 ```
 
-### 3. Launch the Bot
-Start the service using Docker Compose:
+A ready-made demo database is in [`data/demo/evedm.sqlite3`](data/demo) (key `demo-secret-key-change-me`).
+
+### Your characters
+
+1. Create an application at <https://developers.eveonline.com/applications> with callback `http://<host>:8080/sso/callback`
+   and scopes `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
+   `esi-characters.read_notifications.v1` (Notifications page), `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1` (Structures page) and `esi-ui.write_waypoint.v1`
+   (Set destination). Characters signed in before a scope was added: **Add character** again to grant it.
+2. `cp .env.example .env` and fill in `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET`, `EVEDM_SECRET_KEY`, `EVEDM_ALLOWED_LOGIN_CHARACTERS`.
+3. `docker compose up -d --build` (Linux or Windows with Docker Desktop; updates: `scripts/update.sh` on Linux,
+   `scripts\update.ps1` on Windows). Data stays in `./data` on the host, mounted at
+   `/app/data` (one-file SQLite database in WAL mode + logs). On a Linux host run `sudo chown -R 10001:10001 data` once:
+   the container runs as the non-root user 10001.
+4. Sign in, then **Characters > Add character** or **Import JSON**.
+
+On a Linux VM follow [Run in Docker on a Linux VM](#run-in-docker-on-a-linux-vm).
+
+The shipped image in `image/` is the older 0.3.0 (no accounts, no Wars page); load it with
+`docker load -i evedm-image-0.3.0-amd64.tar.gz`
+(split into parts: `scripts/load-image.sh` or `scripts\load-image.ps1`).
+
+## Run in Docker on a Linux VM
+
+Complete runbook for an Ubuntu/Debian VM with 1 or more vCPU and 1 GB RAM. Run the commands in order. Replace
+`<user>` and `<vm-address>` with your VM login and IP, and `<port>` with `8080` unless it is taken. The app is one
+container (`evedm`); everything persistent lives in `./data` on the VM (one-file SQLite database + logs).
+
+### 1. Connect to the VM
+
+From PowerShell (Windows) or a terminal:
+
 ```bash
+ssh <user>@<vm-address>
+```
+
+### 2. Install the basic tools
+
+```bash
+sudo apt update
+sudo apt install -y git curl openssl
+```
+
+### 3. Install Docker
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+newgrp docker
+docker version
+docker compose version
+```
+
+Both version commands must print without errors (Compose v2).
+
+### 4. Get the code
+
+Way A, from GitHub (a private repository: sign in first):
+
+```bash
+sudo apt install -y gh
+gh auth login
+git clone -b main https://github.com/Headruner/war-bot-2.git evedm
+cd evedm
+```
+
+Way B, copy the folder from a Windows PC. The first command runs in PowerShell on the PC, the rest on the VM:
+
+```bash
+scp -r C:\Users\andre\source\repos\evedm <user>@<vm-address>:~/
+```
+
+```bash
+cd ~/evedm
+rm -rf data logs .perf-data .ruff_cache
+sed -i 's/\r$//' .env .env.example scripts/*.sh
+chmod +x scripts/*.sh
+```
+
+The `sed` removes Windows line endings and the `chmod` restores the execute bit that the copy loses. This way also
+copies the PC's `.env`; step 6 edits it.
+
+### 5. Register the EVE application
+
+At <https://developers.eveonline.com/applications> create an application with
+
+- callback `http://<vm-address>:<port>/sso/callback`, identical to `EVE_CALLBACK_URL` in step 6 (scheme, host, port);
+- the scopes `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
+  `esi-characters.read_notifications.v1` (Notifications page), `esi-universe.read_structures.v1`,
+  `esi-assets.read_assets.v1` (Structures page) and `esi-ui.write_waypoint.v1` (Set destination). A scope missing on
+  the application makes EVE SSO answer `invalid_scope`.
+
+Note the Client ID and the Secret.
+
+### 6. Create and fill `.env`
+
+Way A starts from the template; with Way B an `.env` already exists, so skip the first command.
+
+```bash
+cp .env.example .env
+sed -i "s|^EVEDM_SECRET_KEY=.*|EVEDM_SECRET_KEY=$(openssl rand -base64 48 | tr -d '\n')|" .env
+ss -ltn | grep ':8080 '
+nproc
+nano .env
+```
+
+`ss` printing a line means port 8080 is taken: use `8082` as `<port>` here and in step 5. `nproc` is the number of
+CPUs of the VM. In `nano` check these lines (save: Ctrl+O, Enter, Ctrl+X):
+
+```
+EVEDM_SECRET_KEY=<filled by the sed command, keep it>
+EVE_CLIENT_ID=<from step 5>
+EVE_CLIENT_SECRET=<from step 5>
+EVE_CALLBACK_URL=http://<vm-address>:<port>/sso/callback
+EVEDM_PUBLISH=<port>
+EVEDM_CPUS=1
+EVEDM_ALLOWED_LOGIN_CHARACTERS=<your character ID>
+```
+
+- `EVEDM_CPUS=1` on a 1-vCPU VM, otherwise `2` (Docker refuses a limit above the host's CPU count).
+- Your character ID is the number in `zkillboard.com/character/<id>/`; empty means anyone may sign in.
+- `EVEDM_PUBLISH=127.0.0.1:<port>` makes the app reachable from the VM only (reverse proxy, Tailscale).
+- Keep a copy of `EVEDM_SECRET_KEY`: a new key makes the stored tokens unreadable.
+
+### 7. Build and start
+
+```bash
+scripts/update.sh --no-pull
+```
+
+The script gives `data/` to uid 10001 (the container user), lowers `EVEDM_CPUS` to the VM's CPU count, runs
+`docker compose up -d --build`, waits until the container is healthy and prints the address. The first build takes a
+few minutes. By hand, the same is:
+
+```bash
+mkdir -p data
+sudo chown -R 10001:10001 data
 docker compose up -d --build
 ```
-View the logs to ensure the bot has connected successfully:
+
+### 8. Verify
+
 ```bash
-docker compose logs -f
+docker compose ps
+curl -s http://127.0.0.1:<port>/api/health
+docker compose logs --tail 50 evedm
 ```
 
----
+`docker compose ps` must show `healthy`.
 
-## 🛠 Configuration
+### 9. Open the firewall (private network only)
 
-| Setting | Description | Default |
-|---|---|---|
-| `poll_interval_min` | How often to check ESI for new wars. | 15 |
-| `batch_embeds` | Number of wars to group into a single Discord message. | 5 |
-| `report_enabled` | Toggle the detailed war report in messages. | true |
-| `live_updates` | Toggle automatic editing of Discord messages. | true |
-| `dry_run` | If true, logs payloads instead of sending to Discord. | false |
-| `statuses` | Only post these war types (`none`, `mutual`, `open_for_allies`). Unset posts all wars. | all |
-| `bootstrap_hours` | On a clean database, also post wars declared in the last N hours (0 = only new ones). | 24 |
-| `max_war_age_hours` | Do not post new war IDs declared longer ago than this (ESI re-issues old wars under new IDs). | 48 |
+```bash
+sudo ufw status
+sudo ufw allow <port>/tcp
+```
 
----
+Skip this when `ufw` is inactive. For access from outside use Tailscale and set `EVEDM_COOKIE_SECURE=1`
+([Deployment](docs/wiki/04-Deployment.md), phone access).
 
-## 📊 Useful Commands
+### 10. Sign in
 
-You can interact with the bot using the `stats` command:
+Open `http://<vm-address>:<port>/`, sign in with EVE, then **Characters > Add character**.
 
-- **View Monthly Stats:**
-  ```bash
-  docker compose run --rm eve-war-bot stats --months 12
-  ```
-- **Check Configuration:**
-  ```bash
-  docker compose run --rm eve-war-bot --check-config
-  ```
-- **Install Deployment Bundle:**
-  ```bash
-  docker compose run --rm eve-war-bot install --target /out
-  ```
+### Apply a change
 
----
+| What you changed | Command |
+| --- | --- |
+| `.env` | `docker compose up -d` (recreates the container; **`restart` does not re-read `.env`**) |
+| `config/wars.yaml` (mounted read-only) | `docker compose restart evedm` |
+| `config/evedm.example.yaml` (copied into the image as `/app/config/evedm.yaml`) | `docker compose up -d --build` |
+| new code (Way A) | `scripts/update.sh` |
 
-## 🏗 Architecture & Performance
-EVE War Bot v2 is built for scale:
-- **Concurrency:** Uses a worker pool to fetch multiple war components (Allies, Corps, Kills) in parallel.
-- **Caching:** Implements an in-memory TTL cache for ESI entity data to reduce overhead.
-- **Persistence:** Uses a SQLite backend with batching logic to ensure data integrity during high-volume events.
+Environment variables from `.env` always override the YAML files, so a value set in both places is taken from `.env`.
 
----
-*Developed by Andrii Kunitsyn. Project documentation available in the `docs/` folder.*
+To edit the main YAML without rebuilding, mount a copy of it with a `docker-compose.override.yml` next to
+`docker-compose.yml` (Compose merges it automatically), then run `docker compose up -d`:
+
+```yaml
+services:
+  evedm:
+    volumes:
+      - ./config/evedm.yaml:/app/config/evedm.yaml:ro   # cp config/evedm.example.yaml config/evedm.yaml
+```
+
+### Daily operation
+
+```bash
+cd ~/evedm
+docker compose logs -f evedm                          # follow the log
+docker compose stop evedm                             # stop (data stays)
+docker compose start evedm                            # start again
+docker compose down                                   # remove the container (data stays)
+docker compose stop evedm && cp -a data data-backup-$(date +%F) && docker compose start evedm   # backup
+```
+
+### Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| `evedm check` stops the start with a permission message | `sudo chown -R 10001:10001 data` |
+| `Range of CPUs is from 0.01 to 1.00` | one vCPU: `EVEDM_CPUS=1` in `.env` (`scripts/update.sh` does it for you) |
+| `port is already allocated` | free port in `EVEDM_PUBLISH`, same port in `EVE_CALLBACK_URL` and on the EVE application |
+| SSO error about redirect / callback | callback in `.env` and on the EVE application differ (scheme, host, port) |
+| `invalid_scope` | a scope of step 5 is not ticked on the EVE application, or set `EVE_OPTIONAL_SCOPES=none` |
+| `bad interpreter: /bin/bash^M` | Windows line endings: `sed -i 's/\r$//' scripts/*.sh` |
+| `Permission denied` on `scripts/update.sh` | `chmod +x scripts/*.sh`, or run `bash scripts/update.sh --no-pull` |
+| container `unhealthy` or restarting | `docker compose logs --tail 50 evedm`; most often `EVEDM_SECRET_KEY` is empty |
+| page not reachable from another PC | firewall (step 9), or `EVEDM_PUBLISH` is bound to `127.0.0.1` |
+| `pip` fails on TLS during the build | corporate proxy: [Deployment](docs/wiki/04-Deployment.md), section 5 |
+
+## Configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `EVEDM_SECRET_KEY` | — (required) | encrypts tokens, signs sessions |
+| `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET` | — | your EVE application |
+| `EVE_CALLBACK_URL` | `http://localhost:8080/sso/callback` | must match the application |
+| `EVEDM_PUBLISH` | `8080` | host port of `docker compose` (e.g. `8082` when 8080 is taken; change the callback too) |
+| `EVEDM_CPUS`, `EVEDM_MEMORY` | `2`, `1g` | container limits of `docker compose` (`EVEDM_CPUS=1` on a 1-vCPU host) |
+| `EVEDM_ALLOWED_LOGIN_CHARACTERS` | empty (anyone) | comma-separated character IDs allowed to sign in as a main |
+| `EVEDM_WARS_CONFIG` | `config/wars.yaml` next to `EVEDM_CONFIG` | war watcher settings file |
+| `EVEDM_WARS_ENABLED` | `true` in `config/wars.yaml` | `0` switches the war watcher off |
+| `EVEDM_WARS_DISCORD_ENABLED`, `EVEDM_WARS_DISCORD_WEBHOOK` | `0`, empty | post new wars to a Discord channel |
+| `EVEDM_PUBLIC_URL` | from `EVE_CALLBACK_URL` | address of the site, used in Discord links to the Wars page |
+| `EVE_OPTIONAL_SCOPES` | `esi-universe.read_structures.v1 esi-assets.read_assets.v1 esi-ui.write_waypoint.v1` | extra scopes (structure scout, Set destination); `none` = only the ranking scopes |
+| `EVEDM_STRUCTURES_ENABLED` | `1` | `0` switches the structure scout and the Structures page off |
+| `EVEDM_ACCESS_ALLIANCES` | `99010320` | comma-separated alliance IDs whose mains see the Notifications and Structures tabs; empty list = every signed-in main (the 0.8.0 name `EVEDM_NOTIFICATIONS_ALLIANCES` still works) |
+| `EVEDM_NOTIFICATIONS_ENABLED` | `1` | `0` switches the notification poller and the Notifications page off |
+| `EVEDM_ALERTS_ENABLED` | `1` | `0` switches structure alerts and the Alerts page off |
+| `EVEDM_EVESCOUT_ENABLED` | `1` | `0` removes the Thera / Turnur filter |
+| `EVEDM_EVESCOUT_URL`, `EVEDM_EVESCOUT_REFRESH_S` | `https://api.eve-scout.com/v2/public/signatures`, `300` | where and how often the wormhole list is read |
+| `EVEDM_ALERTS_CONTACT` | empty | added to the User-Agent zKillboard sees |
+| `EVEDM_ALERTS_GRID_KM` | `1000` | a kill this close to a known structure is "combat" |
+| `EVEDM_ALERTS_DISCORD_ENABLED`, `EVEDM_ALERTS_DISCORD_WEBHOOK`, `EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID` | `0`, empty, empty | post alerts to Discord; the role is pinged on "destroyed" |
+| `EVEDM_DEMO` | `0` | `1` = fictional characters, no EVE application |
+| `EVEDM_DATA_DIR` | `/app/data` (image), `./data` (local) | one-file SQLite DB and logs |
+| `EVEDM_SQLITE_JOURNAL` | `wal` | falls back to `delete` automatically (logged) where WAL is unsupported |
+| `EVEDM_WEB_AUTH` | `sso` | `none` only on a private network |
+| `EVEDM_COOKIE_SECURE` | `0` | `1` when served over HTTPS |
+| `EVEDM_ESI_CONCURRENCY` | `20` | parallel ESI calls |
+| `EVEDM_REFRESH_INTERVAL_S` / `EVEDM_MAX_WAIT_AGE_S` | `5` / `30` | background refresh cadence / max age served without waiting |
+
+All settings can also go into a YAML file (`config/evedm.example.yaml`, `EVEDM_CONFIG`).
+
+## Development
+
+```
+pip install -r requirements-dev.txt && pip install -e . --no-deps && python -m playwright install chromium
+scripts/run-tests.sh                 # unit + integration + browser + footprint; logs in logs/tests and logs/perf
+ruff check src tests scripts
+scripts/render-diagrams.sh           # C4 diagrams (PlantUML) -> docs/diagrams
+```
+
+CI (`.github/workflows/ci.yml`): lint → unit (Linux + Windows, Python 3.12/3.13) → integration + browser → footprint →
+image build, smoke test under `--cpus 2 --memory 1g`, container footprint, image tarball artifact, multi-arch push to GHCR.
+
+## Guidelines
+
+The project follows the [architecture guidelines](docs/guidelines/architecture.md) (one-file SQLite in WAL mode on
+`data/` → `/app/data`, stable pinned dependencies, verified paths, multi-stage non-root image) and the
+[git guidelines](docs/guidelines/git.md) (atomic conventional commits, subjects under 50 characters).
+
+## Documentation
+
+[Wiki home](docs/wiki/Home.md) · [Requirements](docs/wiki/01-Requirements.md) · [Architecture (C4)](docs/wiki/02-Architecture-C4.md) ·
+[Testing](docs/wiki/03-Testing.md) · [Deployment](docs/wiki/04-Deployment.md) · [Performance](docs/wiki/05-Performance.md) ·
+[Operations](docs/wiki/06-Operations.md)
+
+## Project layout
+
+```
+src/evedm/            core + web app (universe, resolver, sso, esi, characters, bundle, ranking, scout, alerts, db,
+                      logs, demo, cli, wars/, web/)
+src/evedm/data/       universe.json.gz (systems, gates, ship names from CCP static data)
+tests/                unit/, integration/ (processes + browser), perf/, fake_eve.py
+docs/                 wiki/, c4/ (PlantUML), diagrams/ (SVG/PNG), screenshots/
+deploy/               docker-compose.yml for servers (named volume at /app/data)
+scripts/              run-tests, docker-smoke, render-diagrams, load-image, update (.sh Linux, .ps1 Windows)
+data/demo/            prepopulated demo database
+logs/                 test, performance and launch logs
+```
+
+EVE Online and all related names are trademarks of CCP hf. Universe data comes from CCP's Static Data Export.

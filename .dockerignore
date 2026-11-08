@@ -1,21 +1,18 @@
-# Keep the build context small and secrets out of the image
 .git
 .github
-.idea
-.vscode
+.venv
+.ruff_cache
+.pytest_cache
+**/__pycache__
+**/*.pyc
+tests
+docs
+logs
+data
+scripts
+dist
+build
+*.egg-info
+*.tar
+*.tar.gz
 .env
-*.log
-__pycache__/
-*.py[cod]
-.pytest_cache/
-
-# Runtime data and secrets are mounted by docker-compose.yml
-data/
-config/credentials.json
-
-# Not needed at runtime
-tests/
-test_data/
-docs/
-skills/
-publish-nexus.sh

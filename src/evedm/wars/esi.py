@@ -1,0 +1,147 @@
+"""Public ESI endpoints used by the war watcher: async, retries, in-memory name cache (from eve-war-bot-2)."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Iterable
+from typing import Any
+
+import httpx
+
+log = logging.getLogger("evedm.wars.esi")
+
+# 420 = ESI error limit, 429 = rate limit, 5xx = transient server errors
+RETRY_STATUSES = {420, 429, 500, 502, 503, 504}
+KILLMAIL_PAGE_SIZE = 2000
+NAMES_CHUNK = 1000
+
+
+class WarEsiError(Exception):
+    """ESI failure; ``status`` is the HTTP status code (None for network errors)."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+    @property
+    def not_found(self) -> bool:
+        return self.status == 404
+
+
+class WarEsi:
+    def __init__(
+        self,
+        base_url: str,
+        user_agent: str,
+        compatibility_date: str,
+        *,
+        timeout: float = 15.0,
+        retries: int = 3,
+        backoff_s: float = 2.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.user_agent = user_agent
+        self.compatibility_date = compatibility_date
+        self.timeout = timeout
+        self.retries = max(1, retries)
+        self.backoff_s = backoff_s
+        self.transport = transport
+        self._names: dict[int, tuple[str, str]] = {}
+        self._client: httpx.AsyncClient | None = None
+
+    def _http(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=self.timeout,
+                transport=self.transport,
+                headers={
+                    "User-Agent": self.user_agent,
+                    "X-Compatibility-Date": self.compatibility_date,
+                    "Accept": "application/json",
+                },
+            )
+        return self._client
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def _request(self, method: str, endpoint: str, params: dict | None = None, json: Any = None) -> Any:
+        path = "/" + endpoint.lstrip("/")
+        last: WarEsiError | None = None
+        for attempt in range(1, self.retries + 1):
+            try:
+                response = await self._http().request(method, path, params=params, json=json)
+            except httpx.HTTPError as e:
+                last = WarEsiError(f"{method} {path}: {e!r}")
+            else:
+                if response.status_code < 400:
+                    return response.json()
+                last = WarEsiError(
+                    f"{method} {path} -> HTTP {response.status_code}: {response.text[:200]}", response.status_code
+                )
+                if response.status_code not in RETRY_STATUSES:
+                    raise last
+            if attempt < self.retries:
+                await asyncio.sleep(self.backoff_s**attempt)
+        log.warning("ESI request failed after %d attempt(s): %s", self.retries, last)
+        assert last is not None
+        raise last
+
+    # --- endpoints -------------------------------------------------------------------------
+    async def wars(self, max_war_id: int | None = None) -> list[int]:
+        """Newest war IDs (up to 2000), as returned by ESI (descending)."""
+        params = {"max_war_id": max_war_id} if max_war_id else None
+        return await self._request("GET", "wars/", params=params)
+
+    async def war(self, war_id: int) -> dict:
+        return await self._request("GET", f"wars/{war_id}/")
+
+    async def alliance(self, alliance_id: int) -> dict:
+        return await self._request("GET", f"alliances/{alliance_id}/")
+
+    async def corporation(self, corp_id: int) -> dict:
+        return await self._request("GET", f"corporations/{corp_id}/")
+
+    async def alliance_corporations(self, alliance_id: int) -> list[int]:
+        return await self._request("GET", f"alliances/{alliance_id}/corporations/")
+
+    async def names(self, ids: Iterable[int | None]) -> dict[int, tuple[str, str]]:
+        """Resolve IDs to ``{id: (name, category)}``. Unknown IDs are left out."""
+        wanted = {int(i) for i in ids if i}
+        missing = sorted(i for i in wanted if i not in self._names)
+        for start in range(0, len(missing), NAMES_CHUNK):
+            await self._resolve(missing[start : start + NAMES_CHUNK])
+        return {i: self._names[i] for i in wanted if i in self._names}
+
+    async def _resolve(self, chunk: list[int]) -> None:
+        # ESI answers 404 if any ID is invalid: bisect on 404 to still resolve the valid ones
+        try:
+            rows = await self._request("POST", "universe/names/", json=chunk)
+        except WarEsiError as e:
+            if not e.not_found:
+                raise
+            if len(chunk) > 1:
+                mid = len(chunk) // 2
+                await self._resolve(chunk[:mid])
+                await self._resolve(chunk[mid:])
+            return
+        for row in rows:
+            self._names[int(row["id"])] = (row["name"], row["category"])
+
+    async def killmails(self, war_id: int, max_pages: int = 1) -> list[dict]:
+        """Killmail refs ``{killmail_id, killmail_hash}`` for a war."""
+        refs: list[dict] = []
+        for page in range(1, max(1, max_pages) + 1):
+            batch = await self._request("GET", f"wars/{war_id}/killmails/", params={"page": page})
+            refs.extend(batch)
+            if len(batch) < KILLMAIL_PAGE_SIZE:
+                break
+        return refs
+
+    async def killmail(self, km_id: int, km_hash: str) -> dict:
+        return await self._request("GET", f"killmails/{km_id}/{km_hash}/")

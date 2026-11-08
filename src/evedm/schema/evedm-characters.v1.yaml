@@ -1,0 +1,57 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "evedm-characters.v1"
+title: EVE Distance Meter - character token bundle
+type: object
+additionalProperties: false
+required: [schema_version, client_id, characters]
+properties:
+  schema_version:
+    const: 1
+  client_id:
+    type: string
+    minLength: 1
+    description: client_id of the EVE application that issued every token in this file
+  exported_at:
+    type: string
+    format: date-time
+  exported_from:
+    type: string
+    description: free-text instance label, informational only
+  characters:
+    type: array
+    minItems: 1
+    maxItems: 200
+    items:
+      type: object
+      additionalProperties: false
+      required: [refresh_token]
+      properties:
+        character_id:
+          type: integer
+          minimum: 1
+          description: optional; taken from the access token or the refresh result when absent
+        character_name:
+          type: string
+          description: informational; the name from the token wins
+        refresh_token:
+          type: string
+          minLength: 8
+        access_token:
+          type: string
+          pattern: "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+          description: JWT; optional, may be expired
+        access_token_expires_at:
+          type: string
+          format: date-time
+        scopes:
+          type: array
+          uniqueItems: true
+          items: { type: string }
+          description: informational; the scopes in the token win
+        tags:
+          type: array
+          uniqueItems: true
+          items: { type: string, maxLength: 32 }
+        enabled:
+          type: boolean
+          default: true

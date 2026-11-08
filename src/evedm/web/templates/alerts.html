@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Alerts · EVE Distance Meter{% endblock %}
+{% block content %}
+<div class="page alerts-page">
+  <h1>Structure alerts</h1>
+  <p class="small">From zKillboard's live killmail feed: structures <b>destroyed</b> (citadels, engineering complexes and
+    refineries drop their quantum core), <b>combat</b> next to a known structure, and structures <b>firing</b>. Attack
+    timers themselves are not public. Each alert lists your closest characters; an online one can get its autopilot
+    destination set from here.</p>
+  <div class="toolbar filters">
+    <label class="small"><input type="checkbox" class="a-kind" value="destroyed"> destroyed</label>
+    <label class="small"><input type="checkbox" class="a-kind" value="combat"> combat</label>
+    <label class="small"><input type="checkbox" class="a-kind" value="firing"> firing</label>
+    <label class="small"><input id="a-core" type="checkbox"> core drops only</label>
+    <label class="small">Space
+      <select id="a-space"><option value="">all</option><option value="high">high-sec</option><option value="low">low-sec</option>
+        <option value="null">null-sec</option><option value="wormhole">wormhole</option></select></label>
+    <label class="small">Last
+      <select id="a-hours"><option value="1">hour</option><option value="6">6 hours</option><option value="24">24 hours</option>
+        <option value="72">3 days</option><option value="168">7 days</option></select></label>
+    <button id="a-notify" class="btn" type="button">Desktop notifications: off</button>
+    <label class="small"><input id="a-sound" type="checkbox"> sound</label>
+    <button id="a-reload" class="btn" type="button">Refresh</button>
+  </div>
+  <div id="a-info" class="small"></div>
+  <ul id="a-groups" class="wars"></ul>
+  <p id="a-empty" class="small" hidden>No alerts in this period.</p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/prefs.js?v={{ version }}"></script>
+<script src="/static/map.js?v={{ version }}"></script>
+<script src="/static/alerts.js?v={{ version }}"></script>
+{% endblock %}

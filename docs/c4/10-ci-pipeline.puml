@@ -1,0 +1,20 @@
+@startuml ci-pipeline
+title GitHub Actions pipeline (.github/workflows/ci.yml)
+skinparam shadowing false
+start
+:lint\nruff check;
+fork
+  :unit tests\nUbuntu + Windows x Python 3.12 / 3.13\nJUnit + logs as artifacts;
+end fork
+fork
+  :integration tests\nreal evedm + fake EVE SSO/ESI processes;
+fork again
+  :footprint\n50 characters, 600 requests\nserver pinned to 2 CPUs\npeak RSS <= 160 MB, p95 <= 1 s;
+end fork
+:image\nbuild amd64, smoke test with limits 2 CPUs and 1 GB RAM,\nfootprint inside the container,\ndocker save -> evedm-image-amd64.tar.gz;
+if (push to main or tag?) then (yes)
+  :push multi-arch image\nlinux/amd64 + linux/arm64\nghcr.io/<owner>/<repo>;
+else (pull request)
+endif
+stop
+@enduml

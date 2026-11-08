@@ -1,0 +1,35 @@
+@startuml seq-sso-add-character
+title UC-01 · Add a character through EVE SSO
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+actor User
+participant "Browser UI" as UI
+participant "Routes" as R
+participant "AuthService" as A
+participant "EVE SSO" as SSO
+participant "CharacterService" as C
+database "SQLite" as DB
+
+User -> UI : Characters > Add character
+UI -> R : GET /sso/add
+R -> DB : create_state(state, "add")
+R --> UI : 303 to /v2/oauth/authorize (client_id, scopes, state)
+UI -> SSO : authorize
+User -> SSO : log in, pick character, approve scopes
+SSO --> UI : 302 /sso/callback?code&state
+UI -> R : GET /sso/callback
+R -> DB : consume_state(state)
+alt state missing, used or older than 10 min (SSO-04)
+  R --> UI : 303 /login?error=invalid_state
+else valid
+  R -> A : exchange_code(code)
+  A -> SSO : POST /v2/oauth/token (Basic client_id:secret)
+  SSO --> A : access_token (JWT), refresh_token, expires_in
+  A -> SSO : GET JWKS (cached 1 h)
+  A -> A : verify signature, iss, aud = client_id, exp
+  A --> R : TokenSet(identity: id, name, scopes)
+  R -> C : store(tokenset)
+  C -> DB : upsert character (OK or LIMITED), encrypted tokens
+  R --> UI : 303 /characters?added=<name>
+end
+@enduml

@@ -1,0 +1,39 @@
+@startuml seq-thera-route
+title UC-15 · Ranking through Thera / Turnur (EVE-Scout wormholes)
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+autonumber
+actor "User" as user
+participant "Browser UI\n(rank.js + map.js)" as ui
+participant "Routes" as web
+participant "EveScout" as evs
+participant "RankingService" as rs
+participant "GateGraph" as g
+participant "EVE-Scout\napi.eve-scout.com" as ext
+
+user -> ui : tick "Thera / Turnur (EVE-Scout)" (kept in the evedm_prefs cookie)
+ui -> web : GET /api/rank?target=T&thera=1
+web -> evs : ensure_fresh()
+alt list older than refresh_s (300 s)
+  evs -> ext : GET /v2/public/signatures
+  alt answered
+    ext --> evs : signatures (hub, in_system, remaining_hours, type, size)
+    evs -> evs : keep Thera / Turnur rows, drop J-space, unknown and expired systems,\none row per system, order by security (high first), then name
+  else error / timeout
+    evs -> evs : keep the last list, remember the error (shown under the filter)
+  end
+end
+web -> rs : rank(target, evescout)
+rs -> g : bfs(target) : direct gate routes of the characters
+loop each hub (Thera, Turnur) with a list
+  rs -> evs : via(character system, target)
+  evs -> g : multi_bfs(listed systems, avoid) (cached per hub and list version)
+  g --> evs : nearest listed system + gate path for the character and for the target
+  evs -> evs : entry = closest listed system to the character (higher security wins a tie)\nexit = closest listed system to the target (same rule)\njumps = gates to entry + 2 (wormhole in and out) + gates from exit
+  note right: entry = exit: the plain gate route is shorter, hub skipped
+end
+rs -> rs : fewest hub jumps; used only when STRICTLY shorter than the direct gate route
+rs --> web : rows with jumps, route, route_legs [gate, wormhole, gate], wormhole{hub, entry, exit, direct_jumps, used}
+web --> ui : JSON + evescout status
+ui -> ui : "via Thera" badge, note in the route bar, dashed purple wormhole leg between two gold gate legs on the map
+@enduml

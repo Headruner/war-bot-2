@@ -1,0 +1,68 @@
+{
+  "label": "docker-wal-nonroot-2cpu-1g",
+  "started_at": "2026-10-30T00:17:40Z",
+  "host": {
+    "python": "3.13.18",
+    "platform": "Linux-6.18.44-fc-v185-x86_64-with-glibc2.39"
+  },
+  "params": {
+    "characters": 50,
+    "requests": 600,
+    "concurrency": 20,
+    "esi_delay_ms": 40
+  },
+  "idle": {
+    "VmHWM": 74.2109375,
+    "VmRSS": 73.75
+  },
+  "import": {
+    "Added": 50,
+    "Updated": 0,
+    "Limited": 0,
+    "Rejected": 0
+  },
+  "cold_rank_ms": 466.2,
+  "load": {
+    "requests": 600,
+    "concurrency": 20,
+    "errors": 0,
+    "wall_s": 1.42,
+    "rps": 422.1,
+    "p50_ms": 38.5,
+    "p95_ms": 82.7,
+    "p99_ms": 122.9,
+    "max_ms": 180.0,
+    "mean_ms": 44.3,
+    "server_cpu_s": 1.26,
+    "server_cores_avg": 0.89
+  },
+  "after": {
+    "VmHWM": 77.4609375,
+    "VmRSS": 77.4609375
+  },
+  "docker_stats": {
+    "BlockIO": "0B / 0B",
+    "CPUPerc": "0.15%",
+    "Container": "evedm-perf-54475",
+    "ID": "bec6a14a53ec",
+    "MemPerc": "5.39%",
+    "MemUsage": "55.21MiB / 1GiB",
+    "Name": "evedm-perf-54475",
+    "NetIO": "0B / 0B",
+    "PIDs": "5"
+  },
+  "image": "evedm:0.3.0",
+  "fake_calls": {
+    "token": 50,
+    "jwks": 1,
+    "location": 50,
+    "ship": 50,
+    "online": 50
+  },
+  "peak_rss_mb": 77.5,
+  "budget": {
+    "peak_rss_mb_max": 200.0,
+    "p95_ms_max": 1500.0,
+    "ok": true
+  }
+}

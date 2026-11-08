@@ -1,0 +1,64 @@
+@startuml seq-members-tabs
+title UC-13 / UC-14 · Notifications and Structures for members of the configured alliance (BB)
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+autonumber
+actor "Member" as user
+actor "Other player" as other
+participant "Browser UI" as ui
+participant "Routes" as web
+participant "AllianceGate" as gate
+participant "NotificationService" as ntf
+participant "StructureScout" as scout
+participant "CharacterService" as chars
+participant "ESI" as esi
+database "SQLite" as db
+
+== sign-in: the alliance of the main is read ==
+user -> ui : Sign in with EVE SSO
+ui -> web : GET /sso/callback
+web -> gate : refresh(main, force)
+gate -> esi : GET /characters/{main} (public)
+esi --> gate : corporation_id, alliance_id
+gate -> db : users.alliance_id, affiliation_at
+web --> ui : 303 /  (nav shows Notifications + Structures only when alliance_id is in access.alliance_ids)
+
+== background: notifications of ALL registered characters (every poll_s = 60 s) ==
+ntf -> db : characters with the notifications scope and a valid token (status is not REAUTH),\nwhoever linked them, one link per character
+loop each character whose ESI cache (600 s) has expired
+  ntf -> chars : access_token(character, owner)
+  ntf -> esi : GET /characters/{id}/notifications (ETag)
+  esi --> ntf : notifications (YAML text)
+  ntf -> db : INSERT OR IGNORE character_notifications
+end
+
+== background: structures where any asset is stored (every interval_min) ==
+loop each character with a valid token and the asset scope
+  scout -> chars : access_token(character, owner)
+  scout -> esi : GET /characters/{id}/assets (paged)
+  esi --> scout : assets with location_id
+  scout -> scout : keep locations >= 1e12 that are not the character's own items (structure IDs)
+  scout -> db : structure_sightings, known_structures
+end
+loop each known structure (re-read every structure_refresh_hours)
+  scout -> chars : token of a character that has assets there
+  scout -> esi : GET /universe/structures/{id}
+  esi --> scout : name, owner_id, solar_system_id, type_id, position (403: try the next character, 404: gone)
+  scout -> db : UPDATE known_structures
+end
+
+== a member looks ==
+user -> ui : open Notifications / Structures
+ui -> web : GET /api/notifications  |  GET /api/structures
+web -> gate : allowed(main)?  (refresh when older than 6 h)
+alt alliance of the main is in access.alliance_ids
+  web -> db : notifications of all valid characters / all known structures
+  web -> web : one BFS per notification system or nearest-origin BFS from the caller's characters
+  web --> ui : cards with region + three closest characters / structure rows with jumps
+else any other alliance (or alliance not known yet)
+  web --> ui : 404, and no link in the navigation
+end
+other -> ui : open /notifications or /structures
+ui -> web : GET
+web --> ui : 404
+@enduml

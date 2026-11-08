@@ -1,8 +1,24 @@
+# Build from source and run:   docker compose up -d --build
+# Data (one-file SQLite DB in WAL mode + logs) is kept in ./data on the host, mounted at /app/data.
+# Linux host folder: the container runs as uid 10001 -> sudo chown -R 10001:10001 ./data (Windows: no action).
+# Host port: EVEDM_PUBLISH in .env (default 8080), e.g. EVEDM_PUBLISH=8082 when 8080 is taken; EVE_CALLBACK_URL must match.
 services:
-  eve-war-bot:
+  evedm:
     build: .
-    container_name: eve-war-bot-v2
-    restart: always
+    image: evedm:0.8.0
+    container_name: evedm
+    restart: unless-stopped
+    env_file: [.env]
+    ports:
+      - "${EVEDM_PUBLISH:-8080}:8080"   # [host address:]host port -> container port 8080
     volumes:
       - ./data:/app/data
-      - ./config:/app/config:ro
+      - ./config/wars.yaml:/app/config/wars.yaml:ro   # war watcher settings, edit without rebuilding
+    deploy:
+      resources:
+        limits:
+          cpus: "${EVEDM_CPUS:-2}"      # at most the host's CPU count (a 1-vCPU VM: EVEDM_CPUS=1)
+          memory: ${EVEDM_MEMORY:-1g}
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "3" }
