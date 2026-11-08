@@ -8,7 +8,7 @@ The pages are kept in docs/wiki (reviewed with the code); this script converts t
   - a _Sidebar.md with the page list is generated.
 
   python scripts/publish_wiki.py              clone the wiki repo, replace its pages, commit, push
-  python scripts/publish_wiki.py --dry-run    only build the converted pages into --out (default: build/wiki), no network
+  python scripts/publish_wiki.py --dry-run    only build the converted pages into --out (default build/wiki)
 Prerequisite (once): GitHub -> Settings -> Features -> Wikis on, then create any first page in the web UI, otherwise
 <repo>.wiki.git does not exist yet.
 """
