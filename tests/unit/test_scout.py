@@ -152,14 +152,14 @@ async def test_paged_assets_and_truncation(settings, services, world):
     await link(services, A, A)
     settings.structures.max_asset_pages = 2
     scout = scout_for(settings, services)
-    await scout.run()
+    stats = await scout.run()
     row = services["db"].query("SELECT structures, error FROM scout_characters WHERE character_id=?", (A,))[0]
-    assert row["error"] == "assets truncated" and row["structures"] == 2  # pages 1-2: S_HIGH and S_WH
+    assert row["error"] is None and row["structures"] == 2 and stats["truncated"] == 1  # pages 1-2: S_HIGH and S_WH
     settings.structures.max_asset_pages = 20
     services["db"].execute("UPDATE scout_characters SET checked_at=0")
-    await scout.run()
+    stats = await scout.run()
     row = services["db"].query("SELECT structures, error FROM scout_characters WHERE character_id=?", (A,))[0]
-    assert row["error"] is None and row["structures"] == 3
+    assert row["error"] is None and row["structures"] == 3 and stats["truncated"] == 0
 
 
 async def test_truncated_assets_do_not_turn_container_ids_into_structures(settings, services, world):
@@ -177,7 +177,7 @@ async def test_truncated_assets_do_not_turn_container_ids_into_structures(settin
     await scout.run()
     db = services["db"]
     row = db.query("SELECT structures, error FROM scout_characters WHERE character_id=?", (A,))[0]
-    assert row["error"] == "assets truncated" and row["structures"] == 1
+    assert row["error"] is None and row["structures"] == 1
     assert [r[0] for r in db.query("SELECT structure_id FROM known_structures")] == [S_HIGH]
     settings.structures.max_asset_pages = 20  # the whole list: the can is known, so its content is not a structure
     db.execute("UPDATE scout_characters SET checked_at=0")

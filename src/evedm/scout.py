@@ -75,7 +75,15 @@ class StructureScout:
     # -- one scout step -----------------------------------------------------------------------------
     async def run(self) -> dict[str, Any]:
         t0 = time.time()
-        stats = {"characters_read": 0, "candidates": 0, "resolved": 0, "no_access": 0, "gone": 0, "errors": 0}
+        stats = {
+            "characters_read": 0,
+            "candidates": 0,
+            "resolved": 0,
+            "no_access": 0,
+            "gone": 0,
+            "errors": 0,
+            "truncated": 0,
+        }
         contributors = self.contributors()
         linked = {c for c, _, _ in contributors}
         checked = {r[0]: r[1] for r in self.db.query("SELECT character_id, checked_at FROM scout_characters")}
@@ -126,7 +134,14 @@ class StructureScout:
                     "INSERT INTO scout_characters(character_id, checked_at, structures, error) VALUES(?,?,?,?) "
                     "ON CONFLICT(character_id) DO UPDATE SET checked_at=excluded.checked_at, "
                     "structures=excluded.structures, error=excluded.error",
-                    (cid, now, len(found), "assets truncated" if truncated else None),
+                    (cid, now, len(found), None),  # a cut-off list is not an error: one item per structure is enough
+                )
+            if truncated:
+                stats["truncated"] += 1
+                log.info(
+                    "structure scout: %s has more than %s asset pages; structures on the rest are not seen",
+                    cid,
+                    self.s.max_asset_pages,
                 )
             stats["characters_read"] += 1
             stats["candidates"] += len(found)
