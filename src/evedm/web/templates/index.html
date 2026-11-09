@@ -12,9 +12,14 @@
   <button type="button" id="paste-btn" class="btn">Paste text</button>
   <button type="button" id="refresh-btn" class="btn icon" title="Refresh locations" aria-label="Refresh">&#8635;</button>
   {% if evescout_enabled %}
-  <label class="thera-toggle" title="Route through the Thera / Turnur wormholes listed by EVE-Scout when that is shorter">
-    <input type="checkbox" id="thera"> Thera / Turnur <span class="small">(EVE-Scout)</span>
-  </label>
+  <fieldset class="hub-toggle" id="hub-toggle" role="radiogroup" aria-label="Route through a wormhole hub (EVE-Scout)"
+            title="Route through the chosen hub's EVE-Scout wormholes when that is shorter than the gates">
+    <label><input type="radio" name="hub" value="" checked> Gates only</label>
+    {% for h in evescout_hubs %}
+    <label><input type="radio" name="hub" value="{{ h | lower }}"> {{ h }}</label>
+    {% endfor %}
+    <span class="small">(EVE-Scout)</span>
+  </fieldset>
   {% endif %}
 </form>
 {% endblock %}

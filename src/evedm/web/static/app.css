@@ -172,7 +172,7 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
   .map-pane { order: -1; height: 46vh; min-height: 280px; flex: none; border-bottom: 1px solid var(--line); }
   .list-pane { border-right: 0; overflow: visible; }
   .legend { display: none; }
-  .thera-toggle { white-space: normal; flex-basis: 100%; order: 4; }
+  .hub-toggle { white-space: normal; flex-basis: 100%; order: 4; }
   .route-bar { right: 8px; left: 8px; bottom: 8px; padding: 6px 8px; font-size: 12.5px; }
   .route-bar .title { margin-bottom: 4px; }
   .route-bar .title .muted { display: none; }
@@ -308,7 +308,9 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
 .card.ntf .where-line { flex-wrap: wrap; }
 
 /* Thera / Turnur filter (UC-15) */
-.thera-toggle { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--fg, #e6ebf2); }
+.hub-toggle { display: inline-flex; align-items: center; gap: 12px; white-space: nowrap; border: 0; margin: 0; padding: 0;
+  color: var(--fg, #e6ebf2); }
+.hub-toggle label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
 .thera-info { margin: 4px 0 8px; opacity: 0.85; }
 .badge.wh, .hop.wh { background: rgba(180, 140, 255, 0.2); color: #d9c7ff; border: 1px solid rgba(180, 140, 255, 0.5); }
 .route-bar .wh-note { margin-top: 2px; color: #d9c7ff; font-size: 0.9em; }

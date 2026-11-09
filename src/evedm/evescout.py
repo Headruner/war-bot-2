@@ -150,6 +150,7 @@ class EveScout:
             "fetched_at": self.fetched_at or None,
             "error": self.error,
             "demo": self.demo,
+            "configured": list(self.s.hubs),
             "hubs": {name: len(h["systems"]) for name, h in self.hubs.items()},
             "connections": sum(len(h["systems"]) for h in self.hubs.values()),
         }
@@ -179,8 +180,21 @@ class EveScout:
         self._searches[key] = (self.version, result)
         return result
 
-    def via(self, origin: int, target: int, avoid: list[int] | tuple[int, ...] = ()) -> dict[str, Any] | None:
+    def hub_name(self, value: str) -> str | None:
+        """The configured spelling of a hub (``thera`` -> ``Thera``), or None when it is not configured."""
+        wanted = value.strip().lower()
+        return next((h for h in self.s.hubs if h.lower() == wanted), None)
+
+    def via(
+        self,
+        origin: int,
+        target: int,
+        avoid: list[int] | tuple[int, ...] = (),
+        hubs: list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any] | None:
         """The shortest route through Thera or Turnur, or None when no hub offers one.
+
+        ``hubs`` limits the search to the named hubs (one radio button = one mid-system); None allows all.
 
         ``origin`` -> gates -> closest listed system -> hub -> closest listed system to ``target`` -> gates ->
         ``target``. Higher security wins among equally close listed systems. A hub whose two nearest listed
@@ -188,7 +202,10 @@ class EveScout:
         """
         avoid_key = tuple(sorted(avoid))
         best: dict[str, Any] | None = None
+        allowed = None if hubs is None else {x.lower() for x in hubs}
         for hub, h in self.hubs.items():
+            if allowed is not None and hub.lower() not in allowed:
+                continue
             dist, orig, toward = self._search(hub, avoid_key)
             if dist[origin] < 0 or dist[target] < 0:
                 continue

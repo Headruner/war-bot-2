@@ -206,12 +206,18 @@ class RankingService:
         }
 
     async def rank(
-        self, target: int, refresh: int = 1, owner_id: int = 0, evescout: EveScout | None = None
+        self,
+        target: int,
+        refresh: int = 1,
+        owner_id: int = 0,
+        evescout: EveScout | None = None,
+        hubs: list[str] | None = None,
     ) -> dict[str, Any]:
         """Rank the enabled characters of ``owner_id`` for ``target``.
 
         refresh: 0 = snapshots only, 1 = stale-while-revalidate, 2 = wait for fresh data.
         evescout: when given, a route through Thera / Turnur replaces the gate route if it is shorter (EVS-04).
+        hubs: with ``evescout``, only these hubs (e.g. ``["Thera"]``) may be the mid-system; None allows all.
         """
         t0 = time.perf_counter()
         all_chars = self.db.list_characters(owner_id)
@@ -292,7 +298,7 @@ class RankingService:
                             "route_legs": [{"mode": "gate", "ids": ids}],
                         }
                     )
-                plan = evescout.via(idx, target, self.avoid) if evescout is not None else None
+                plan = evescout.via(idx, target, self.avoid, hubs) if evescout is not None else None
                 if plan is not None:
                     better = direct is None or plan["jumps"] < direct  # a tie keeps the plain gate route
                     row["wormhole"] = self._wormhole_view(plan, direct, better)
@@ -343,7 +349,7 @@ class RankingService:
             "generated_at": now,
             "rows": rows,
             "excluded": excluded,
-            "evescout": evescout.status() if evescout is not None else None,
+            "evescout": (evescout.status() | {"selected": hubs}) if evescout is not None else None,
             "stats": {
                 "characters": len(rows),
                 "reachable": sum(1 for r in rows if r["reachable"]),

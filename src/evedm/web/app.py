@@ -349,6 +349,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             "structures_enabled": svc.scout is not None and member,
             "alerts_enabled": svc.alerts is not None,
             "evescout_enabled": svc.evescout is not None,
+            "evescout_hubs": list(svc.evescout.s.hubs) if svc.evescout is not None else [],
             "notifications_enabled": svc.notifications is not None and member,
         }
         return templates.TemplateResponse(request, name, base | ctx)
@@ -556,16 +557,22 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         return JSONResponse(out)
 
     @app.get("/api/rank")
-    async def rank(request: Request, target: str, refresh: int = 1, thera: int = 0) -> JSONResponse:
+    async def rank(request: Request, target: str, refresh: int = 1, thera: int = 0, hub: str = "") -> JSONResponse:
         uid = owner(request)
         svc = svc_of(request)
         idx = svc.graph.index.get(int(target)) if target.isdigit() else svc.graph.find(target)
         if idx is None:
             raise HTTPException(status_code=404, detail=f"unknown solar system: {target}")
-        scout = svc.evescout if thera else None  # the Thera / Turnur filter (UC-15)
+        scout = svc.evescout if (thera or hub) else None  # the Thera / Turnur filter (UC-15)
+        hubs: list[str] | None = None  # None = any configured hub (the old thera=1)
+        if scout is not None and hub:
+            name = scout.hub_name(hub)
+            if name is None:
+                raise HTTPException(status_code=422, detail=f"unknown hub: {hub} (use {', '.join(scout.s.hubs)})")
+            hubs = [name]  # one radio button = one mid-system
         if scout is not None:
             await scout.ensure_fresh()
-        result = await svc.ranking.rank(idx, refresh=max(0, min(2, refresh)), owner_id=uid, evescout=scout)
+        result = await svc.ranking.rank(idx, refresh=max(0, min(2, refresh)), owner_id=uid, evescout=scout, hubs=hubs)
         return JSONResponse(result)
 
     @app.get("/api/evescout")

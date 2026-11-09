@@ -378,9 +378,11 @@ def test_thera_filter_draws_a_two_leg_route_and_is_remembered(server, browser):
     page.wait_for_selector(".row.selected")
     assert "via Thera" not in page.locator("#rows").inner_text()
     assert page.locator("#thera-info").is_hidden()
-    page.locator("#thera").check()
+    assert page.locator('#hub-toggle input[value=""]').is_checked()
+    page.locator('#hub-toggle input[value="thera"]').check()
     page.wait_for_selector(".badge.wh")
-    assert "EVE-Scout: 6 listed systems" in page.locator("#thera-info").inner_text()
+    info = page.locator("#thera-info").inner_text()
+    assert "EVE-Scout:" in info and "Thera" in info and "Turnur" not in info  # only the chosen hub counts
     page.locator(".row", has=page.locator(".badge.wh")).first.click()
     bar = page.locator("#route-bar").inner_text()
     assert "via Thera" in bar and "wormhole in and out" in bar
@@ -389,9 +391,12 @@ def test_thera_filter_draws_a_two_leg_route_and_is_remembered(server, browser):
     assert canvas_has_pixels(page)
     page.reload()
     page.wait_for_selector(".row.selected")
-    assert page.locator("#thera").is_checked()  # the choice lives in the evedm_prefs cookie
+    assert page.locator('#hub-toggle input[value="thera"]').is_checked()  # the choice lives in the evedm_prefs cookie
     page.wait_for_selector(".badge.wh")
-    page.locator("#thera").uncheck()
+    page.locator('#hub-toggle input[value="turnur"]').check()  # switching hubs re-ranks through the other mid-system
+    page.wait_for_function("document.querySelector('#thera-info').textContent.includes('Turnur')")
+    assert "Thera" not in page.locator("#thera-info").inner_text()
+    page.locator('#hub-toggle input[value=""]').check()
     page.wait_for_function("!document.querySelector('.badge.wh')")
     assert page.locator("#legend-wh").is_hidden()
     assert errors == []

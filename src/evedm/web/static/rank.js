@@ -33,7 +33,7 @@ function ago(iso) {
 }
 
 const state = { target: null, result: null, selected: null, timer: null, busy: false, tab: "live",
-  thera: Boolean($("#thera")) && Boolean(Prefs.get("rank", { thera: false }).thera) };
+  hub: $("#hub-toggle") ? String(Prefs.get("rank", { hub: "" }).hub || "") : "" };  // "" = gates only
 const main = document.querySelector("main.split");
 const autoRefresh = Number(main.dataset.autoRefresh || 0);
 const map = new StarMap($("#map"), $("#tooltip"));
@@ -45,7 +45,7 @@ async function rank(target, { refresh = 1, keepSelection = false } = {}) {
   $("#status").textContent = "Updating…";
   try {
     const result = await api(`/api/rank?target=${encodeURIComponent(target)}&refresh=${refresh}` +
-      (state.thera ? "&thera=1" : ""));
+      (state.hub ? `&hub=${encodeURIComponent(state.hub)}` : ""));
     state.result = result;
     state.target = result.target;
     if (!keepSelection || !result.rows.some((r) => r.character_id === state.selected)) {
@@ -100,7 +100,12 @@ function renderRow(row, n) {
   if (row.recommended) name.append(el("span", "badge closest", "Closest"));
   if (row.in_pod) name.append(el("span", "badge pod", "In pod"));
   if (row.status === "LIMITED") name.append(el("span", "badge limited", "Limited"));
-  if (row.error) name.append(el("span", "badge err", row.error));
+  if (row.error) {
+    const badge = el("span", "badge err", row.error);
+    if (row.error === "esi:420") badge.title = "ESI's error limit was reached: calls pause and resume by themselves " +
+      "(about a minute). Location and online state shown are the last known ones.";
+    name.append(badge);
+  }
   if (row.stale) name.append(el("span", "badge stale", "Stale"));
   who.append(name);
 
@@ -200,21 +205,27 @@ function renderThera(r) {
   const e = r.evescout;
   info.hidden = !e;
   if (!e) return;
-  const hubs = Object.entries(e.hubs).map(([name, n]) => `${name} ${n}`).join(" · ");
+  const shown = Object.entries(e.hubs).filter(([name]) => !e.selected || e.selected.includes(name));
+  const hubs = shown.map(([name, n]) => `${name} ${n}`).join(" · ");
+  const total = shown.reduce((sum, [, n]) => sum + n, 0);
   const when = e.fetched_at ? new Date(e.fetched_at * 1000).toLocaleTimeString() : "never";
-  info.textContent = e.connections
-    ? `EVE-Scout: ${e.connections} listed systems (${hubs}), read ${when}` + (e.demo ? " · demo sample" : "")
-    : "EVE-Scout: no connections listed";
+  info.textContent = total
+    ? `EVE-Scout: ${total} listed systems (${hubs}), read ${when}` + (e.demo ? " · demo sample" : "")
+    : `EVE-Scout: no connections listed${e.selected ? ` for ${e.selected.join(", ")}` : ""}`;
   if (e.error) info.textContent += ` · last read failed (${e.error})`;
 }
 
-const theraBox = $("#thera");
-if (theraBox) {
-  theraBox.checked = state.thera;
-  theraBox.addEventListener("change", () => {
-    state.thera = theraBox.checked;
-    Prefs.set("rank", { thera: state.thera });
-    if (state.target) rank(state.target.name, { refresh: 1, keepSelection: true });
+const hubRadios = document.querySelectorAll('#hub-toggle input[name="hub"]');
+if (hubRadios.length) {
+  if (![...hubRadios].some((r) => r.value === state.hub)) state.hub = "";  // a hub that is no longer configured
+  hubRadios.forEach((radio) => {
+    radio.checked = radio.value === state.hub;
+    radio.addEventListener("change", () => {
+      if (!radio.checked) return;
+      state.hub = radio.value;
+      Prefs.set("rank", { hub: state.hub });
+      if (state.target) rank(state.target.name, { refresh: 1, keepSelection: true });
+    });
   });
 }
 

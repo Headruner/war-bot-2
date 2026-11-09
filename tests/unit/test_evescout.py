@@ -114,6 +114,20 @@ def test_best_hub_is_the_shorter_one(graph):
     assert plan["hub"] == "Turnur" and plan["jumps"] == 2
 
 
+def test_hubs_argument_restricts_the_mid_system(graph):
+    s = scout(
+        graph,
+        [sig("Thera", "Jita"), sig("Thera", "Rens"), sig("Turnur", "Jita"), sig("Turnur", "Amarr")],
+    )
+    origin, target = graph.find("Jita"), graph.find("Amarr")
+    assert s.via(origin, target)["hub"] == "Turnur"  # any hub: Turnur is the shorter one
+    assert s.via(origin, target, hubs=["Turnur"])["hub"] == "Turnur"
+    thera = s.via(origin, target, hubs=["thera"])  # only Thera, case-insensitive
+    assert thera is None or (thera["hub"] == "Thera" and thera["jumps"] > 2)
+    assert s.via(origin, target, hubs=[]) is None
+    assert s.hub_name("TURNUR") == "Turnur" and s.hub_name("Hek") is None
+
+
 def test_avoided_system_is_not_used_as_transit(graph):
     s = scout(graph, [sig("Thera", "Jita"), sig("Thera", "Amarr")])
     perimeter, amarr, jita = graph.find("Perimeter"), graph.find("Amarr"), graph.find("Jita")
@@ -181,12 +195,31 @@ def plain_row(plain, r):
     return next(p for p in plain["rows"] if p["name"] == r["name"])
 
 
+def test_rank_hub_param_uses_only_that_hub(tmp_path):
+    with demo_client(tmp_path) as c:
+        both = c.get("/api/rank?target=Amarr&thera=1", headers=H).json()
+        thera = c.get("/api/rank?target=Amarr&hub=thera", headers=H).json()
+        turnur = c.get("/api/rank?target=Amarr&hub=Turnur", headers=H).json()
+        assert thera["evescout"]["selected"] == ["Thera"] and turnur["evescout"]["selected"] == ["Turnur"]
+        assert both["evescout"]["selected"] is None
+        for result, hub in ((thera, "Thera"), (turnur, "Turnur")):
+            for r in result["rows"]:
+                if r["wormhole"]:
+                    assert r["wormhole"]["hub"] == hub
+                    if r["wormhole"]["used"]:
+                        assert [leg["mode"] for leg in r["route_legs"]] == ["gate", "wormhole", "gate"]
+                        assert r["route_legs"][1]["hub"] == hub
+        assert c.get("/api/rank?target=Amarr&hub=hek", headers=H).status_code == 422
+        page = c.get("/").text
+        assert 'name="hub" value="thera"' in page and 'name="hub" value="turnur"' in page
+
+
 def test_evescout_endpoint_and_disabled(tmp_path):
     with demo_client(tmp_path) as c:
         body = c.get("/api/evescout", headers=H).json()
         assert body["status"]["demo"] is True and len(body["connections"]) == 6
-        assert c.get("/").status_code == 200 and 'id="thera"' in c.get("/").text
+        assert c.get("/").status_code == 200 and 'id="hub-toggle"' in c.get("/").text
     with demo_client(tmp_path / "off", enabled=False) as c:
         assert c.get("/api/evescout", headers=H).status_code == 404
-        assert 'id="thera"' not in c.get("/").text
+        assert 'id="hub-toggle"' not in c.get("/").text
         assert c.get("/api/rank?target=Amarr&thera=1", headers=H).json()["evescout"] is None
