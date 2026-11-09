@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from collections import OrderedDict
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -160,8 +161,20 @@ class EsiClient:
 
     async def get_paged(self, path: str, token: str, max_pages: int = 20) -> tuple[list[Any], bool]:
         """Every page of a paged authenticated list (X-Pages), uncached. Returns (items, truncated)."""
-        headers = dict(self.headers) | {"Authorization": f"Bearer {token}"}
         items: list[Any] = []
+        pages = 1
+        async for chunk, total in self.iter_pages(path, token, max_pages):
+            items.extend(chunk)
+            pages = total
+        return items, pages > max_pages
+
+    async def iter_pages(self, path: str, token: str, max_pages: int = 20) -> AsyncIterator[tuple[list[Any], int]]:
+        """A paged authenticated list one page at a time: yields (items of the page, total pages ESI reports).
+
+        Nothing is kept between pages, so a list of any length is read in constant memory. The read ends after
+        ``max_pages`` pages or the last one; the caller sees ``total pages > max_pages`` when it was cut short.
+        """
+        headers = dict(self.headers) | {"Authorization": f"Bearer {token}"}
         pages, page = 1, 1
         while page <= min(pages, max_pages):
             resp = await self._send("GET", f"{path}?page={page}", headers)
@@ -173,13 +186,12 @@ class EsiClient:
                 except ValueError:
                     pass
                 raise EsiError(resp.status_code, detail)
-            items.extend(resp.json())
             try:
                 pages = max(1, int(resp.headers.get("X-Pages", "1") or 1))
             except ValueError:
                 pages = 1
+            yield resp.json(), pages
             page += 1
-        return items, pages > max_pages
 
     async def names_categories(self, ids: list[int]) -> dict[int, tuple[str, str]]:
         """POST /universe/names in chunks of 1000; an invalid ID (404 for the chunk) is bisected out."""

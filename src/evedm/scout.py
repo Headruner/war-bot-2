@@ -72,6 +72,21 @@ class StructureScout:
             best[r["character_id"]] = (r["character_id"], r["owner_id"], scopes)  # newest token wins
         return list(best.values())
 
+    def _save_sightings(self, character_id: int, structure_ids: set[int]) -> None:
+        """Record that a character has items in these structures (one transaction). Known ones are only touched."""
+        now = time.time()
+        with self.db.tx() as c:
+            c.executemany(
+                "INSERT INTO structure_sightings(structure_id, character_id, seen_at) VALUES(?,?,?) "
+                "ON CONFLICT(structure_id, character_id) DO UPDATE SET seen_at=excluded.seen_at",
+                [(sid, character_id, now) for sid in structure_ids],
+            )
+            c.executemany(
+                "INSERT INTO known_structures(structure_id, first_seen, last_seen) VALUES(?,?,?) "
+                "ON CONFLICT(structure_id) DO UPDATE SET last_seen=excluded.last_seen",
+                [(sid, now, now) for sid in structure_ids],
+            )
+
     # -- one scout step -----------------------------------------------------------------------------
     async def run(self) -> dict[str, Any]:
         t0 = time.time()
@@ -91,45 +106,46 @@ class StructureScout:
         sem = asyncio.Semaphore(self.s.concurrency)
 
         async def read_assets(item: tuple[int, int, list[str]]) -> None:
+            """One character's assets, page by page: each page's structure IDs go to the database at once."""
             cid, owner, _ = item
+            started = time.time()
+            found: set[int] = set()
+            total_pages = 1
             async with sem:
                 try:
                     token = await self.chars.access_token(cid, owner)
-                    assets, truncated = await self.esi.get_paged(
+                    async for page, pages_reported in self.esi.iter_pages(
                         f"/characters/{cid}/assets", token, max_pages=self.s.max_asset_pages
-                    )
+                    ):
+                        total_pages = pages_reported
+                        # ESI types the location of an item inside a structure "other"; "item" is a container or
+                        # ship, "station" an NPC station. Only the IDs are kept: one record per structure.
+                        fresh = {
+                            int(a["location_id"])
+                            for a in page
+                            if a.get("location_type") == "other"
+                            and int(a.get("location_id") or 0) >= 1_000_000_000_000  # NPC stations are 60 million
+                        } - found
+                        if fresh:
+                            found |= fresh
+                            self._save_sightings(cid, fresh)
                 except (EsiError, SsoError) as exc:
                     stats["errors"] += 1
+                    # what the earlier pages found is kept. A passing ESI trouble (error limit, 5xx, network) does not
+                    # use up the refresh interval: the character is read again on the next run
+                    passing = isinstance(exc, EsiError) and (exc.status in (0, 420, 429) or exc.status >= 500)
                     self.db.execute(
                         "INSERT INTO scout_characters(character_id, checked_at, error) VALUES(?,?,?) "
-                        "ON CONFLICT(character_id) DO UPDATE SET checked_at=excluded.checked_at, error=excluded.error",
-                        (cid, time.time(), redact(str(exc))[:200]),
+                        "ON CONFLICT(character_id) DO UPDATE SET "
+                        "checked_at=CASE WHEN ? THEN checked_at ELSE excluded.checked_at END, error=excluded.error",
+                        (cid, 0.0 if passing else time.time(), redact(str(exc))[:200], int(passing)),
                     )
                     return
-            own = {int(a["item_id"]) for a in assets if a.get("item_id")}
-            # ESI types the location of an item inside a structure "other". An "item" location is a container or ship
-            # of the character: it is only known not to be a structure when that parent is in the list, and a
-            # truncated list lacks parents (each leaked item ID became a bogus structure and a 403 at ESI).
-            kinds = ("other",) if truncated else ("item", "other")
-            found = {
-                int(a["location_id"])
-                for a in assets
-                if a.get("location_type") in kinds
-                and int(a.get("location_id") or 0) not in own
-                and int(a.get("location_id") or 0) >= 1_000_000_000_000  # structure IDs; NPC stations are 60 million
-            }
+            truncated = total_pages > self.s.max_asset_pages
             now = time.time()
             with self.db.tx() as c:
-                c.execute("DELETE FROM structure_sightings WHERE character_id=?", (cid,))
-                c.executemany(
-                    "INSERT INTO structure_sightings(structure_id, character_id, seen_at) VALUES(?,?,?)",
-                    [(sid, cid, now) for sid in found],
-                )
-                c.executemany(
-                    "INSERT INTO known_structures(structure_id, first_seen, last_seen) VALUES(?,?,?) "
-                    "ON CONFLICT(structure_id) DO UPDATE SET last_seen=excluded.last_seen",
-                    [(sid, now, now) for sid in found],
-                )
+                if not truncated:  # a complete read: structures this character no longer has items in are dropped
+                    c.execute("DELETE FROM structure_sightings WHERE character_id=? AND seen_at < ?", (cid, started))
                 c.execute(
                     "INSERT INTO scout_characters(character_id, checked_at, structures, error) VALUES(?,?,?,?) "
                     "ON CONFLICT(character_id) DO UPDATE SET checked_at=excluded.checked_at, "
@@ -173,10 +189,13 @@ class StructureScout:
         readers = {c: (c, o) for c, o, scopes in contributors if READ_STRUCTURES in scopes}
         stale = time.time() - self.s.structure_refresh_hours * 3600
         stale_denied = time.time() - self.s.no_access_refresh_hours * 3600  # a refused read is an ESI error: ask rarely
+        # a structure that was read (status ok) is known: skipped from then on, unless a refresh interval is set
+        refresh_known = self.s.structure_refresh_hours > 0
         todo = self.db.query(
-            "SELECT structure_id FROM known_structures WHERE (status IN ('new','ok') AND checked_at < ?) "
-            "OR (status = 'no_access' AND checked_at < ?) ORDER BY checked_at LIMIT 2000",
-            (stale, stale_denied),
+            "SELECT structure_id FROM known_structures WHERE status = 'new' "
+            "OR (status = 'ok' AND ? AND checked_at < ?) OR (status = 'no_access' AND checked_at < ?) "
+            "ORDER BY checked_at LIMIT 2000",
+            (int(refresh_known), stale, stale_denied),
         )
         sem = asyncio.Semaphore(self.s.concurrency)
 

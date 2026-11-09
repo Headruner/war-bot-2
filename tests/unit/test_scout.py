@@ -162,7 +162,7 @@ async def test_paged_assets_and_truncation(settings, services, world):
     assert row["error"] is None and row["structures"] == 3 and stats["truncated"] == 0
 
 
-async def test_truncated_assets_do_not_turn_container_ids_into_structures(settings, services, world):
+async def test_item_typed_locations_are_never_structures(settings, services, world):
     container = 1_050_000_000_999  # a can in a station hangar; its row is on a page that is not read
     world.asset_page_size = 2
     world.assets[A] = [
@@ -179,7 +179,7 @@ async def test_truncated_assets_do_not_turn_container_ids_into_structures(settin
     row = db.query("SELECT structures, error FROM scout_characters WHERE character_id=?", (A,))[0]
     assert row["error"] is None and row["structures"] == 1
     assert [r[0] for r in db.query("SELECT structure_id FROM known_structures")] == [S_HIGH]
-    settings.structures.max_asset_pages = 20  # the whole list: the can is known, so its content is not a structure
+    settings.structures.max_asset_pages = 20  # the whole list: still not a structure
     db.execute("UPDATE scout_characters SET checked_at=0")
     await scout.run()
     assert [r[0] for r in db.query("SELECT structure_id FROM known_structures")] == [S_HIGH]
@@ -187,6 +187,7 @@ async def test_truncated_assets_do_not_turn_container_ids_into_structures(settin
 
 async def test_refused_structures_are_asked_again_only_after_the_long_interval(settings, services, world):
     await link(services, B, B)  # B may not dock at S_HIGH or S_PRIVATE: both answer 403
+    settings.structures.structure_refresh_hours = 72  # refresh known structures too, to tell the two intervals apart
     scout = scout_for(settings, services)
     await scout.run()
     db = services["db"]
@@ -205,6 +206,59 @@ async def test_refused_structures_are_asked_again_only_after_the_long_interval(s
     await scout.run()
     seen = {r[0]: r[1] for r in db.query("SELECT structure_id, checked_at FROM known_structures")}
     assert seen[S_HIGH] > older and seen[S_PRIVATE] > older
+
+
+async def test_structures_already_read_are_skipped_on_the_next_run(settings, services, world, fake_app):
+    await link(services, A, A)
+    scout = scout_for(settings, services)
+    await scout.run()
+    db = services["db"]
+    calls = fake_app.state.fake.calls["structure"]
+    stamps = {r[0]: r[1] for r in db.query("SELECT structure_id, checked_at FROM known_structures WHERE status='ok'")}
+    assert set(stamps) == {S_HIGH, S_WH}
+    db.execute("UPDATE known_structures SET checked_at=checked_at - 1000000")  # long ago
+    db.execute("UPDATE scout_characters SET checked_at=0")  # the assets are read again
+    await scout.run()
+    assert fake_app.state.fake.calls["structure"] == calls  # known ones are not asked again (default: refresh 0)
+    after = {r[0]: r[1] for r in db.query("SELECT structure_id, checked_at FROM known_structures WHERE status='ok'")}
+    assert after == {k: v - 1000000 for k, v in stamps.items()}
+
+
+async def test_each_page_is_saved_and_a_failure_keeps_the_earlier_pages(settings, services, world, monkeypatch):
+    world.asset_page_size = 2
+    await link(services, A, A)
+    real = services["esi"].iter_pages
+
+    async def flaky(path, token, max_pages=20):
+        async for chunk, pages in real(path, token, max_pages):
+            yield chunk, pages
+            raise EsiError(503, "boom")  # after the first page
+
+    monkeypatch.setattr(services["esi"], "iter_pages", flaky)
+    scout = scout_for(settings, services)
+    stats = await scout.run()
+    db = services["db"]
+    assert stats["errors"] == 1 and stats["characters_read"] == 0
+    assert [r[0] for r in db.query("SELECT structure_id FROM structure_sightings")] == [S_HIGH]  # page 1 is in the file
+    row = db.query("SELECT checked_at, error FROM scout_characters WHERE character_id=?", (A,))[0]
+    assert row["checked_at"] == 0 and "503" in row["error"]  # a passing trouble: read again on the next run
+    monkeypatch.undo()
+    stats = await scout.run()
+    assert stats["characters_read"] == 1
+    assert {r[0] for r in db.query("SELECT structure_id FROM structure_sightings")} == {S_HIGH, S_WH, S_GONE}
+    assert db.query("SELECT error FROM scout_characters WHERE character_id=?", (A,))[0][0] is None
+
+
+async def test_a_complete_read_drops_structures_the_character_left(settings, services, world):
+    await link(services, A, A)
+    scout = scout_for(settings, services)
+    await scout.run()
+    db = services["db"]
+    assert {r[0] for r in db.query("SELECT structure_id FROM structure_sightings")} == {S_HIGH, S_WH, S_GONE}
+    world.assets[A] = [a for a in world.assets[A] if a["location_id"] != S_WH]  # the items left that structure
+    db.execute("UPDATE scout_characters SET checked_at=0")
+    await scout.run()
+    assert {r[0] for r in db.query("SELECT structure_id FROM structure_sightings")} == {S_HIGH, S_GONE}
 
 
 async def test_unresolved_ids_nobody_sights_any_more_are_pruned(settings, services, world):
