@@ -1,8 +1,12 @@
-# Pushes the code (and docs/wiki to the GitHub Wiki) to GitHub, rebuilds and restarts EVE Distance Meter in Docker Desktop, then checks it is healthy.
+# Pulls the published EVE Distance Meter image (GHCR) and restarts it in Docker Desktop, then checks it is healthy.
+# Nothing is built from the source code unless -Build is given.
 # Run from anywhere (PowerShell):
 #   powershell -ExecutionPolicy Bypass -File C:\Users\<you>\source\repos\evedm\scripts\update.ps1
-# Options: -NoPush (only rebuild and restart)   -NoWiki (do not publish the GitHub Wiki)   -Branch <name> (remote branch, default main)
-param([switch]$NoPush, [switch]$NoWiki, [string]$Branch = "main")
+# Options: -Build (build the image from this checkout instead of pulling)
+#          -Push (git push the checkout to origin first)   -Branch <name> (remote branch for -Push, default main)
+#          -NoPush (kept for old command lines; pushing is off by default now)
+# The image is $env:EVEDM_IMAGE, else EVEDM_IMAGE from .env, else ghcr.io/headruner/war-bot-2:latest.
+param([switch]$Build, [switch]$Push, [switch]$NoPush, [string]$Branch = "main")
 $ErrorActionPreference = "Continue"   # native tools write progress to stderr; exit codes are checked instead
 Set-Location (Join-Path $PSScriptRoot "..")
 
@@ -11,26 +15,28 @@ function Fail($text) { Write-Host $text -ForegroundColor Red; exit 1 }
 
 docker version --format "{{.Server.Os}}" > $null 2>&1
 if ($LASTEXITCODE -ne 0) { Fail "Docker Desktop is not running (or not in Linux containers mode). Start it and run this again." }
-if (-not (Test-Path ".env")) { Fail ".env is missing: copy .env.example to .env and fill it in (see docs\wiki\07-Run-on-Windows.md)." }
+if (-not (Test-Path ".env")) { Fail ".env is missing: copy .env.example to .env and fill it in (see Run on Windows in README.md)." }
 
-if (-not $NoPush) {
+if ($Push -and -not $NoPush) {
     Step "git push origin HEAD:$Branch"
     git push -u origin "HEAD:$Branch"
-    if ($LASTEXITCODE -ne 0) { Fail "git push failed (sign in to GitHub in this terminal, or run with -NoPush)." }
-
-    if (-not $NoWiki) {
-        Step "publish docs/wiki to the GitHub Wiki"
-        $py = if (Get-Command py -ErrorAction SilentlyContinue) { "py" } elseif (Get-Command python -ErrorAction SilentlyContinue) { "python" } else { $null }
-        if ($null -eq $py) { Write-Host "  Python not found: wiki not published (use -NoWiki to hide this)." -ForegroundColor Yellow }
-        else {
-            & $py scripts/publish_wiki.py
-            if ($LASTEXITCODE -ne 0) { Write-Host "  Wiki not published (see above); the app update continues." -ForegroundColor Yellow }
-        }
-    }
+    if ($LASTEXITCODE -ne 0) { Fail "git push failed (sign in to GitHub in this terminal, or run without -Push)." }
 }
 
-Step "docker compose up -d --build"
-docker compose up -d --build
+if ($Build) {
+    Step "docker compose up -d --build   (image built from this checkout)"
+    docker compose up -d --build
+} else {
+    if (-not $env:EVEDM_IMAGE -and -not (Select-String -Path ".env" -Pattern '^\s*EVEDM_IMAGE\s*=' -Quiet)) {
+        $env:EVEDM_IMAGE = "ghcr.io/headruner/war-bot-2:latest"
+    }
+    $img = if ($env:EVEDM_IMAGE) { $env:EVEDM_IMAGE } else { "EVEDM_IMAGE from .env" }
+    Step "docker compose pull   ($img)"
+    docker compose pull evedm
+    if ($LASTEXITCODE -ne 0) { Fail "Pull failed. A private package needs 'docker login ghcr.io' (token with read:packages), or make the package public." }
+    Step "docker compose up -d --no-build"
+    docker compose up -d --no-build
+}
 if ($LASTEXITCODE -ne 0) { Fail "docker compose failed: see the output above." }
 
 Step "waiting for the container to become healthy"

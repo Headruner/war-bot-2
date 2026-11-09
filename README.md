@@ -28,12 +28,13 @@ when you press **Set destination** for an online character.
   ([screenshot](docs/screenshots/alerts-desktop.png))
 - **Set destination**: one click sets the in-game autopilot destination of an online character (ranking route bar
   and Alerts page; scope `esi-ui.write_waypoint.v1`).
-- **Thera / Turnur filter** (Ranking page): tick *Thera / Turnur (EVE-Scout)* and the ranking also considers the
-  wormholes that [EVE-Scout](https://www.eve-scout.com/#/) lists. For each character it takes the listed system
-  closest by gates (higher security wins a tie), the wormhole in and out, and the listed system closest to the
-  target, then gates on; the two-leg route replaces the gate route only when it is shorter and is drawn on the map
-  (gold gate legs, dashed purple wormhole). The list is read at most every 5 minutes; if EVE-Scout is down the
-  last list is used.
+- **Thera / Turnur filter** (Ranking page): choose *Gates only*, *Thera* or *Turnur* next to the target box. Each
+  button uses only its own hub as the mid-system, with the wormholes that [EVE-Scout](https://www.eve-scout.com/#/)
+  lists for it. For each character it takes the listed system closest by gates (higher security wins a tie), the
+  wormhole into the hub and out again, and the listed system closest to the target, then gates on; the two-leg route
+  replaces the gate route only when it is shorter and is drawn on the map (gold gate legs, dashed purple wormhole).
+  Connections marked *End Of Life* are kept, J-space exits are skipped (no gates). The list is cached and read at
+  most **every 15 minutes** (`EVEDM_EVESCOUT_REFRESH_S`, 900 s); if EVE-Scout is down the last list is used.
 - **Remembered per browser** (cookie): Alerts filters and notification choice, Wars tab and filters, Structures
   filters, map options, ranking auto-refresh.
 - **Notifications** (Notifications page, members of one alliance only): the ESI notifications of **every registered
@@ -63,14 +64,14 @@ when you press **Set destination** for an online character.
 ### Demo (no EVE application needed)
 
 ```
-docker build -t evedm:0.7.0 .
-docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo evedm:0.7.0
+docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo ghcr.io/headruner/war-bot-2:latest
 ```
 
-Open <http://localhost:8080/?target=Tama>. Or without Docker:
+Open <http://localhost:8080/?target=Tama>. Or from source (Python 3.13):
 
 ```
-python -m venv .venv && . .venv/bin/activate          # Windows: .venv\Scripts\activate
+py -3.13 -m venv .venv                                # Linux: python3.13 -m venv .venv
+. .venv/bin/activate                                   # Windows: .venv\Scripts\Activate.ps1
 pip install -e .
 evedm --demo serve                                     # http://localhost:8080
 evedm --demo rank Tama                                 # console ranking
@@ -85,8 +86,9 @@ A ready-made demo database is in [`data/demo/evedm.sqlite3`](data/demo) (key `de
    `esi-characters.read_notifications.v1` (Notifications page), `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1` (Structures page) and `esi-ui.write_waypoint.v1`
    (Set destination). Characters signed in before a scope was added: **Add character** again to grant it.
 2. `cp .env.example .env` and fill in `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET`, `EVEDM_SECRET_KEY`, `EVEDM_ALLOWED_LOGIN_CHARACTERS`.
-3. `docker compose up -d --build` (Linux or Windows with Docker Desktop; updates: `scripts/update.sh` on Linux,
-   `scripts\update.ps1` on Windows). Data stays in `./data` on the host, mounted at
+3. `docker compose pull && docker compose up -d --no-build` with `EVEDM_IMAGE=ghcr.io/headruner/war-bot-2:latest`
+   (the published image, nothing is built; Linux or Windows with Docker Desktop; updates: `scripts/update.sh` on
+   Linux, `scripts\update.ps1` on Windows, see [Run on Windows](#run-on-windows)). Data stays in `./data` on the host, mounted at
    `/app/data` (one-file SQLite database in WAL mode + logs). On a Linux host run `sudo chown -R 10001:10001 data` once:
    the container runs as the non-root user 10001.
 4. Sign in, then **Characters > Add character** or **Import JSON**.
@@ -96,6 +98,30 @@ On a Linux VM follow [Run in Docker on a Linux VM](#run-in-docker-on-a-linux-vm)
 The shipped image in `image/` is the older 0.3.0 (no accounts, no Wars page); load it with
 `docker load -i evedm-image-0.3.0-amd64.tar.gz`
 (split into parts: `scripts/load-image.sh` or `scripts\load-image.ps1`).
+
+## Run on Windows
+
+Windows runs the **published Docker image** (built by CI, tested on Python 3.13), not the source code. You need
+Docker Desktop (Linux containers) and the repository only for `docker-compose.yml`, `.env.example` and the scripts;
+Python is not needed.
+
+```powershell
+git clone https://github.com/Headruner/war-bot-2.git evedm ; cd evedm       # once; later: git pull
+Copy-Item .env.example .env                                               # fill in EVE_CLIENT_ID, EVE_CLIENT_SECRET, EVEDM_SECRET_KEY
+docker login ghcr.io                                                       # only if the package is private (token with read:packages)
+powershell -ExecutionPolicy Bypass -File .\scripts\update.ps1
+```
+
+`scripts\update.ps1` pulls `ghcr.io/headruner/war-bot-2:latest` (or the `EVEDM_IMAGE` set in `.env`, e.g. a release such
+as `...:v0.8.0`), starts the container, waits until it is healthy and prints the address (<http://localhost:8080>).
+Re-run it to update. `-Build` builds the image from your checkout instead (for local changes), `-Push` pushes the
+checkout to GitHub first.
+
+The EVE application callback must be exactly `http://localhost:8080/sso/callback`. Demo without an EVE application:
+`docker run --rm -p 8080:8080 -e EVEDM_DEMO=1 -e EVEDM_SECRET_KEY=demo ghcr.io/headruner/war-bot-2:latest`.
+
+Running or testing from source on Windows needs Python 3.13 (`winget install Python.Python.3.13`), see
+[Development](#development).
 
 ## Run in Docker on a Linux VM
 
@@ -330,6 +356,7 @@ All settings can also go into a YAML file (`config/evedm.example.yaml`, `EVEDM_C
 ## Development
 
 ```
+# Python 3.13 (the version CI tests and the image use)
 pip install -r requirements-dev.txt && pip install -e . --no-deps && python -m playwright install chromium
 scripts/run-tests.sh                 # unit + integration + browser + footprint; logs in logs/tests and logs/perf
 ruff check src tests scripts
