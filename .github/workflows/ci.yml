@@ -133,6 +133,10 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Smoke test (--cpus 2 --memory 1g, mounted /app/data, WAL, restart keeps data)
         run: scripts/docker-smoke.sh evedm:ci
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
       - name: Footprint inside the container
         run: |
           pip install -r requirements-dev.txt && pip install -e . --no-deps
