@@ -175,3 +175,4 @@ async def test_esi_sends_compatibility_date_and_user_agent(settings):
         await EsiClient(settings.eve, client).get("/x")
     assert seen["x-compatibility-date"] == settings.eve.compatibility_date
     assert "EVE-Distance-Meter" in seen["user-agent"]
+    assert "196438470" in seen["user-agent"]

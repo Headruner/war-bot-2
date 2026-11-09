@@ -13,7 +13,6 @@ from typing import Any
 
 import httpx
 
-from . import __version__
 from .config import EveSettings
 
 log = logging.getLogger("evedm.esi")
@@ -72,7 +71,7 @@ class EsiClient:
         self._inflight: dict[str, asyncio.Future[Any]] = {}
         self.headers = {
             "Accept": "application/json",
-            "User-Agent": settings.user_agent or f"EVE-Distance-Meter/{__version__}",
+            "User-Agent": settings.esi_user_agent(),
             "X-Compatibility-Date": settings.compatibility_date,
         }
 

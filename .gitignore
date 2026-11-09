@@ -14,5 +14,3 @@ dist/
 *.tar.gz
 image/
 
-# wiki pages live only in the GitHub Wiki (published with scripts/publish_wiki.py)
-/docs/wiki/

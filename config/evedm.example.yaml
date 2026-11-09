@@ -22,7 +22,8 @@ eve:
     - esi-assets.read_assets.v1             # structure scout (Structures page)
     - esi-ui.write_waypoint.v1              # "Set destination" buttons (ranking route bar, Alerts page)
   compatibility_date: "2025-09-30"
-  user_agent: "EVE-Distance-Meter/0.7 (contact: change-me)"
+  user_agent: "EVE-Distance-Meter/0.7 (+https://github.com/Headruner/war-bot-2)"
+  contact: "EVE character ID 196438470"     # appended to the User-Agent of every ESI request (EVEDM_ESI_CONTACT)
   max_concurrency: 20                       # parallel ESI calls (rate limits are per character)
 
 web:

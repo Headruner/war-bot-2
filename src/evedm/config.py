@@ -95,10 +95,17 @@ class EveSettings:
     def requested_scopes(self) -> list[str]:
         return list(dict.fromkeys([*self.required_scopes, *self.optional_scopes]))
 
+    def esi_user_agent(self, label: str = "") -> str:
+        """User-Agent for ESI requests: the configured agent plus ``label`` and the operator contact (character ID)."""
+        base = self.user_agent or "EVE-Distance-Meter"  # the default agent is always set; this covers an empty override
+        extra = [x for x in (label, self.contact) if x and x not in base]
+        return f"{base} ({'; '.join(extra)})" if extra else base
+
     sso_base: str = "https://login.eveonline.com"
     esi_base: str = "https://esi.evetech.net"
     compatibility_date: str = "2025-09-30"
     user_agent: str = "EVE-Distance-Meter/0.7 (+https://github.com/Headruner/war-bot-2)"
+    contact: str = "EVE character ID 196438470"  # ESI asks for a way to reach the operator: added to the User-Agent
     max_concurrency: int = 20
     timeout_s: float = 10.0
     jwt_issuers: list[str] = field(default_factory=lambda: ["https://login.eveonline.com", "login.eveonline.com"])
@@ -351,6 +358,7 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
     "EVE_CALLBACK_URL": ("eve", "callback_url"),
     "EVEDM_SSO_BASE": ("eve", "sso_base"),
     "EVEDM_ESI_BASE": ("eve", "esi_base"),
+    "EVEDM_ESI_CONTACT": ("eve", "contact"),
     "EVEDM_ESI_CONCURRENCY": ("eve", "max_concurrency"),
     "EVEDM_HOST": ("web", "host"),
     "EVEDM_PORT": ("web", "port"),

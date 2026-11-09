@@ -73,8 +73,8 @@ class WarService:
 
     @classmethod
     def create(cls, ws: WarsSettings, settings: Settings, db: Database, graph: GateGraph, **kw: Any) -> WarService:
-        contact = f"; {ws.contact}" if ws.contact else ""
-        user_agent = f"EVE-Distance-Meter/{__version__} (wars{contact})"
+        contact = ws.contact or settings.eve.contact  # ESI asks for a contact: the EVE character ID by default
+        user_agent = f"EVE-Distance-Meter/{__version__} (wars{'; ' + contact if contact else ''})"
         esi = WarEsi(settings.eve.esi_base, user_agent, settings.eve.compatibility_date, transport=kw.get("transport"))
         notifier = None
         if ws.discord.enabled:
