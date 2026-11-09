@@ -41,7 +41,7 @@ structures:                                 # structure scout: player-owned stru
   assets_refresh_hours: 24                  # re-read each character's assets this often
   structure_refresh_hours: 72               # re-read name, owner and system of each structure this often
   no_access_refresh_hours: 336              # ask again about a structure that answered 403 this rarely (errors count at ESI)
-  max_asset_pages: 100                      # 1000 assets per page, so 100 pages = 100000 assets
+  max_asset_pages: 1000000                  # 1000 assets per page: effectively no limit, the page count ESI reports ends the read
   concurrency: 4
 
 access:                                     # who sees the members-only tabs: Notifications and Structures
