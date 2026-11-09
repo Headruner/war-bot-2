@@ -157,6 +157,28 @@ async def test_ensure_fresh_ttl_and_keep_last_on_error(graph):
         assert calls["n"] == 2  # no hammering
 
 
+def test_default_refresh_is_fifteen_minutes():
+    assert EveScoutSettings().refresh_s == 900
+
+
+@pytest.mark.anyio
+async def test_missing_hub_is_fetched_by_name(graph):
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if "system_name=turnur" in str(request.url):
+            return httpx.Response(200, json=[sig("Turnur", "Tama")])
+        return httpx.Response(200, json=[sig("Thera", "Jita")])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        s = EveScout(EveScoutSettings(), graph, http)
+        await s.ensure_fresh()
+        assert s.status()["hubs"] == {"Thera": 1, "Turnur": 1} and len(seen) == 2
+        await s.ensure_fresh()
+        assert len(seen) == 2  # cached
+
+
 @pytest.fixture
 def anyio_backend():
     return "asyncio"

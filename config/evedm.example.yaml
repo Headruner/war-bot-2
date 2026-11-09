@@ -76,6 +76,6 @@ alerts:                                     # structure alerts from zKillboard's
 evescout:                                   # Thera / Turnur filter on the Ranking page (EVE-Scout)
   enabled: ${EVEDM_EVESCOUT_ENABLED:-true}
   url: ${EVEDM_EVESCOUT_URL:-https://api.eve-scout.com/v2/public/signatures}
-  refresh_s: ${EVEDM_EVESCOUT_REFRESH_S:-300}      # the list is read at most this often
+  refresh_s: ${EVEDM_EVESCOUT_REFRESH_S:-900}      # the list is read at most this often
   timeout_s: 8
   hubs: [Thera, Turnur]

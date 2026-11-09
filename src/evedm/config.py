@@ -160,7 +160,7 @@ class EveScoutSettings:
 
     enabled: bool = True
     url: str = "https://api.eve-scout.com/v2/public/signatures"
-    refresh_s: float = 300.0  # the list is read again when older than this (on demand, never in a loop)
+    refresh_s: float = 900.0  # the list is read again when older than this (on demand, never in a loop)
     timeout_s: float = 8.0
     hubs: list[str] = field(default_factory=lambda: ["Thera", "Turnur"])
 

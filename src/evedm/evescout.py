@@ -130,19 +130,32 @@ class EveScout:
             if not force and time.time() - self.fetched_at < self.s.refresh_s:
                 return
             try:
-                resp = await self.http.get(
-                    self.s.url,
-                    headers={"User-Agent": self.user_agent or "EVE-Distance-Meter", "Accept": "application/json"},
-                    timeout=self.s.timeout_s,
-                )
-                resp.raise_for_status()
-                count = self.load(resp.json())
+                payload = await self._get(self.s.url)
+                if isinstance(payload, list):
+                    # a custom URL may list one hub only: ask for each missing hub by name (same 15-minute cadence)
+                    present = {str(i.get("out_system_name") or "").lower() for i in payload if isinstance(i, dict)}
+                    for hub in self.s.hubs:
+                        if hub.lower() not in present:
+                            sep = "&" if "?" in self.s.url else "?"
+                            extra = await self._get(f"{self.s.url}{sep}system_name={hub.lower()}")
+                            payload += extra if isinstance(extra, list) else []
+                count = self.load(payload)
                 self.error = None
                 log.info("EVE-Scout: %s listed systems for %s", count, ", ".join(self.hubs) or "no hub")
             except (httpx.HTTPError, ValueError) as exc:
                 self.error = f"{type(exc).__name__}: {exc}"[:200]
                 log.warning("EVE-Scout list not read (keeping the last one): %s", self.error)
             self.fetched_at = time.time()  # also after a failure: do not hammer a server that is down
+
+    async def _get(self, url: str) -> Any:
+        assert self.http is not None
+        resp = await self.http.get(
+            url,
+            headers={"User-Agent": self.user_agent or "EVE-Distance-Meter", "Accept": "application/json"},
+            timeout=self.s.timeout_s,
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     def status(self) -> dict[str, Any]:
         return {
