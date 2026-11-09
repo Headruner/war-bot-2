@@ -55,6 +55,7 @@ class StructureScout:
         self.state: dict[str, Any] = {"running": False, "cycles": 0, "last_run": None, "last_error": None}
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        self._unresolved: tuple[int, list[dict[str, Any]]] | None = None
         self._rows: tuple[int, list[dict[str, Any]]] | None = None
 
     # -- which characters can contribute ---------------------------------------------------------
@@ -311,11 +312,54 @@ class StructureScout:
                     "last_seen": r["last_seen"],
                     "checked_at": r["checked_at"],
                     "access": r["status"] == "ok",
+                    "status": r["status"],
                     "position": (r["pos_x"], r["pos_y"], r["pos_z"]) if r["pos_x"] is not None else None,
                     "destroyed_at": r["destroyed_at"],
                 }
             )
         self._rows = (self.version, out)
+        return out
+
+    def unresolved(self) -> list[dict[str, Any]]:
+        """Structures stored without a system: ESI gave no name, owner or system (nobody may dock there, or not read
+        yet). They are listed with what is known: the ID, the status and when they were seen."""
+        if self._unresolved is not None and self._unresolved[0] == self.version:
+            return self._unresolved[1]
+        rows = self.db.query(
+            "SELECT k.*, (SELECT COUNT(*) FROM structure_sightings s WHERE s.structure_id=k.structure_id) AS seen_by "
+            "FROM known_structures k WHERE k.solar_system_id IS NULL AND k.status IN ('new','ok','no_access')"
+        )
+        unknown = {
+            "id": None,
+            "name": "Unknown",
+            "region": "Unknown",
+            "security": -9.9,
+            "class": "unknown",
+            "space": "unknown",
+        }
+        out = [
+            {
+                "structure_id": r["structure_id"],
+                "name": r["name"] or f"Unknown structure {r['structure_id']}",
+                "type_id": r["type_id"],
+                "type": "Unknown",
+                "owner_id": r["owner_id"],
+                "owner": "Unknown",
+                "owner_zkill": None,
+                "system": unknown,
+                "system_index": None,
+                "seen_by": r["seen_by"],
+                "first_seen": r["first_seen"],
+                "last_seen": r["last_seen"],
+                "checked_at": r["checked_at"],
+                "access": False,
+                "status": "unread" if r["status"] == "new" else r["status"],
+                "position": None,
+                "destroyed_at": r["destroyed_at"],
+            }
+            for r in rows
+        ]
+        self._unresolved = (self.version, out)
         return out
 
     def index(self) -> dict[int, list[Any]]:
@@ -359,14 +403,15 @@ class StructureScout:
         limit: int = 100,
         offset: int = 0,
     ) -> dict[str, Any]:
-        base = self.structures()
+        base = self.structures() + self.unresolved()
         dist, origin = self.g.nearest(sources.keys(), avoid)
         at_war = at_war or {}
         rows = []
         for r in base:
-            i, o = r["system_index"], origin[r["system_index"]]
+            i = r["system_index"]
+            o = origin[i] if i is not None else -1
             item = {k: v for k, v in r.items() if k not in ("system_index", "position")}
-            item["jumps"] = dist[i] if dist[i] >= 0 else None
+            item["jumps"] = dist[i] if i is not None and dist[i] >= 0 else None
             item["nearest"] = None if o < 0 else {"system": self.g.names[o], "characters": sources.get(o, [])}
             item["wars"] = at_war.get(int(r["owner_id"] or 0), [])
             rows.append(item)

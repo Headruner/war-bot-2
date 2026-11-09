@@ -101,7 +101,12 @@ async def test_assets_reveal_structures_for_everyone(settings, services, world, 
     by_id = {r["structure_id"]: r for r in listing["rows"]}
     assert by_id[S_NULL]["jumps"] == 0 and by_id[S_HIGH]["jumps"] > 0 and by_id[S_WH]["jumps"] is None
     assert listing["scout"]["contributing_characters"] == 2
-    assert [r["structure_id"] for r in listing["rows"]][-1] == S_WH  # unreachable last
+    # unreachable last, then the structures nobody may read: listed with their ID and status only
+    assert [r["structure_id"] for r in listing["rows"]][-2:] == [S_WH, S_PRIVATE]
+    unread = by_id[S_PRIVATE]
+    assert unread["status"] == "no_access" and unread["system"]["space"] == "unknown" and unread["jumps"] is None
+    assert unread["name"] == f"Unknown structure {S_PRIVATE}" and unread["owner"] == "Unknown"
+    assert by_id[S_HIGH]["status"] == "ok" and S_GONE not in by_id
     # positions are kept for "combat on grid" alerts, but not shown in the listing
     assert rows[S_HIGH]["position"] == (1.5e11, -2.0e9, 7.25e10) and rows[S_NULL]["position"] is None
     assert {s.structure_id: s.position for s in scout.index()[CORP]}[S_HIGH] == (1.5e11, -2.0e9, 7.25e10)

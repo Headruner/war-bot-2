@@ -11,7 +11,8 @@ async function api(url) {
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const PAGE = 100;
-const SPACE = { high: "high-sec", low: "low-sec", null: "null-sec", wormhole: "wormhole" };
+const SPACE = { high: "high-sec", low: "low-sec", null: "null-sec", wormhole: "wormhole", unknown: "unknown space" };
+const STATUS = { ok: "readable", no_access: "no docking access: name, owner and system unknown", unread: "not read yet" };
 let offset = 0;
 
 function secChip(security) {
@@ -46,7 +47,7 @@ function row(r) {
   if (r.nearest && r.nearest.characters.length) jumps.append(el("div", "small", r.nearest.characters[0]));
   else if (r.system.space === "wormhole") jumps.append(el("div", "small", "no gates"));
   const sys = el("td");
-  if (r.system.space === "wormhole") {
+  if (r.system.space === "wormhole" || r.system.space === "unknown") {
     sys.append(el("span", "target-chip", r.system.name));
   } else {
     const a = el("a", "target-chip");
@@ -59,6 +60,7 @@ function row(r) {
   const st = el("td");
   const prefix = `${r.system.name} - `;
   st.append(el("div", null, r.name.startsWith(prefix) ? r.name.slice(prefix.length) : r.name), el("div", "small", r.type));
+  st.append(el("div", "small", `ID ${r.structure_id} · ${STATUS[r.status] || r.status}`));
   const owner = el("td");
   const line = el("div");
   line.append(extLink(r.owner, r.owner_zkill));
@@ -74,7 +76,7 @@ function row(r) {
   }
   const seen = el("td", "small");
   seen.append(el("div", null, ago(r.last_seen)), el("div", null, `${r.seen_by} character${r.seen_by === 1 ? "" : "s"}`));
-  if (!r.access) seen.append(el("div", null, "no docking access now"));
+  if (!r.access && r.status === "ok") seen.append(el("div", null, "no docking access now"));
   tr.append(jumps, sys, st, owner, seen);
   return tr;
 }
