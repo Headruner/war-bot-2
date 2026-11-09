@@ -138,9 +138,11 @@ def test_structures_found_through_assets_are_shared(tmp_path):
                     },
                 },
                 "assets": {
-                    str(FIRST): [{"item_id": 1, "location_id": s1, "location_type": "item", "location_flag": "Hangar"}],
+                    str(FIRST): [
+                        {"item_id": 1, "location_id": s1, "location_type": "other", "location_flag": "Hangar"}
+                    ],
                     str(FIRST + 1): [
-                        {"item_id": 2, "location_id": s2, "location_type": "item", "location_flag": "Hangar"}
+                        {"item_id": 2, "location_id": s2, "location_type": "other", "location_flag": "Hangar"}
                     ],
                 },
                 "corp_names": {"98123456": "Citadel Owners Inc"},

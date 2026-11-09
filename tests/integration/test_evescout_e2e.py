@@ -25,8 +25,8 @@ def sig(hub: str, system: int, hours: int = 20) -> dict:
     }
 
 
-def rank(c: httpx.Client, target: str, thera: int) -> dict:
-    return c.get(f"/api/rank?target={target}&thera={thera}&refresh=2").json()
+def rank(c: httpx.Client, target: str, thera: int, hub: str = "") -> dict:
+    return c.get(f"/api/rank?target={target}&thera={thera}&refresh=2" + (f"&hub={hub}" if hub else "")).json()
 
 
 def test_thera_route_replaces_the_gate_route_only_when_shorter(tmp_path):
@@ -45,7 +45,8 @@ def test_thera_route_replaces_the_gate_route_only_when_shorter(tmp_path):
         with evedm_server(env, log_path=tmp_path / "server.out") as (base, _):
             c = httpx.Client(base_url=base, headers={"X-EVEDM": "1"}, timeout=30)
             assert sso_flow(c, "/sso/login", FIRST).status_code == 303
-            assert 'id="thera"' in c.get("/").text
+            page = c.get("/").text
+            assert 'id="hub-toggle"' in page and 'name="hub" value="thera"' in page and 'value="turnur"' in page
 
             plain = rank(c, "Amarr", 0)
             row0 = plain["rows"][0]
@@ -62,6 +63,13 @@ def test_thera_route_replaces_the_gate_route_only_when_shorter(tmp_path):
             assert [leg["mode"] for leg in legs] == ["gate", "wormhole", "gate"]
             assert legs[0]["ids"] == [PERIMETER, JITA] and legs[1]["ids"] == [JITA, AMARR] and legs[2]["ids"] == [AMARR]
             assert row["route"] == [PERIMETER, JITA, AMARR]
+
+            # one radio button = one mid-system: Turnur lists nothing here, so it offers no route; Thera does
+            thera_only = rank(c, "Amarr", 1, hub="thera")
+            assert thera_only["evescout"]["selected"] == ["Thera"] and thera_only["rows"][0]["jumps"] == 3
+            turnur_only = rank(c, "Amarr", 1, hub="turnur")
+            assert turnur_only["evescout"]["selected"] == ["Turnur"] and turnur_only["rows"][0]["jumps"] == 12
+            assert turnur_only["rows"][0]["wormhole"] is None
 
             # a target the gates reach faster keeps its gate route; the hub only shows as a note
             near = rank(c, "Jita", 1)["rows"][0]
