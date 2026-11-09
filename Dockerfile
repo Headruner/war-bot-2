@@ -4,11 +4,11 @@
 #
 # Multi-stage: the build stage installs the pinned requirements.txt into a virtualenv; the runtime
 # stage copies only that virtualenv and runs as the non-root user 10001.
-# Default base image: python:3.12-slim. Any Debian/Ubuntu image with python3 + venv also works:
+# Default base image: python:3.13-slim. Any Debian/Ubuntu image with python3 + venv also works:
 #   docker build --build-arg BASE_IMAGE=<image> -t evedm .
 # Runs on Linux and on Windows/macOS through Docker Desktop (Linux containers).
 # ---------------------------------------------------------------------------------------------
-ARG BASE_IMAGE=python:3.12-slim
+ARG BASE_IMAGE=python:3.13-slim
 
 FROM ${BASE_IMAGE} AS build
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
