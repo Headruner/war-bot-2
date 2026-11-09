@@ -93,8 +93,6 @@ class EveScout:
             if idx is None or self.g.is_wspace(idx):
                 continue  # J-space and unknown systems have no gates to walk
             remaining = item.get("remaining_hours")
-            if isinstance(remaining, (int, float)) and remaining <= 0:
-                continue  # expired
             hub_id = _int(item.get("out_system_id")) or HUB_IDS.get(hub.lower())
             entry = found.setdefault(hub, {"id": hub_id, "links": {}})
             info = {

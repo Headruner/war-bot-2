@@ -33,14 +33,14 @@ def names(graph, ids):
     return [graph.names[i] for i in ids]
 
 
-def test_load_filters_hubs_wspace_and_expired(graph):
+def test_load_filters_hubs_wspace_keeps_end_of_life(graph):
     wspace = next(graph.names[i] for i in range(len(graph.ids)) if graph.is_wspace(i) and graph.names[i] != "Thera")
     s = scout(
         graph,
         [
             sig("Thera", "Jita"),
             sig("Thera", "Jita", hours=5),  # duplicate: the longer-lived one is kept
-            sig("Thera", "Amarr", hours=0),  # expired
+            sig("Thera", "Amarr", hours=0),  # End Of Life: kept
             sig("Thera", wspace),  # J-space: no gates
             sig("Thera", "Nowhere-123"),  # unknown
             sig("Turnur", "Rens"),
@@ -48,9 +48,9 @@ def test_load_filters_hubs_wspace_and_expired(graph):
             "junk",
         ],
     )
-    assert {h: len(v["systems"]) for h, v in s.hubs.items()} == {"Thera": 1, "Turnur": 1}
+    assert {h: len(v["systems"]) for h, v in s.hubs.items()} == {"Thera": 2, "Turnur": 1}
     assert s.hubs["Thera"]["links"][graph.find("Jita")]["remaining_hours"] == 20
-    assert s.status()["connections"] == 2
+    assert s.status()["connections"] == 3
     assert {row["hub"] for row in s.listing()} == {"Thera", "Turnur"}
 
 
