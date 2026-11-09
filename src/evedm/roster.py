@@ -27,8 +27,6 @@ from .universe import GateGraph
 log = logging.getLogger("evedm.roster")
 
 SCHEMA_NAME = "evedm-static-roster"
-MAX_BYTES = 256_000
-MAX_ENTRIES = 1000
 # EVE character names: 3-37 characters of letters, digits, spaces, hyphens and apostrophes
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 '\-]{1,35}[A-Za-z0-9'\-]$")
 RESOLVED, NOT_FOUND, AMBIGUOUS = "resolved", "not_found", "ambiguous"
@@ -70,8 +68,6 @@ def validate(doc: Any) -> list[str]:
 
 def parse(raw: bytes) -> tuple[list[dict[str, Any]], str]:
     """Bytes -> (entries, label). Raises RosterRejected when the file as a whole is wrong (ROS-02, ROS-03)."""
-    if len(raw) > MAX_BYTES:
-        raise RosterRejected(f"file is larger than {MAX_BYTES // 1000} KB")
     try:
         doc = json.loads(raw.decode("utf-8-sig"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -171,9 +167,6 @@ class RosterService:
                 {"index": i, "name": name, "system": str(entry["star_system_name"]), "result": "Rejected",
                  "reason": reason, "suggestions": []}
             )
-        existing = {r.name_key for r in self.db.list_roster(owner_id)}
-        if len(existing | {k for _, _, _, k in keep}) > MAX_ENTRIES:  # ROS-09
-            raise RosterRejected(f"the roster of one account holds at most {MAX_ENTRIES} characters")
         for i, entry, name, key in keep:
             system_raw = str(entry["star_system_name"]).strip()
             system_id, state, suggestions = self.resolve(system_raw)
@@ -254,7 +247,6 @@ class RosterService:
             "enabled": sum(1 for r in rows if r.enabled),
             "unresolved": sum(1 for r in rows if r.resolve_state != RESOLVED),
             "uploaded_at": max((r.uploaded_at for r in rows), default=None),
-            "max_entries": MAX_ENTRIES,
         }
 
     # -- ranking (ROS-16..ROS-19) ------------------------------------------------------------

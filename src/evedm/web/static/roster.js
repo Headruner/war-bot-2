@@ -30,7 +30,7 @@ async function load() {
   $("#roster-empty").hidden = rows.length > 0;
   const s = data.stats;
   $("#roster-stats").textContent = s.entries
-    ? `${s.entries} of ${s.max_entries} entries · ${s.enabled} ranked · ${s.unresolved} unresolved` +
+    ? `${s.entries} entries · ${s.enabled} ranked · ${s.unresolved} unresolved` +
       (s.uploaded_at ? ` · last upload ${new Date(s.uploaded_at * 1000).toLocaleString()}` : "")
     : "empty";
   rows.forEach((r) => body.append(renderRow(r)));

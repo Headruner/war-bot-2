@@ -222,14 +222,14 @@ by gate jumps against the same target as the live ranking, on the **Roster** tab
 | ID | Requirement | P | Status | Verified by |
 | --- | --- | --- | --- | --- |
 | ROS-01 | The system shall provide an Import roster action that accepts a UTF-8 JSON file conforming to schema `evedm-static-roster` v1 and links every entry to the signed-in main. | M | done | test_roster_api_import_rank_and_manage |
-| ROS-02 | If the file is over 256 KB, not UTF-8 JSON, not schema-valid, or holds more than 1000 entries, then the system shall reject it whole and report each violation with its JSON path. | M | done | test_file_level_rejections, test_more_than_the_maximum_entries_is_rejected |
+| ROS-02 | If the file is not UTF-8 JSON or not schema-valid, then the system shall reject it whole and report each violation with its JSON path. | M | done | test_file_level_rejections |
 | ROS-03 | The system shall accept both the enveloped form and a bare array of entries as v1. | M | done | test_a_bare_array_is_the_same_schema |
 | ROS-04 | When an entry's name is new, the system shall add it; when the name is already in the pool, the system shall update its system, note and upload time, keep its enabled flag, and keep its tags unless the file carries tags for that entry. | M | done | test_import_merges_and_keeps_local_settings |
 | ROS-05 | If an entry's name is not 3-37 letters, digits, spaces, hyphens or apostrophes, or repeats a name used earlier in the same file, then the system shall reject that entry alone and report it with its JSON path and reason. | M | done | test_bad_entries_are_rejected_one_by_one |
 | ROS-06 | If `star_system_name` does not resolve to exactly one solar system, then the system shall store the entry unresolved with the raw name, the reason (not found / ambiguous) and up to three suggestions; a station or structure name that contains exactly one system name resolves to that system. | M | done | test_unknown_system_is_stored_unresolved_with_suggestions, test_several_systems_in_one_field_are_ambiguous, test_a_station_name_resolves_to_its_system |
 | ROS-07 | The system shall report Added, Updated, Unresolved and Rejected counts and one line per entry that needs attention. | M | done | test_roster_api_import_rank_and_manage |
 | ROS-08 | The system shall not keep the uploaded file and shall not log entry contents; only counts and reasons are logged. | M | done | roster.py (`import_file`), code review |
-| ROS-09 | The system shall hold one pool per main of at most 1000 entries, and shall show, rank, change and export only the pool of the signed-in main. | M | done | test_pool_cap_rejects_the_whole_file, test_the_pool_is_per_main_and_goes_with_the_account |
+| ROS-09 | The system shall hold one pool per main, with no limit on its size, and shall show, rank, change and export only the pool of the signed-in main. | M | done | test_there_is_no_limit_on_file_size_or_entries, test_the_pool_is_per_main_and_goes_with_the_account |
 | ROS-10 | A roster entry shall never be sent to ESI: no tokens, never refreshed, no ship, online or docked state, never marked Stale, and no share of the ESI rate-limit budget. | M | done | test_ranking_order_route_and_no_esi (a provider that fails the test if it is called) |
 | ROS-11 | The system shall provide Re-resolve for unresolved entries and shall resolve them again after a universe rebuild. | S | done | test_re_resolve_picks_up_a_corrected_universe, test_roster_page_fixes_an_unresolved_entry |
 | ROS-12 | The system shall let the user enable/disable an entry, edit its tags, set its system (by name or by clicking a suggestion), remove one entry and clear the pool behind a confirmation. | S | done | test_roster_api_import_rank_and_manage, test_roster_page_fixes_an_unresolved_entry |
@@ -337,7 +337,7 @@ shown by default; every other type is one tick away in the filters.
 | AC-16 | A 700-entry file imports and is ranked against Jita | test_roster.py (import + rank), NFR-09 measurement |
 | AC-17 | Re-uploading a file where a character moved updates that entry and keeps its tags and Ranked setting | test_import_merges_and_keeps_local_settings |
 | AC-18 | An unknown system is stored unresolved with suggestions and is fixed by clicking one | test_unknown_system_is_stored_unresolved_with_suggestions, test_roster_page_fixes_an_unresolved_entry |
-| AC-19 | A file that is too large, not JSON, not the schema or over 1000 entries is rejected whole | test_file_level_rejections, test_more_than_the_maximum_entries_is_rejected |
+| AC-19 | A file that is not JSON or not the schema is rejected whole; a large file (5000 entries, over 500 KB) is accepted | test_file_level_rejections, test_there_is_no_limit_on_file_size_or_entries |
 | AC-20 | One malformed entry in an otherwise good file is rejected alone | test_bad_entries_are_rejected_one_by_one |
 | AC-21 | Ranking a roster makes no ESI request and runs no extra BFS | test_ranking_order_route_and_no_esi |
 | AC-22 | Another main sees an empty roster; deleting the account clears the pool | test_the_pool_is_per_main_and_goes_with_the_account |

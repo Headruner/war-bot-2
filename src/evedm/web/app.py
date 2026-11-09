@@ -35,8 +35,6 @@ from ..logs import LaunchRecorder, peak_rss_mb, rss_mb, setup_logging, trim_memo
 from ..notifications import NotificationService
 from ..ranking import DemoProvider, LiveProvider, RankingService
 from ..resolver import TargetResolver
-from ..roster import MAX_BYTES as ROSTER_MAX_BYTES
-from ..roster import MAX_ENTRIES as ROSTER_MAX_ENTRIES
 from ..roster import RosterRejected, RosterService
 from ..scout import StructureScout, seed_demo_structures
 from ..selfcheck import check
@@ -393,7 +391,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
     async def roster_page(request: Request) -> Response:
         if user_of(request) is None:
             return RedirectResponse("/login", status_code=303)
-        return page(request, "roster.html", max_entries=ROSTER_MAX_ENTRIES, max_kb=ROSTER_MAX_BYTES // 1000)
+        return page(request, "roster.html")
 
     @app.get("/notifications", response_class=HTMLResponse)
     async def notifications_page(request: Request) -> Response:
@@ -715,7 +713,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         uid = owner(request)
         require_csrf(request)
         roster = roster_of(request)
-        raw = await file.read(ROSTER_MAX_BYTES + 1)
+        raw = await file.read()
         try:
             return JSONResponse(roster.import_file(raw, uid))
         except RosterRejected as exc:

@@ -3,8 +3,8 @@
 {% block content %}
 <div class="page">
   <h1>Static roster</h1>
-  <p class="small">Upload a JSON file of <code>char_name</code> + <code>star_system_name</code> pairs (at most
-    {{ max_entries }} entries, {{ max_kb }} KB). They are ranked by stargate jumps on the
+  <p class="small">Upload a JSON file of <code>char_name</code> + <code>star_system_name</code> pairs (no limit on
+    the number of entries or the file size). They are ranked by stargate jumps on the
     <a href="/">Ranking</a> page, on the <b>Roster</b> tab, and appear under the closest characters on the
     Alerts page. A roster entry has no tokens: nothing is ever read from ESI for it, so it shows no ship, no
     online state and no <b>Set destination</b> button. An upload merges into this pool by character name:
@@ -24,7 +24,7 @@
     { "char_name": "Rork Sanhai", "star_system_name": "Osmon" } ] }</pre>
     <p class="small">A bare array of those entries is accepted as the same version. A name that is not a solar
       system is kept as an unresolved entry with suggestions instead of being rejected; only the file as a
-      whole is rejected (too large, not JSON, not the schema, or more than {{ max_entries }} entries).
+      whole is rejected (not JSON or not the schema).
       The file is not kept and its contents are never written to the log.</p>
   </details>
   <div id="roster-report" class="notice" hidden></div>

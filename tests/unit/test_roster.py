@@ -69,8 +69,6 @@ def test_schema_errors_report_json_paths():
 
 
 def test_file_level_rejections(roster: RosterService):
-    with pytest.raises(RosterRejected, match="larger than"):
-        roster.import_file(b" " * 256_001)
     with pytest.raises(RosterRejected, match="JSON"):
         roster.import_file(b"{not json")
     with pytest.raises(RosterRejected) as err:  # unknown property: the whole file is rejected (ROS-02)
@@ -78,17 +76,13 @@ def test_file_level_rejections(roster: RosterService):
     assert err.value.errors
 
 
-def test_more_than_the_maximum_entries_is_rejected(roster: RosterService):
-    with pytest.raises(RosterRejected):
-        roster.import_file(file_of([entry(f"Pilot Number {i:04d}", "Jita") for i in range(1001)]))
-
-
-def test_pool_cap_rejects_the_whole_file(roster: RosterService, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("evedm.roster.MAX_ENTRIES", 2)
-    roster.import_file(file_of([entry("Able Baker", "Jita"), entry("Cora Dane", "Amarr")]))
-    with pytest.raises(RosterRejected, match="at most"):
-        roster.import_file(file_of([entry("Eli Fenn", "Rens")]))
-    assert roster.db.count_roster(0) == 2
+def test_there_is_no_limit_on_file_size_or_entries(roster: RosterService):
+    entries = [entry(f"Pilot Number {i:05d}", "Jita", note="x" * 100) for i in range(5000)]
+    raw = file_of(entries)
+    assert len(raw) > 256_000  # the old size limit
+    assert roster.import_file(raw)["summary"]["Added"] == 5000  # the old limit was 1000 entries
+    assert roster.db.count_roster(0) == 5000
+    assert roster.import_file(file_of([entry("Eli Fenn", "Rens")]))["summary"]["Added"] == 1
 
 
 def test_a_bare_array_is_the_same_schema(roster: RosterService):

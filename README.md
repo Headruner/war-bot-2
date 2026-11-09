@@ -45,7 +45,7 @@ when you press **Set destination** for an online character.
 - **Members-only tabs**: Notifications and Structures are visible only when the main that signed in belongs to the
   configured alliance (BB, `access.alliance_ids`, default 99010320; read from ESI at sign-in and every 6 h). For any
   other character both links are hidden and the pages answer 404.
-- **Static roster** (Roster page): upload a JSON file of character names and systems (50-700 entries, no tokens,
+- **Static roster** (Roster page): upload a JSON file of character names and systems (any number of entries, no tokens,
   nothing read from ESI) and rank it by jumps against the same target on the **Roster** tab of the ranking view.
   Unknown systems are kept with suggestions instead of being thrown away; the closest roster characters also appear
   under the live ones on the Alerts page.

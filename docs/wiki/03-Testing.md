@@ -41,7 +41,7 @@ rows marked 0.5.0 cover the war census, the high-sec structure list and the brow
 | Roster | upload 50-700 name + system pairs | merged into the main's pool, report per entry | test_roster_api_import_rank_and_manage |
 | Roster | upload again after characters moved | systems updated, tags and Ranked setting kept | test_import_merges_and_keeps_local_settings |
 | Roster | bad name, duplicate name in one file | those entries rejected, the rest imported | test_bad_entries_are_rejected_one_by_one |
-| Roster | file too large, not JSON, unknown property, over 1000 entries | whole file rejected with JSON paths | test_file_level_rejections, test_more_than_the_maximum_entries_is_rejected |
+| Roster | not JSON, unknown property; 5000 entries over 500 KB | whole file rejected with JSON paths / large file accepted | test_file_level_rejections, test_there_is_no_limit_on_file_size_or_entries |
 | Roster | unknown or ambiguous system | stored unresolved with up to three suggestions, ranked last | test_unknown_system_is_stored_unresolved_with_suggestions, test_several_systems_in_one_field_are_ambiguous |
 | Roster | station name as the system | resolved to the system it names | test_a_station_name_resolves_to_its_system |
 | Roster | rank against a target | reachable first by jumps, no ESI call, no extra BFS | test_ranking_order_route_and_no_esi |
