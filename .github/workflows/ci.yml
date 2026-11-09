@@ -24,10 +24,10 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install ruff==0.17.3
@@ -49,8 +49,8 @@ jobs:
         python: ["3.12", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -63,7 +63,7 @@ jobs:
             --junitxml=logs/tests/junit-unit-${{ matrix.os }}-${{ matrix.python }}.xml \
             2>&1 | tee logs/tests/pytest-unit-${{ matrix.os }}-${{ matrix.python }}.log
           exit "${PIPESTATUS[0]}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: test-logs-unit-${{ matrix.os }}-${{ matrix.python }}
@@ -73,8 +73,8 @@ jobs:
     needs: unit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -86,7 +86,7 @@ jobs:
           python -m pytest tests/integration -m integration \
             --junitxml=logs/tests/junit-integration.xml 2>&1 | tee logs/tests/pytest-integration.log
           exit "${PIPESTATUS[0]}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: test-logs-integration
@@ -96,8 +96,8 @@ jobs:
     needs: unit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -107,7 +107,7 @@ jobs:
           mkdir -p logs/tests
           python -m pytest tests/perf -m perf -s 2>&1 | tee logs/tests/pytest-perf.log
           exit "${PIPESTATUS[0]}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: perf-report
@@ -119,7 +119,7 @@ jobs:
     needs: [integration, footprint]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: Build amd64 image for the smoke test
@@ -139,12 +139,12 @@ jobs:
           python tests/perf/footprint.py --label ci-docker --docker evedm:ci --max-rss 200 --max-p95 1500
       - name: Save image as a portable tarball (docker load -i on Linux or Windows)
         run: docker save evedm:ci | gzip -9 > evedm-image-amd64.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: evedm-image-amd64
           path: evedm-image-amd64.tar.gz
           retention-days: 14
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: docker-logs
