@@ -99,10 +99,14 @@ class StructureScout:
                     )
                     return
             own = {int(a["item_id"]) for a in assets if a.get("item_id")}
+            # ESI types the location of an item inside a structure "other". An "item" location is a container or ship
+            # of the character: it is only known not to be a structure when that parent is in the list, and a
+            # truncated list lacks parents (each leaked item ID became a bogus structure and a 403 at ESI).
+            kinds = ("other",) if truncated else ("item", "other")
             found = {
                 int(a["location_id"])
                 for a in assets
-                if a.get("location_type") in ("item", "other")
+                if a.get("location_type") in kinds
                 and int(a.get("location_id") or 0) not in own
                 and int(a.get("location_id") or 0) >= 1_000_000_000_000  # structure IDs; NPC stations are 60 million
             }
@@ -137,6 +141,11 @@ class StructureScout:
             )
         else:
             self.db.execute("DELETE FROM structure_sightings")
+        # unresolved IDs that no linked character sights any more (e.g. bogus ones from an older run) are dropped
+        self.db.execute(
+            "DELETE FROM known_structures WHERE solar_system_id IS NULL AND status IN ('new','no_access') "
+            "AND structure_id NOT IN (SELECT structure_id FROM structure_sightings)"
+        )
         await self._resolve(contributors, stats)
         await self._names()
         self.version += 1
@@ -148,10 +157,11 @@ class StructureScout:
     async def _resolve(self, contributors: list[tuple[int, int, list[str]]], stats: dict[str, int]) -> None:
         readers = {c: (c, o) for c, o, scopes in contributors if READ_STRUCTURES in scopes}
         stale = time.time() - self.s.structure_refresh_hours * 3600
+        stale_denied = time.time() - self.s.no_access_refresh_hours * 3600  # a refused read is an ESI error: ask rarely
         todo = self.db.query(
-            "SELECT structure_id FROM known_structures WHERE status IN ('new','ok','no_access') AND checked_at < ? "
-            "ORDER BY checked_at LIMIT 2000",
-            (stale,),
+            "SELECT structure_id FROM known_structures WHERE (status IN ('new','ok') AND checked_at < ?) "
+            "OR (status = 'no_access' AND checked_at < ?) ORDER BY checked_at LIMIT 2000",
+            (stale, stale_denied),
         )
         sem = asyncio.Semaphore(self.s.concurrency)
 

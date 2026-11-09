@@ -40,7 +40,8 @@ structures:                                 # structure scout: player-owned stru
   interval_min: 60                          # how often the scout runs
   assets_refresh_hours: 24                  # re-read each character's assets this often
   structure_refresh_hours: 72               # re-read name, owner and system of each structure this often
-  max_asset_pages: 20                       # 1000 assets per page
+  no_access_refresh_hours: 336              # ask again about a structure that answered 403 this rarely (errors count at ESI)
+  max_asset_pages: 60                       # 1000 assets per page
   concurrency: 4
 
 access:                                     # who sees the members-only tabs: Notifications and Structures

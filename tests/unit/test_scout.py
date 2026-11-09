@@ -1,5 +1,7 @@
 """Structure scout: player-owned structures found through every registered character's assets, shared by all mains."""
 
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -64,13 +66,14 @@ def world(fake_app):
         }
     )
     st.assets[A] = [
-        asset(1, S_HIGH),
+        asset(1, S_HIGH, "other"),  # ESI types an item inside a structure "other"
         asset(2, 1, flag="Cargo"),  # inside A's own ship (item 1): not a structure
         asset(3, 60003760, "station"),  # NPC station: never listed
-        asset(4, S_WH),
-        asset(5, S_GONE),  # an ID ESI does not know as a structure
+        asset(4, S_WH, "other"),
+        asset(5, S_GONE, "other"),  # an ID ESI does not know as a structure
     ]
-    st.assets[B] = [asset(11, S_NULL), asset(12, S_HIGH), asset(13, S_PRIVATE)]  # B is not on S_HIGH's ACL
+    # B is not on S_HIGH's ACL
+    st.assets[B] = [asset(11, S_NULL, "other"), asset(12, S_HIGH, "other"), asset(13, S_PRIVATE, "other")]
     return st
 
 
@@ -157,6 +160,64 @@ async def test_paged_assets_and_truncation(settings, services, world):
     await scout.run()
     row = services["db"].query("SELECT structures, error FROM scout_characters WHERE character_id=?", (A,))[0]
     assert row["error"] is None and row["structures"] == 3
+
+
+async def test_truncated_assets_do_not_turn_container_ids_into_structures(settings, services, world):
+    container = 1_050_000_000_999  # a can in a station hangar; its row is on a page that is not read
+    world.asset_page_size = 2
+    world.assets[A] = [
+        asset(21, container),  # a ship or can's content: "item" typed, parent unknown while truncated
+        asset(22, S_HIGH, "other"),
+        asset(23, 60003760, "station"),
+        asset(container, 60003760, "station"),
+    ]
+    await link(services, A, A)
+    settings.structures.max_asset_pages = 1
+    scout = scout_for(settings, services)
+    await scout.run()
+    db = services["db"]
+    row = db.query("SELECT structures, error FROM scout_characters WHERE character_id=?", (A,))[0]
+    assert row["error"] == "assets truncated" and row["structures"] == 1
+    assert [r[0] for r in db.query("SELECT structure_id FROM known_structures")] == [S_HIGH]
+    settings.structures.max_asset_pages = 20  # the whole list: the can is known, so its content is not a structure
+    db.execute("UPDATE scout_characters SET checked_at=0")
+    await scout.run()
+    assert [r[0] for r in db.query("SELECT structure_id FROM known_structures")] == [S_HIGH]
+
+
+async def test_refused_structures_are_asked_again_only_after_the_long_interval(settings, services, world):
+    await link(services, B, B)  # B may not dock at S_HIGH or S_PRIVATE: both answer 403
+    scout = scout_for(settings, services)
+    await scout.run()
+    db = services["db"]
+    assert {r[0]: r[1] for r in db.query("SELECT structure_id, status FROM known_structures")} == {
+        S_NULL: "ok",
+        S_HIGH: "no_access",
+        S_PRIVATE: "no_access",
+    }
+    old = time.time() - 100 * 3600  # past structure_refresh_hours (72), inside no_access_refresh_hours (336)
+    db.execute("UPDATE known_structures SET checked_at=?", (old,))
+    await scout.run()
+    seen = {r[0]: r[1] for r in db.query("SELECT structure_id, checked_at FROM known_structures")}
+    assert seen[S_NULL] > old and seen[S_HIGH] == old and seen[S_PRIVATE] == old
+    older = time.time() - 400 * 3600
+    db.execute("UPDATE known_structures SET checked_at=? WHERE status='no_access'", (older,))
+    await scout.run()
+    seen = {r[0]: r[1] for r in db.query("SELECT structure_id, checked_at FROM known_structures")}
+    assert seen[S_HIGH] > older and seen[S_PRIVATE] > older
+
+
+async def test_unresolved_ids_nobody_sights_any_more_are_pruned(settings, services, world):
+    await link(services, A, A)
+    db = services["db"]
+    now = time.time()
+    db.execute(
+        "INSERT INTO known_structures(structure_id, status, first_seen, last_seen) VALUES(?,?,?,?)",
+        (1_060_000_000_001, "no_access", now, now),
+    )
+    await scout_for(settings, services).run()
+    ids = {r[0] for r in db.query("SELECT structure_id FROM known_structures")}
+    assert 1_060_000_000_001 not in ids and {S_HIGH, S_WH, S_GONE} <= ids
 
 
 async def test_esi_helpers(services, fake_app):
