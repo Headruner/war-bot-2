@@ -200,21 +200,26 @@ EVEDM_ALLOWED_LOGIN_CHARACTERS=<your character ID>
 - `EVEDM_PUBLISH=127.0.0.1:<port>` makes the app reachable from the VM only (reverse proxy, Tailscale).
 - Keep a copy of `EVEDM_SECRET_KEY`: a new key makes the stored tokens unreadable.
 
-### 7. Build and start
+### 7. Pull and start
 
 ```bash
-scripts/update.sh --no-pull
+scripts/update.sh --no-git
 ```
 
-The script gives `data/` to uid 10001 (the container user), lowers `EVEDM_CPUS` to the VM's CPU count, runs
-`docker compose up -d --build`, waits until the container is healthy and prints the address. The first build takes a
-few minutes. By hand, the same is:
+Nothing is built on the VM: the image comes from GHCR, where the `ci` workflow publishes it after the tests pass
+(`ghcr.io/headruner/war-bot-2:latest`; set `EVEDM_IMAGE` in `.env` to pin a release such as `...:v0.8.0`). The script gives
+`data/` to uid 10001 (the container user), lowers `EVEDM_CPUS` to the VM's CPU count, runs `docker compose pull` and
+`docker compose up -d`, waits until the container is healthy and prints the address and the image revision. A private
+package needs `docker login ghcr.io` once (a token with `read:packages`), or make the package public. By hand, the same is:
 
 ```bash
 mkdir -p data
 sudo chown -R 10001:10001 data
-docker compose up -d --build
+EVEDM_IMAGE=ghcr.io/headruner/war-bot-2:latest docker compose pull evedm
+EVEDM_IMAGE=ghcr.io/headruner/war-bot-2:latest docker compose up -d --no-build
 ```
+
+To build from the checked-out source instead: `scripts/update.sh --no-git --build` (the first build takes a few minutes).
 
 ### 8. Verify
 
@@ -247,7 +252,7 @@ Open `http://<vm-address>:<port>/`, sign in with EVE, then **Characters > Add ch
 | `.env` | `docker compose up -d` (recreates the container; **`restart` does not re-read `.env`**) |
 | `config/wars.yaml` (mounted read-only) | `docker compose restart evedm` |
 | `config/evedm.example.yaml` (copied into the image as `/app/config/evedm.yaml`) | `docker compose up -d --build` |
-| new code (Way A) | `scripts/update.sh` |
+| new code (Way A) | `scripts/update.sh` (git pull for the compose file and config, then pull the published image; `--build` builds locally; `--force-sync` after a force-push of `main`) |
 
 Environment variables from `.env` always override the YAML files, so a value set in both places is taken from `.env`.
 
@@ -277,12 +282,13 @@ docker compose stop evedm && cp -a data data-backup-$(date +%F) && docker compos
 | Symptom | Fix |
 | --- | --- |
 | `evedm check` stops the start with a permission message | `sudo chown -R 10001:10001 data` |
+| `denied` / `unauthorized` when pulling the image | `docker login ghcr.io -u <github user>` with a token that has `read:packages`, or make the package public |
 | `Range of CPUs is from 0.01 to 1.00` | one vCPU: `EVEDM_CPUS=1` in `.env` (`scripts/update.sh` does it for you) |
 | `port is already allocated` | free port in `EVEDM_PUBLISH`, same port in `EVE_CALLBACK_URL` and on the EVE application |
 | SSO error about redirect / callback | callback in `.env` and on the EVE application differ (scheme, host, port) |
 | `invalid_scope` | a scope of step 5 is not ticked on the EVE application, or set `EVE_OPTIONAL_SCOPES=none` |
 | `bad interpreter: /bin/bash^M` | Windows line endings: `sed -i 's/\r$//' scripts/*.sh` |
-| `Permission denied` on `scripts/update.sh` | `chmod +x scripts/*.sh`, or run `bash scripts/update.sh --no-pull` |
+| `Permission denied` on `scripts/update.sh` | `chmod +x scripts/*.sh`, or run `bash scripts/update.sh --no-git` |
 | container `unhealthy` or restarting | `docker compose logs --tail 50 evedm`; most often `EVEDM_SECRET_KEY` is empty |
 | page not reachable from another PC | firewall (step 9), or `EVEDM_PUBLISH` is bound to `127.0.0.1` |
 | `pip` fails on TLS during the build | corporate proxy: [Deployment](docs/wiki/04-Deployment.md), section 5 |

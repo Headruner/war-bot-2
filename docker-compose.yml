@@ -1,11 +1,12 @@
 # Build from source and run:   docker compose up -d --build
+# Linux VM (no build there):   scripts/update.sh   (pulls the image GitHub Actions published; EVEDM_IMAGE in .env pins a version)
 # Data (one-file SQLite DB in WAL mode + logs) is kept in ./data on the host, mounted at /app/data.
 # Linux host folder: the container runs as uid 10001 -> sudo chown -R 10001:10001 ./data (Windows: no action).
 # Host port: EVEDM_PUBLISH in .env (default 8080), e.g. EVEDM_PUBLISH=8082 when 8080 is taken; EVE_CALLBACK_URL must match.
 services:
   evedm:
     build: .
-    image: evedm:0.8.0
+    image: ${EVEDM_IMAGE:-evedm:0.8.0}   # scripts/update.sh pulls ghcr.io/headruner/war-bot-2:latest; --build builds it here
     container_name: evedm
     restart: unless-stopped
     env_file: [.env]
