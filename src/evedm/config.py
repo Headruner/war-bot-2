@@ -127,7 +127,7 @@ class StructureScoutSettings:
     assets_refresh_hours: float = 24.0  # re-read a character's assets this often
     structure_refresh_hours: float = 72.0  # re-read a structure's name, owner and system this often
     no_access_refresh_hours: float = 336.0  # ask again about a structure that refused (403) this rarely: errors count
-    max_asset_pages: int = 60  # 1000 assets per page; characters with more are read partly
+    max_asset_pages: int = 100  # 1000 assets per page (100000 assets); characters with more are read partly
     concurrency: int = 4
 
 
