@@ -50,6 +50,9 @@ def _expires(resp: httpx.Response, default_s: float = 5.0) -> float:
     return time.time() + default_s
 
 
+ERROR_LIMIT_RESERVE = 5  # with this few errors left in ESI's window, every caller stops sending until it resets
+
+
 class EsiClient:
     def __init__(self, settings: EveSettings, client: httpx.AsyncClient, cache_size: int = 4096):
         self.s = settings
@@ -60,12 +63,43 @@ class EsiClient:
         self._sem = asyncio.Semaphore(max(1, settings.max_concurrency))
         self.stats = {"requests": 0, "cache_hits": 0, "not_modified": 0, "errors": 0, "rate_limited": 0}
         self.ratelimit: dict[str, str] = {}
+        # ESI's error limit (~100 4xx/5xx per minute per IP and app): once exhausted every request answers 420 and
+        # each further request prolongs the ban, so remember the window and stop sending until it resets
+        self._limit_remain: int | None = None
+        self._limit_reset_at = 0.0
+        self._blocked_until = 0.0
         self._inflight: dict[str, asyncio.Future[Any]] = {}
         self.headers = {
             "Accept": "application/json",
             "User-Agent": settings.user_agent or f"EVE-Distance-Meter/{__version__}",
             "X-Compatibility-Date": settings.compatibility_date,
         }
+
+    def blocked_for(self, reserve: int = ERROR_LIMIT_RESERVE) -> float:
+        """Seconds until ESI may be called again (0 = now): after a 420, or when <= ``reserve`` errors are left.
+
+        Background jobs pass a bigger reserve so they stop early and leave room for the character refresh.
+        """
+        now = time.time()
+        if self._blocked_until > now:
+            return self._blocked_until - now
+        if self._limit_remain is not None and self._limit_remain <= reserve and self._limit_reset_at > now:
+            return self._limit_reset_at - now
+        return 0.0
+
+    def _note_error_limit(self, resp: httpx.Response) -> None:
+        remain, reset = resp.headers.get("X-Esi-Error-Limit-Remain"), resp.headers.get("X-Esi-Error-Limit-Reset")
+        try:
+            if remain is not None:
+                self._limit_remain = int(remain)
+                self._limit_reset_at = time.time() + (float(reset) if reset else 60.0)
+            if resp.status_code == 420:
+                pause = max(float(reset or 60), 1.0) + 1.0
+                self._blocked_until = time.time() + pause
+                log.warning("ESI error limit reached: pausing all ESI calls for %.0f s", pause)
+        except ValueError:
+            if resp.status_code == 420:
+                self._blocked_until = time.time() + 61.0
 
     async def get(self, path: str, token: str | None = None) -> Any:
         """GET with Expires/ETag caching; identical concurrent requests share one HTTP call."""
@@ -192,6 +226,10 @@ class EsiClient:
 
     async def _send(self, method: str, path: str, headers: dict[str, str], **kw: Any) -> httpx.Response:
         url = f"{self.base}{path}"
+        wait = self.blocked_for()
+        if wait > 0:
+            self.stats["error_limited"] = self.stats.get("error_limited", 0) + 1
+            raise EsiError(420, f"error limited, retry in {wait:.0f} s")
         for attempt in range(3):
             async with self._sem:
                 self.stats["requests"] += 1
@@ -202,6 +240,7 @@ class EsiClient:
                         raise EsiError(0, type(exc).__name__) from exc
                     await asyncio.sleep(0.5 * (attempt + 1))
                     continue
+            self._note_error_limit(resp)
             group = resp.headers.get("X-Ratelimit-Group")
             if group:
                 self.ratelimit[group] = resp.headers.get("X-Ratelimit-Remaining", "")

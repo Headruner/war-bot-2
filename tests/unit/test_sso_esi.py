@@ -129,6 +129,41 @@ async def test_esi_retries_after_429(settings):
         assert calls["n"] == 2 and esi.stats["rate_limited"] == 1
 
 
+async def test_esi_420_pauses_all_calls_until_the_window_resets(settings):
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(420, headers={"X-Esi-Error-Limit-Remain": "0", "X-Esi-Error-Limit-Reset": "30"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url=FAKE) as client:
+        esi = EsiClient(settings.eve, client)
+        with pytest.raises(EsiError) as first:
+            await esi.get("/a")
+        assert first.value.status == 420 and calls["n"] == 1
+        assert 25 < esi.blocked_for() <= 32
+        with pytest.raises(EsiError) as second:  # no request goes out while the ban lasts
+            await esi.get("/b")
+        assert second.value.status == 420 and "retry in" in second.value.detail and calls["n"] == 1
+        esi._blocked_until = 0.0  # the window has passed
+        esi._limit_remain = None
+        assert esi.blocked_for() == 0
+
+
+async def test_esi_reserve_keeps_background_jobs_from_using_the_last_errors(settings):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403, headers={"X-Esi-Error-Limit-Remain": "40", "X-Esi-Error-Limit-Reset": "20"}, json={"error": "no"}
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url=FAKE) as client:
+        esi = EsiClient(settings.eve, client)
+        with pytest.raises(EsiError):
+            await esi.get("/structure")
+        assert esi.blocked_for(reserve=60) > 0  # the scout stops at 60 errors left ...
+        assert esi.blocked_for() == 0  # ... the character refresh keeps going
+
+
 async def test_esi_sends_compatibility_date_and_user_agent(settings):
     seen = {}
 

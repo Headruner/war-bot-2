@@ -26,6 +26,8 @@ from .esi import EsiClient, EsiError
 from .sso import SsoError
 from .universe import GateGraph, security_class
 
+SCOUT_ERROR_RESERVE = 60  # stop resolving structures when ESI has this few errors left in its 100-per-minute window
+
 log = logging.getLogger("evedm.scout")
 
 READ_STRUCTURES, READ_ASSETS = STRUCTURE_SCOPES
@@ -164,6 +166,8 @@ class StructureScout:
             body: dict[str, Any] | None = None
             async with sem:
                 for cid, owner in candidates:
+                    if self.esi.blocked_for(reserve=SCOUT_ERROR_RESERVE) > 0:
+                        return  # leave the rest of ESI's error budget to the character refresh; retry next run
                     try:
                         token = await self.chars.access_token(cid, owner)
                         body = await self.esi.get(f"/universe/structures/{sid}", token)
