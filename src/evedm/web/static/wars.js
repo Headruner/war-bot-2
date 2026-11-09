@@ -75,6 +75,8 @@ function structures(side, label) {
       const li = el("li");
       if (s.system) li.append(rankLink({ ...s.system, why: [] }));
       li.append(document.createTextNode(` ${s.name} `), el("span", "small", s.type || ""));
+      const route = s.system && window.findRoute(s.system.name, s.system.space);
+      if (route) li.append(document.createTextNode(" "), route);
       ul.append(li);
     }
     d.append(ul);
@@ -106,7 +108,11 @@ function card(w) {
   if (w.targets && w.targets.length) {
     targets.append(el("div", "small", "Rank my characters to:"));
     const chips = el("div", "chips");
-    w.targets.forEach((t) => chips.append(rankLink(t)));
+    w.targets.forEach((t) => {
+      chips.append(rankLink(t));
+      const route = window.findRoute(t.name, t.space);
+      if (route) chips.append(route);
+    });
     targets.append(chips);
   } else {
     targets.append(el("div", "small", "No known structure or kill systems for this war."));
@@ -262,6 +268,8 @@ function lootRow(r) {
   if (r.nearest && r.nearest.characters.length) jumps.append(el("div", "small", r.nearest.characters[0]));
   const sys = el("td");
   sys.append(rankLink({ ...r.system, why: [] }), el("div", "small", r.system.region));
+  const route = window.findRoute(r.system.name, r.system.space);
+  if (route) sys.append(route);
   const st = el("td");
   st.append(el("div", null, r.name), el("div", "small", r.type));
   const owner = el("td");

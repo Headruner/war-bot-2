@@ -117,6 +117,8 @@ function card(g) {
     a.append(secChip(g.system.security), document.createTextNode(` ${g.system.name}`));
     where.append(a);
   }
+  const route = window.findRoute(g.system.name, g.system.space);
+  if (route) where.append(route);
   where.append(el("span", "small", ` ${g.system.region || ""} · ${SPACE[g.system.space] || ""} · owner `), extLink(g.owner.name, g.owner.zkill));
   li.append(where);
 

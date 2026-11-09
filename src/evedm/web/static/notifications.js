@@ -81,6 +81,8 @@ function card(n) {
   if (n.system) {
     where.append(secChip(n.system.security), el("span", null, n.system.name),
       el("span", "small", `· ${n.system.region}`));
+    const route = window.findRoute(n.system.name, n.system.space);
+    if (route) where.append(route);
   } else {
     where.append(el("span", "small", "not named in this notification"));
   }

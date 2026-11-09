@@ -443,3 +443,15 @@ class StarMap {
 window.StarMap = StarMap;
 window.secColor = secColor;
 window.secText = secText;
+
+/* "Find route" button after a system or structure name: opens the Ranking page with that system as the target.
+   Returns null for wormhole space (no stargates, so nothing to rank). */
+window.findRoute = function findRoute(systemName, space) {
+  if (!systemName || space === "wormhole") return null;
+  const a = document.createElement("a");
+  a.className = "btn find-route";
+  a.href = `/?target=${encodeURIComponent(systemName)}`;
+  a.textContent = "Find route";
+  a.title = `Open Ranking with ${systemName} as the target`;
+  return a;
+};

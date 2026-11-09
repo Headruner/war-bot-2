@@ -258,3 +258,11 @@ def test_static_links_change_when_the_static_files_change(tmp_path):
     assert len(versions) == 1
     (v,) = versions
     assert v.startswith(__version__ + "-") and len(v) > len(__version__) + 1  # version + hash of the files
+
+
+def test_find_route_button_is_wired_on_notifications_wars_and_alerts(tmp_path):
+    with demo_client(tmp_path) as c:
+        helper = c.get("/static/map.js").text
+        assert "window.findRoute" in helper and "/?target=" in helper and '"wormhole"' in helper
+        for page in ("notifications", "wars", "alerts"):
+            assert "window.findRoute(" in c.get(f"/static/{page}.js").text, page
