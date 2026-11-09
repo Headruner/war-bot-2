@@ -51,6 +51,21 @@ SESSION_RENEW_S = 86400
 HERE = Path(__file__).parent
 
 
+def _asset_version() -> str:
+    """Version plus a hash of the static files, so a browser fetches changed scripts and styles after an update
+    even when the release number is the same (the ``?v=`` of the static links)."""
+    import hashlib
+
+    digest = hashlib.sha1(usedforsecurity=False)
+    for f in sorted((HERE / "static").rglob("*")):
+        if f.is_file():
+            digest.update(f.name.encode() + f.read_bytes())
+    return f"{__version__}-{digest.hexdigest()[:8]}"
+
+
+ASSET_V = _asset_version()
+
+
 @dataclass
 class Services:
     settings: Settings
@@ -338,6 +353,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         base = {
             "request": request,
             "version": __version__,
+            "asset_v": ASSET_V,
             "user": user_of(request),
             "demo": settings.demo,
             "auth": settings.web.auth,

@@ -1,5 +1,7 @@
 """EVE-Scout Thera / Turnur list and the two-leg route (UC-15, EVS-01..EVS-10)."""
 
+import re
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -245,3 +247,14 @@ def test_evescout_endpoint_and_disabled(tmp_path):
         assert c.get("/api/evescout", headers=H).status_code == 404
         assert 'id="hub-toggle"' not in c.get("/").text
         assert c.get("/api/rank?target=Amarr&thera=1", headers=H).json()["evescout"] is None
+
+
+def test_static_links_change_when_the_static_files_change(tmp_path):
+    from evedm import __version__
+
+    with demo_client(tmp_path) as c:
+        html = c.get("/").text
+    versions = set(re.findall(r"/static/[a-z]+\.(?:js|css)\?v=([^\"]+)", html))
+    assert len(versions) == 1
+    (v,) = versions
+    assert v.startswith(__version__ + "-") and len(v) > len(__version__) + 1  # version + hash of the files
