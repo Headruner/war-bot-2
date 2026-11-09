@@ -30,7 +30,7 @@ Container_Boundary(web, "Web app") {
   Component(wars, "WarService", "wars/", "New wars, census, statistics, StructureIndex (EVE Ref + scout finds)")
   Component(scout, "StructureScout", "scout.py", "Assets of every registered character (ESI) -> every structure holding one -> /universe/structures/{id} (ESI): name, owner, type, system, position")
   Component(alerts, "AlertService + R2Z2Feed", "alerts.py", "Follows the killmail feed, classifies destroyed / combat / firing, stores, posts to Discord")
-  Component(evs, "EveScout", "evescout.py", "Thera / Turnur signature list (TTL cache, last list kept on error), closest listed system to the character and to the target through a cached multi-source BFS, two-leg gate-wormhole-gate plan")
+  Component(evs, "EveScout", "evescout.py", "Thera / Turnur signature list (15-minute cache, last list kept on error, hub missing from the answer fetched by name), closest listed system to the character and to the target through a cached multi-source BFS, two-leg gate-wormhole-gate plan")
 }
 
 Rel(spa, routes, "HTTPS")
