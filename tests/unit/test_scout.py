@@ -219,9 +219,18 @@ async def test_structures_already_read_are_skipped_on_the_next_run(settings, ser
     db.execute("UPDATE known_structures SET checked_at=checked_at - 1000000")  # long ago
     db.execute("UPDATE scout_characters SET checked_at=0")  # the assets are read again
     await scout.run()
-    assert fake_app.state.fake.calls["structure"] == calls  # known ones are not asked again (default: refresh 0)
+    assert fake_app.state.fake.calls["structure"] == calls  # known ones are not asked again within 720 h
     after = {r[0]: r[1] for r in db.query("SELECT structure_id, checked_at FROM known_structures WHERE status='ok'")}
     assert after == {k: v - 1000000 for k, v in stamps.items()}
+    old = time.time() - 800 * 3600  # past the refresh interval: read once more
+    db.execute("UPDATE known_structures SET checked_at=?", (old,))
+    services["esi"]._cache.clear()
+    await scout.run()
+    assert all(r[0] > old for r in db.query("SELECT checked_at FROM known_structures WHERE status='ok'"))
+    settings.structures.structure_refresh_hours = 0  # 0 = never again
+    db.execute("UPDATE known_structures SET checked_at=?", (old,))
+    await scout.run()
+    assert all(r[0] == old for r in db.query("SELECT checked_at FROM known_structures WHERE status='ok'"))
 
 
 async def test_each_page_is_saved_and_a_failure_keeps_the_earlier_pages(settings, services, world, monkeypatch):
@@ -261,17 +270,34 @@ async def test_a_complete_read_drops_structures_the_character_left(settings, ser
     assert {r[0] for r in db.query("SELECT structure_id FROM structure_sightings")} == {S_HIGH, S_GONE}
 
 
-async def test_unresolved_ids_nobody_sights_any_more_are_pruned(settings, services, world):
+async def test_a_structure_stays_in_the_file_until_it_is_gone(settings, services, world):
     await link(services, A, A)
+    scout = scout_for(settings, services)
     db = services["db"]
+    await scout.run()
+    assert scout.structures() and {r["structure_id"] for r in scout.structures()} == {S_HIGH, S_WH}
+    # nobody sights it and nobody may read it: the row is kept, not dropped
+    orphan = 1_060_000_000_001
     now = time.time()
     db.execute(
         "INSERT INTO known_structures(structure_id, status, first_seen, last_seen) VALUES(?,?,?,?)",
-        (1_060_000_000_001, "no_access", now, now),
+        (orphan, "new", now, now),
     )
-    await scout_for(settings, services).run()
-    ids = {r[0] for r in db.query("SELECT structure_id FROM known_structures")}
-    assert 1_060_000_000_001 not in ids and {S_HIGH, S_WH, S_GONE} <= ids
+    # A loses docking access: the name, owner and system stay, flagged "no docking access"
+    world.structures[S_HIGH]["acl"] = [B]
+    db.execute("UPDATE known_structures SET checked_at=0")
+    services["esi"]._cache.clear()
+    await scout.run()
+    row = {r["structure_id"]: r for r in scout.structures()}[S_HIGH]
+    assert row["access"] is False and row["name"] == "Jita - Trade Hub"
+    assert db.query("SELECT COUNT(*) FROM known_structures WHERE structure_id=?", (orphan,))[0][0] == 1
+    # the structure is unanchored or destroyed: ESI answers 404, it is kept as a hidden 'gone' row, not asked again
+    del world.structures[S_HIGH]
+    db.execute("UPDATE known_structures SET checked_at=0")
+    services["esi"]._cache.clear()
+    await scout.run()
+    assert db.query("SELECT status FROM known_structures WHERE structure_id=?", (S_HIGH,))[0][0] == "gone"
+    assert S_HIGH not in {r["structure_id"] for r in scout.structures()}
 
 
 async def test_esi_helpers(services, fake_app):

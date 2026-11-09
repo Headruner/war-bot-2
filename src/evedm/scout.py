@@ -172,11 +172,8 @@ class StructureScout:
             )
         else:
             self.db.execute("DELETE FROM structure_sightings")
-        # unresolved IDs that no linked character sights any more (e.g. bogus ones from an older run) are dropped
-        self.db.execute(
-            "DELETE FROM known_structures WHERE solar_system_id IS NULL AND status IN ('new','no_access') "
-            "AND structure_id NOT IN (SELECT structure_id FROM structure_sightings)"
-        )
+        # known_structures is never pruned: a structure stays until ESI answers 404 (destroyed or unanchored), then it
+        # is kept as status 'gone' (not listed, not asked again), whoever sights it and whether or not anyone may dock
         await self._resolve(contributors, stats)
         await self._names()
         self.version += 1
@@ -205,7 +202,9 @@ class StructureScout:
             ]
             candidates = [readers[c] for c in seen_by if c in readers]
             if not candidates:
-                return  # nobody who may read it right now: keep what we know, try again later
+                # nobody who may read it right now: keep what we know and try again later, behind the rows not yet asked
+                self.db.execute("UPDATE known_structures SET checked_at=? WHERE structure_id=?", (time.time(), sid))
+                return
             outcome = "no_access"
             body: dict[str, Any] | None = None
             async with sem:

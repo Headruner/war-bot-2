@@ -125,7 +125,7 @@ class StructureScoutSettings:
     enabled: bool = True
     interval_min: float = 60.0  # how often the scout runs
     assets_refresh_hours: float = 24.0  # re-read a character's assets this often
-    structure_refresh_hours: float = 0.0  # 0 = a structure already read is never asked again; else re-read this often
+    structure_refresh_hours: float = 720.0  # re-read name, owner and system of known structures this often (0 = never)
     no_access_refresh_hours: float = 336.0  # ask again about a structure that refused (403) this rarely: errors count
     max_asset_pages: int = 1_000_000  # 1000 assets per page: effectively no limit, ESI's X-Pages ends the read
     concurrency: int = 4

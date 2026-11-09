@@ -39,7 +39,7 @@ structures:                                 # structure scout: player-owned stru
   enabled: ${EVEDM_STRUCTURES_ENABLED:-true}
   interval_min: 60                          # how often the scout runs
   assets_refresh_hours: 24                  # re-read each character's assets this often
-  structure_refresh_hours: 0                # 0 = skip structures already read; otherwise re-read each one this often
+  structure_refresh_hours: 720              # re-read each known structure this often (30 days); 0 = never, 404 = gone
   no_access_refresh_hours: 336              # ask again about a structure that answered 403 this rarely (errors count at ESI)
   max_asset_pages: 1000000                  # 1000 assets per page: effectively no limit, the page count ESI reports ends the read
   concurrency: 4
