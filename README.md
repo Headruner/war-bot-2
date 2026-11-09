@@ -336,7 +336,7 @@ ruff check src tests scripts
 scripts/render-diagrams.sh           # C4 diagrams (PlantUML) -> docs/diagrams
 ```
 
-CI (`.github/workflows/ci.yml`): lint → unit (Linux + Windows, Python 3.12/3.13) → integration + browser → footprint →
+CI (`.github/workflows/ci.yml`): lint → unit (Linux + Windows, Python 3.13 only) → integration + browser → footprint →
 image build, smoke test under `--cpus 2 --memory 1g`, container footprint, image tarball artifact, multi-arch push to GHCR.
 
 ## Guidelines

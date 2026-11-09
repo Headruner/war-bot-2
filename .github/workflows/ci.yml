@@ -29,7 +29,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - run: pip install ruff==0.17.3
       - run: ruff check src tests scripts
       - name: Commit messages follow the git guidelines
@@ -46,7 +46,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python: ["3.12", "3.13"]
+        python: ["3.13"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -76,7 +76,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: pip
       - run: pip install -r requirements-dev.txt && pip install -e . --no-deps
       - run: python -m playwright install --with-deps chromium
@@ -99,7 +99,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: pip
       - run: pip install -r requirements-dev.txt && pip install -e . --no-deps
       - name: 2 CPU / 1 GB budget (server pinned to 2 CPUs)
