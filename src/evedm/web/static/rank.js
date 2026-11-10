@@ -206,6 +206,7 @@ function select(id) {
 }
 
 function showSelection() {
+  if (state.tab !== "live") return;
   const r = state.result;
   if (!r) return;
   const row = r.rows.find((x) => x.character_id === state.selected);
@@ -582,6 +583,7 @@ function selectStatic(key) {
 }
 
 function showRosterSelection() {
+  if (state.tab !== "roster") return;
   const r = roster.result;
   if (!r) return;
   const row = r.rows.find((x) => x.key === roster.selected);
@@ -638,7 +640,7 @@ function setupMobileControls() {
   const mobile = window.matchMedia("(max-width: 820px)");
   const panel = $("#mobile-map-controls");
   const gear = $("#mobile-map-menu");
-  const sections = [".topbar", ".demo-banner", ".map-tools", "#map-opts", ".auto-refresh", "#route-bar"]
+  const sections = ["#target-form", ".map-tools", "#map-opts", ".auto-refresh", "#route-bar"]
     .map(selector => $(selector)).filter(Boolean)
     .map(node => {
       const slot = document.createComment("desktop position");
@@ -654,7 +656,9 @@ function setupMobileControls() {
   function updateLayout() {
     setExpanded(false);
     for (const { node, slot } of sections) {
-      if (!mobile.matches) slot.after(node);
+      if (!mobile.matches) {
+        if (slot.nextSibling !== node) slot.after(node);
+      }
       else if (node.id === "route-bar") $(".list-pane").prepend(node);
       else panel.append(node);
     }

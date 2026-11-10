@@ -11,8 +11,7 @@
 <body class="{% block bodyclass %}{% endblock %}">
   <header class="topbar">
     <a class="brand" href="/"><span class="logo">&#9678;</span>EVE Distance Meter</a>
-    {% block topbar %}{% endblock %}
-    <nav class="nav">
+    <nav class="nav" aria-label="Main navigation">
       {% if user %}
         <a href="/">Ranking</a>
         <a href="/characters">Characters</a>
@@ -37,7 +36,9 @@
     </aside>
   </header>
   {% if demo %}<div class="demo-banner">Demo mode: fictional characters, no EVE login needed.<span class="detail"> Universe data: {{ universe }}</span></div>{% endif %}
+  {% block page_tools %}{% endblock %}
   {% block content %}{% endblock %}
+  <script src="/static/navigation.js?v={{ asset_v }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

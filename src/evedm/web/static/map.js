@@ -75,6 +75,9 @@ class StarMap {
 
   /* ---------------------------------------------------------------- state */
   setScene({ targetId, routeIds, originName, markers, legs }) {
+    const routeKey = JSON.stringify([targetId, originName, routeIds]);
+    const routeChanged = routeKey !== this.routeKey;
+    this.routeKey = routeKey;
     this.target = targetId != null ? this.indexOf(targetId) ?? null : null;
     // legs: [{mode: "gate"|"wormhole"|"ansiblex", ids, hub}] - gate legs are drawn solid, the wormhole leg dashed,
     // an Ansiblex jump dotted in cyan
@@ -85,7 +88,8 @@ class StarMap {
     this.origin = this.route && this.route.length ? { index: this.route[0], name: originName } : null;
     this.markers = (markers || []).map((m) => ({ index: this.indexOf(m.systemId), name: m.name }))
       .filter((m) => m.index !== undefined);
-    this.fitScene();
+    if (routeChanged) this.fitScene();
+    else this.draw();
   }
 
   fitScene() {

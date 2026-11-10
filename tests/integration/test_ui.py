@@ -104,7 +104,7 @@ def test_phone_map_above_inline_settings_and_ranked_characters(server, browser):
     page.wait_for_selector(".row.selected", state="attached")
     gear = page.get_by_role("button", name="Map controls")
     map_box = page.locator("#map").bounding_box()
-    assert map_box["y"] == 0 and map_box["height"] < 844
+    assert map_box["y"] >= page.locator(".topbar").bounding_box()["height"] and map_box["height"] < 844
     row = page.locator("#rows .row").first
     assert map_box["height"] <= row.bounding_box()["y"] < 844
     assert page.locator("#target").is_hidden() and page.locator("#route-bar").is_visible()
@@ -123,10 +123,31 @@ def test_phone_map_above_inline_settings_and_ranked_characters(server, browser):
     assert "selected" in page.locator("#rows .row").nth(1).get_attribute("class")
     gear.click()
     page.set_viewport_size({"width": 1280, "height": 800})
-    assert page.locator(".topbar #target").is_visible()
+    page.locator("body > #target-form #target").wait_for(state="visible")
     page.locator(".map-pane #zoom-in").wait_for(state="visible")
     assert page.locator("#mobile-map-controls").is_hidden()
     assert errors == []
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_navigation_position_across_pages(server, browser, width):
+    page, _ = open_page(browser, f"{server}/?target=Tama", viewport={"width": width, "height": 844})
+    nav = page.get_by_role("navigation", name="Main navigation")
+    initial = nav.bounding_box()
+    page.wait_for_selector("#rows .row")
+    if width == 390:
+        page.get_by_role("button", name="Map controls").click()
+        assert nav.bounding_box() == initial
+    page.click("#zoom-in")
+    view = page.evaluate("({...map.view})")
+    page.evaluate("rank(state.target.name, {refresh: 1, keepSelection: true})")
+    assert page.evaluate("({...map.view})") == view
+    for path in ("characters", "structures", "notifications", "alerts", "wars", "roster"):
+        page.goto(f"{server}/{path}")
+        assert nav.bounding_box() == initial
+        page.evaluate("window.scrollBy(0, 300)")
+        assert nav.bounding_box() == initial
+    page.close()
 
 
 def test_wars_page_lists_wars_and_ranks_a_structure_system(server, browser):
