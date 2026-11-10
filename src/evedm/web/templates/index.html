@@ -29,6 +29,7 @@
 {% endblock %}
 {% block content %}
 <main class="split" data-auto-refresh="{{ auto_refresh_s }}">
+  <section id="mobile-map-controls" aria-label="Map controls" hidden></section>
   <section class="list-pane" aria-label="Characters ranked by jumps">
     <div id="target-info" class="target-info">
     </div>
@@ -66,7 +67,7 @@
   </section>
   <section class="map-pane" aria-label="Star map">
     <button id="mobile-map-menu" type="button" class="btn icon" aria-label="Map controls"
-      aria-haspopup="dialog" aria-controls="mobile-map-controls">&#9881;</button>
+      aria-expanded="false" aria-controls="mobile-map-controls">&#9881;</button>
     <canvas id="map" role="img" aria-label="2D star map with the selected route"></canvas>
     <div class="legend">
       <span><i class="dot high"></i>High</span><span><i class="dot low"></i>Low</span><span><i class="dot null"></i>Null</span>
@@ -90,11 +91,6 @@
     <div id="tooltip" class="tooltip" hidden></div>
   </section>
 </main>
-<dialog id="mobile-map-controls" aria-labelledby="mobile-controls-title">
-  <header class="controls-heading"><h2 id="mobile-controls-title">Map controls</h2>
-    <form method="dialog"><button type="submit" class="btn icon" aria-label="Close controls" autofocus>&times;</button></form>
-  </header>
-</dialog>
 <dialog id="paste-dialog">
   <form method="dialog" class="dlg">
     <h2>Paste notification text</h2>

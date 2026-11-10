@@ -633,12 +633,12 @@ setTab(Prefs.get("rank", { tab: "live" }).tab === "roster" ? "roster" : "live");
 loadRosterStats();
 
 
-// The mobile drawer uses the same live controls, selections and event handlers as the desktop layout.
+// Reuse the desktop controls in an inline panel below the mobile map.
 function setupMobileControls() {
   const mobile = window.matchMedia("(max-width: 820px)");
-  const drawer = $("#mobile-map-controls");
+  const panel = $("#mobile-map-controls");
   const gear = $("#mobile-map-menu");
-  const sections = [".topbar", ".demo-banner", ".map-tools", "#map-opts", "#route-bar", ".list-pane"]
+  const sections = [".topbar", ".demo-banner", ".map-tools", "#map-opts", ".auto-refresh", "#route-bar"]
     .map(selector => $(selector)).filter(Boolean)
     .map(node => {
       const slot = document.createComment("desktop position");
@@ -646,15 +646,21 @@ function setupMobileControls() {
       return { node, slot };
     });
 
+  function setExpanded(open) {
+    panel.hidden = !open;
+    gear.setAttribute("aria-expanded", String(open));
+  }
+
   function updateLayout() {
-    if (!mobile.matches && drawer.open) drawer.close();
+    setExpanded(false);
     for (const { node, slot } of sections) {
-      if (mobile.matches) drawer.append(node);
-      else slot.after(node);
+      if (!mobile.matches) slot.after(node);
+      else if (node.id === "route-bar") $(".list-pane").prepend(node);
+      else panel.append(node);
     }
   }
 
-  gear.addEventListener("click", () => drawer.showModal());
+  gear.addEventListener("click", () => setExpanded(panel.hidden));
   mobile.addEventListener("change", updateLayout);
   updateLayout();
 }

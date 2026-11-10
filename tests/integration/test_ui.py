@@ -97,24 +97,30 @@ def test_characters_page_renders_every_row(server, browser):
     assert errors == []
 
 
-def test_phone_map_opens_with_controls_in_gear_drawer(server, browser):
+def test_phone_map_above_inline_settings_and_ranked_characters(server, browser):
     page, errors = open_page(
         browser, f"{server}/?target=Tama", viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True
     )
     page.wait_for_selector(".row.selected", state="attached")
     gear = page.get_by_role("button", name="Map controls")
-    assert page.locator("#map").bounding_box()["height"] == 844
-    assert page.locator("#target").is_hidden() and page.locator(".list-pane").is_hidden()
-    assert page.locator("#zoom-in").is_hidden() and page.locator("#route-bar").is_hidden()
+    map_box = page.locator("#map").bounding_box()
+    assert map_box["y"] == 0 and map_box["height"] < 844
+    row = page.locator("#rows .row").first
+    assert map_box["height"] <= row.bounding_box()["y"] < 844
+    assert page.locator("#target").is_hidden() and page.locator("#route-bar").is_visible()
     gear.click()
-    assert page.locator("#mobile-map-controls").is_visible()
+    panel = page.locator("#mobile-map-controls")
+    box = panel.bounding_box()
+    assert box["y"] >= map_box["height"]
+    assert row.bounding_box()["y"] >= box["y"] + box["height"]
     assert page.locator("#target").input_value() == "Tama"
     page.get_by_role("button", name="Zoom in").click()
     page.locator("#map-opts input").first.click()
-    assert page.locator(".row.selected").is_visible()
-    assert page.locator("#mobile-map-controls").evaluate("el => el.scrollWidth <= el.clientWidth")
-    page.keyboard.press("Escape")
-    assert gear.evaluate("el => el === document.activeElement")
+    assert panel.evaluate("el => el.scrollWidth <= el.clientWidth")
+    gear.click()
+    assert panel.is_hidden() and row.bounding_box()["y"] < 844
+    page.locator("#rows .row").nth(1).click()
+    assert "selected" in page.locator("#rows .row").nth(1).get_attribute("class")
     gear.click()
     page.set_viewport_size({"width": 1280, "height": 800})
     assert page.locator(".topbar #target").is_visible()
