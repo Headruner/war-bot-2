@@ -27,6 +27,31 @@
 | **Set destination** answers "ESI refused (404): is the character online?" | ESI only accepts waypoints for a logged-in character; the online state shown can be up to a minute old |
 | Ranking row shows `esi:420` | ESI's error limit was exhausted (often by the structure scout hitting 403s). The client pauses all ESI calls until the window resets and the rows recover by themselves; the scout stops at 60 errors left |
 | Thera / Turnur shows no systems for a hub | `GET /api/evescout`: check the per-hub counts, `EVEDM_EVESCOUT_URL` and `evescout.hubs`; the list is cached 15 minutes and J-space exits are skipped |
-| A notification arrives late | each character is read at ESI's cache expiry (`notifications.min_interval_s` 30 .. `character_interval_s` 600) and retried after `retry_s` 60 on a transient error; check the Characters page "N of M structures" and the Notifications tick: a character with fewer than `notifications.min_structures` (10) structures holding assets is not polled |
+| A notification arrives late | each character is read at ESI's cache expiry (`notifications.min_interval_s` 30 .. `character_interval_s` 600) and retried after `retry_s` 60 on a transient error; check the character's Notifications tick on the Characters page, and that it holds assets in at least `notifications.min_structures` (10) player structures (Structures page, or `GET /api/characters` field `structures`): one with fewer is not polled |
 | Ansiblex mode shows no gates | the character has not granted `esi-search.search_structures.v1` (Add character again) or sees no gate in the structure search; `ansiblex.refresh_hours` (6) controls re-reading |
 | `data directory /app/data is not writable by uid 10001` | Linux host folder owned by another user: `sudo chown -R 10001:10001 data`, or use a named volume |
+
+## Local structure index (names for structures nobody here may read)
+
+`scripts/build_structure_index.py` (Python 3.10+, standard library only) builds `data/structure-index.jsonl`, the flat
+list the Structures page falls back on. Run it on a machine that can reach the dataset hosts; the `data/` folder is
+not in git and not in the Docker image, so copy the result into the volume mounted at `/app/data`.
+
+```
+python scripts/build_structure_index.py              # download everything, then build
+python scripts/build_structure_index.py download     # only download; finished files are skipped on a re-run
+python scripts/build_structure_index.py build        # only merge what is on disk
+python scripts/build_structure_index.py --year 2025 --only everef,sde
+python scripts/build_structure_index.py --list-file urls.txt   # EVE Ref history URLs, one per line, if the listing fails
+```
+
+| Downloaded to `data/structure-sources/` | From |
+| --- | --- |
+| `adam4eve/*.csv` | every file of `https://static.adam4eve.eu/IDs/` (refreshed on each run, one at a time: the host answers 429 to bursts) |
+| `everef/structures-latest.v2.json` | `https://data.everef.net/structures/structures-latest.v2.json` (refreshed with If-Modified-Since) |
+| `everef/history/<year>/...` | every file in every folder of `https://data.everef.net/structures/history/<year>/` (a finished file is never fetched again) |
+| `sde/eve-online-static-data-<build>-jsonl.zip` | the latest CCP Static Data Export (`static-data/tranquility/latest.jsonl` names the build; older copies are removed) |
+
+A structure ID seen in several files becomes one line: the newest observation wins field by field and older ones only
+fill what it lacks. `data/structure-index.meta.json` records when it was built and how many observations each source
+gave. The scout reads the list on every run; `structures.index_file` points elsewhere.

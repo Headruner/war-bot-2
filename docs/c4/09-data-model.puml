@@ -1,5 +1,5 @@
 @startuml data-model
-title Database schema v11 (one file evedm.sqlite3, WAL, on the /app/data volume)
+title Database schema v13 (one file evedm.sqlite3, WAL, on the /app/data volume)
 skinparam shadowing false
 hide circle
 hide methods
@@ -107,6 +107,7 @@ entity character_notifications {
   structure_id : INTEGER
   structure_type_id : INTEGER
   created_at : REAL
+  posted : 0 pending | 1 posted | 2 not posted (Discord, v11)
 }
 entity notification_posts {
   * event_key : TEXT <<PK>> (type : structure or system : time)
@@ -144,6 +145,13 @@ entity ansiblex_characters {
   gates : INTEGER
   error : TEXT
 }
+entity public_structure_history {
+  * structure_id : INTEGER <<PK>>
+  --
+  name, owner_id, owner_name, system_id, type_id, type_name
+  observed : TEXT
+  source : EVE Ref | Local index | Adam4EVE (v13)
+}
 entity known_structures {
   * structure_id : INTEGER <<PK>>
   --
@@ -175,4 +183,5 @@ characters ||--o| scout_characters
 characters ||--o| ansiblex_characters
 characters ||--o{ ansiblex_access
 ansiblex_gates ||--o{ ansiblex_access
+known_structures ||--o| public_structure_history
 @enduml

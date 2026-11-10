@@ -20,7 +20,10 @@ when you press **Set destination** for an online character.
   both sides sorted by jumps from your nearest character.
 - **Structures page** (structure scout, members of one alliance only): every player-owned structure in any space
   where any registered character holds an asset (ESI assets, then ESI structure info), pooled for all members,
-  nearest first, owners at war marked.
+  nearest first, owners at war marked. **Resolve unknown** reads the structures still missing a name, owner or system
+  with your main's own token; what nobody here may read is filled from public data and marked *Historical details*:
+  EVE Ref, then a local index built by `scripts/build_structure_index.py` (`data/structure-index.jsonl`), then
+  Adam4EVE.
 - **Structure alerts** (Alerts page): zKillboard's live killmail feed shows structures **destroyed** (citadels,
   engineering complexes and refineries drop their quantum core), **combat** within 1000 km of a known structure, and
   structures **firing**, in all space. Combat and firing alerts are kept only for kills with a **battleship or capital
@@ -61,7 +64,13 @@ when you press **Set destination** for an online character.
   (`EVEDM_WARS_DISCORD_WEBHOOK`, or their own `EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK`): one message per event, edited
   to list every character that received it; nothing older than an hour is posted; `EVEDM_NOTIFICATIONS_DISCORD_ENABLED=0`
   switches it off.
-  Everything else ESI sends is one tick away in the filters. Needs `esi-characters.read_notifications.v1`.
+  Everything else ESI sends is one tick away in the filters. Tick **Sound** for a short chime when a new notification
+  matching your filters arrives while the page is open (tick it again after a reload: browsers only allow sound after
+  a click). Needs `esi-characters.read_notifications.v1`.
+- **Page help and phones**: the explanations of each page sit behind the **i** button in the top bar. On a phone
+  the ranking opens on a full-width map; the gear button on the map opens the target box, route options and
+  auto-refresh, the route bar sits above the ranked characters, and the page links scroll sideways and keep their
+  position from page to page.
 - **Members-only tabs**: Notifications and Structures are visible only when the main that signed in belongs to the
   configured alliance (BB, `access.alliance_ids`, default 99010320; read from ESI at sign-in and every 6 h). For any
   other character both links are hidden and the pages answer 404.
@@ -385,6 +394,7 @@ pip install -r requirements-dev.txt && pip install -e . --no-deps && python -m p
 scripts/run-tests.sh                 # unit + integration + browser + footprint; logs in logs/tests and logs/perf
 ruff check src tests scripts
 scripts/render-diagrams.sh           # C4 diagrams (PlantUML) -> docs/diagrams (Windows: scripts\render-diagrams.ps1)
+python scripts/build_structure_index.py   # local structure index -> data/structure-index.jsonl (see docs/wiki/06)
 ```
 
 CI (`.github/workflows/ci.yml`): lint → unit (Linux + Windows, Python 3.13 only) → integration + browser → footprint →

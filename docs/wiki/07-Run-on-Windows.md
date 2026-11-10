@@ -187,6 +187,13 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
 - Structures of corporations at war (from the Wars census) are marked **at war**, and the high-sec ones also appear
   in the Wars page's High-sec structures tab.
 - The search box and filters are remembered in your browser like the other settings.
+- **Resolve unknown** (button on the page) reads every structure still missing a name, owner or system, one by one,
+  with your main's own token (`esi-universe.read_structures.v1`); ESI's public list goes first. It stops early when
+  ESI's error limit runs low and tells you how many are left; run it again later.
+- Structures nobody here may read are filled from public data and marked **Historical details: <source>**: EVE Ref,
+  then the local index, then Adam4EVE (live ESI data always wins). Build the local index once on any PC with Python:
+  `python scripts\build_structure_index.py`, then copy `data\structure-index.jsonl` into the `data` folder the
+  container uses (details in 06 · Operations).
 
 
 ## 12. Alerts page (structure alerts) and Set destination
@@ -239,18 +246,19 @@ to the system, and the three closest characters from *your* **Characters** set a
 - Every member sees the notifications of all registered characters, including those linked by other mains. A
   character is read when it has granted the notifications scope, its token has not been revoked, its **Notifications**
   tick on the Characters page is on (default) and it holds assets in at least **10 player structures** (NPC stations do
-  not count; `notifications.min_structures`). The ranking on/off switch does not matter. The Characters page shows
-  "N of M structures" next to the tick.
+  not count; `notifications.min_structures`). The ranking on/off switch does not matter.
 - It needs one more scope on your EVE application: tick `esi-characters.read_notifications.v1`, then
   **Add character** again for every character. A character that has not granted it is marked Limited and is
   never polled.
 - ESI caches notifications for 600 seconds per character, so the app asks once per character per cache window
-  and the page refreshes every minute. The next read of a character is scheduled at ESI's own cache expiry (not a fixed
+  and the page is told the moment a new one is stored (it also refreshes every 30 seconds). The next read of a character is scheduled at ESI's own cache expiry (not a fixed
   10 minutes after the last read, which could delay a notification by up to ~15-20 minutes); a transient ESI error
   is retried after 60 s (`notifications.min_interval_s`, `retry_s`).
 - Everything else ESI sends (corporation mail, bills, insurance, sovereignty…) is filtered out until you tick it
   under **Filters**; types ESI sends that CCP added after this release appear under **Other notifications**.
   Your selection and the period are remembered in your browser.
+- **Sound**: tick it for a short chime when a new notification matching your filters arrives while the page is
+  visible. Browsers only allow sound after a click, so tick it again after reopening or reloading the page.
 - **Fast delivery**: the page keeps one request open and reloads the moment a new notification is stored; the
   characters' reads are spread over ESI's 10-minute window, so an event several characters receive appears after
   the earliest of them. ESI's 10-minute cache per character remains the limit.
@@ -289,6 +297,13 @@ your EVE application and **Add character** again; the first use reads the gates 
 
 The **Auto-refresh** selector sits in the header of the Characters / Roster tabs and stays visible when a target is
 selected. The Characters page no longer shows tokens.
+
+## Page help and phones
+
+Each page's explanation sits behind the **i** button at the right of the top bar (Escape or a tap outside closes
+it). On a phone the ranking opens on a full-width map: the gear button on the map shows the target box, the route
+options and auto-refresh; the route bar sits above the ranked characters; the page links scroll sideways and keep
+their position when you move between pages.
 
 ## ESI error limit (`esi:420`)
 

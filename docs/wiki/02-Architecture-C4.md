@@ -58,7 +58,8 @@ Key mechanisms:
   redraws only when the answer changed. Delivery: reads are spread over ESI's window (`staggered()`), a stored
   notification bumps `version` and wakes the pages holding `GET /api/notifications/wait` (long poll), and
   `post_discord()` sends one embed per event through the wars webhook (`DiscordNotifier.send` / `edit`,
-  `notification_posts`, `character_notifications.posted`; schema v11).
+  `notification_posts`, `character_notifications.posted`; schema v11). Schema v12/v13 add `public_structure_history`
+  (historical structure details with their source).
 - **Big-kill filter** (`alerts.py`): `hull_class()` maps a hull's ESI group to battleship (Battleship, Black Ops,
   Marauder) or capital (Carrier, Dreadnought, Lancer, FAX, Supercarrier, Titan, Capital Industrial); `weigh()` returns
   (big, capitals). Combat / firing alerts without a big hull or `min_value_isk` are dropped; the `capitals` flag is stored.
@@ -69,6 +70,11 @@ Key mechanisms:
 - **Structures from assets** (`StructureScout`): the assets of every registered character (ESI) reveal the structure
   IDs where something is stored; each ID is then read from `/universe/structures/{id}` with the token of a
   character that has an asset there (next character on 403). The pooled result feeds the Structures page.
+  **Resolve unknown** (`POST /api/structures/resolve`) reads what is still unresolved with the signed-in main's
+  token. Structures nobody may read get historical details in `public_structure_history`, by source rank: EVE Ref
+  (daily download), the local index (`structure_index.py` reads `data/structure-index.jsonl`, built offline by
+  `scripts/build_structure_index.py`; read on every scout run, no network), Adam4EVE (daily). Live ESI data always
+  wins over all three.
 
 ## C4 · Code
 
