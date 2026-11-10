@@ -19,6 +19,7 @@ eve:
     - esi-characters.read_notifications.v1   # Notifications page (tick it on your EVE application too)
   optional_scopes:                          # tick these on your EVE application too, or set EVE_OPTIONAL_SCOPES=none
     - esi-universe.read_structures.v1       # structure scout (Structures page)
+    - esi-search.search_structures.v1       # find Ansiblex gates visible to this character
     - esi-assets.read_assets.v1             # structure scout (Structures page)
     - esi-ui.write_waypoint.v1              # "Set destination" buttons (ranking route bar, Alerts page)
   compatibility_date: "2025-09-30"
