@@ -70,8 +70,11 @@ Key mechanisms:
 - **Structures from assets** (`StructureScout`): the assets of every registered character (ESI) reveal the structure
   IDs where something is stored; each ID is then read from `/universe/structures/{id}` with the token of a
   character that has an asset there (next character on 403). The pooled result feeds the Structures page.
-  **Resolve unknown** (`POST /api/structures/resolve`) reads what is still unresolved with the signed-in main's
-  token. Structures nobody may read get historical details in `public_structure_history`, by source rank: EVE Ref
+  **Resolve unknown** (`POST /api/structures/resolve`) starts a background job that reads what is still unresolved
+  with the characters that hold assets there (those of the signed-in main first) and the main last; a 403 is kept
+  per (structure, character) in `structure_refusals` and not repeated for 14 days, and the job waits out ESI's
+  error window instead of stopping (`GET /api/structures/resolve` is its state, `.../resolve/stop` cancels it).
+  Structures nobody may read get historical details in `public_structure_history`, by source rank: EVE Ref
   (daily download), the local index (`structure_index.py` reads `data/structure-index.jsonl`, built offline by
   `scripts/build_structure_index.py`; read on every scout run, no network), Adam4EVE (daily). Live ESI data always
   wins over all three.

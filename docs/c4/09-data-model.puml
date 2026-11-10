@@ -166,6 +166,12 @@ entity structure_sightings {
   --
   seen_at : REAL (a character has an asset there; picks the token)
 }
+entity structure_refusals {
+  * structure_id : INTEGER <<PK>>
+  * character_id : INTEGER <<PK>>
+  --
+  refused_at : REAL (ESI answered 403; not asked again for no_access_refresh_hours)
+}
 entity scout_characters {
   * character_id : INTEGER <<PK>>
   --
@@ -176,6 +182,7 @@ entity scout_characters {
 users ||--o{ characters
 characters ||--|| tokens
 known_structures ||--o{ structure_sightings
+known_structures ||--o{ structure_refusals
 characters ||--o| snapshots
 characters ||--o{ character_notifications
 characters ||--o| notification_characters

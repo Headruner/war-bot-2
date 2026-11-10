@@ -187,9 +187,12 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
 - Structures of corporations at war (from the Wars census) are marked **at war**, and the high-sec ones also appear
   in the Wars page's High-sec structures tab.
 - The search box and filters are remembered in your browser like the other settings.
-- **Resolve unknown** (button on the page) reads every structure still missing a name, owner or system, one by one,
-  with your main's own token (`esi-universe.read_structures.v1`); ESI's public list goes first. It stops early when
-  ESI's error limit runs low and tells you how many are left; run it again later.
+- **Resolve unknown** (button on the page) starts a background job that reads every structure still missing a name,
+  owner or system: ESI's public list first, then structures with a character that holds assets there (yours first),
+  your main last (`esi-universe.read_structures.v1`). A refusal is remembered per structure and character for 14
+  days. When ESI's error limit runs low the job waits for the window and goes on by itself, so one click is enough;
+  the page shows the progress (also after a reload) and a **Stop** button. `evedm structures stats` prints how many
+  are still unknown and askable.
 - Structures nobody here may read are filled from public data and marked **Historical details: <source>**: EVE Ref,
   then the local index, then Adam4EVE (live ESI data always wins). Build the local index once on any PC with Python:
   `python scripts\build_structure_index.py`, then copy `data\structure-index.jsonl` into the `data` folder the
@@ -309,3 +312,5 @@ their position when you move between pages.
 
 ESI allows about 100 failed requests per minute. When the limit is reached (the structure scout can cause it) the app stops
 calling ESI until the window resets; ranking rows keep their last data and show `esi:420`, then recover by themselves.
+The Resolve unknown job on the Structures page waits for the window by itself ("Waiting N s for ESI's error window"):
+do not click again, use **Stop** to cancel it.

@@ -21,7 +21,8 @@ when you press **Set destination** for an online character.
 - **Structures page** (structure scout, members of one alliance only): every player-owned structure in any space
   where any registered character holds an asset (ESI assets, then ESI structure info), pooled for all members,
   nearest first, owners at war marked. **Resolve unknown** reads the structures still missing a name, owner or system
-  with your main's own token; what nobody here may read is filled from public data and marked *Historical details*:
+  in the background with the characters that hold assets there (your main last), waiting out ESI's error limit;
+  what nobody here may read is filled from public data and marked *Historical details*:
   EVE Ref, then a local index built by `scripts/build_structure_index.py` (`data/structure-index.jsonl`), then
   Adam4EVE.
 - **Structure alerts** (Alerts page): zKillboard's live killmail feed shows structures **destroyed** (citadels,
