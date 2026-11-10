@@ -142,6 +142,8 @@ class StructureScoutSettings:
     everef_enabled: bool = True
     everef_url: str = "https://data.everef.net/structures/structures-latest.v2.json"  # EVE Ref scrape, JSON by ID
     everef_max_mb: int = 300  # the download is refused above this size
+    # flat list built by scripts/build_structure_index.py; "" = <data dir>/structure-index.jsonl (missing file = unused)
+    index_file: str = ""
 
 
 @dataclass

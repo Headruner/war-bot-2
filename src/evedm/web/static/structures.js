@@ -138,8 +138,8 @@ $("#s-resolve").addEventListener("click", async () => {
       esi_error: "ESI answered with an error, try again later", reauth: "your main character must sign in again" }[d.stopped];
     info.textContent = `${d.targets} unknown: ${d.resolved} resolved, ${d.no_access} refused by ESI (no docking access), ` +
       `${d.gone} gone, ${d.remaining} left.` + (why ? ` Stopped: ${why}.` : "");
-    const h = d.history || {}, filled = (h["EVE Ref"] || 0) + (h.Adam4EVE || 0);
-    if (filled) info.textContent += ` Public datasets matched ${filled} (EVE Ref ${h["EVE Ref"] || 0}, Adam4EVE ${h.Adam4EVE || 0}).`;
+    const h = d.history || {}, filled = Object.values(h).reduce((a, b) => a + b, 0);
+    if (filled) info.textContent += ` Public datasets matched ${filled} (${Object.entries(h).map(([k, v]) => `${k} ${v}`).join(", ")}).`;
     if (d.resolved || d.gone || filled) load();
   } catch (err) {
     info.textContent = "Could not resolve: " + err.message;

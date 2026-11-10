@@ -570,7 +570,8 @@ async def test_eve_ref_outranks_adam4eve_and_skips_empty_records(settings, servi
     calls: list[str] = []
     scout.esi.http = dataset_client(calls)
     found = await scout._refresh_directory()
-    assert found == {"EVE Ref": 1, "Adam4EVE": 2}  # S_NULL has no details in the scrape; id 999 is not wanted
+    # S_NULL has no details in the scrape; id 999 is not wanted
+    assert found == {"EVE Ref": 1, "Local index": 0, "Adam4EVE": 2}
     rows = history(db)
     assert set(rows) == {S_PRIVATE, S_HIGH}
     assert rows[S_PRIVATE]["source"] == "EVE Ref" and rows[S_PRIVATE]["name"] == "Ref Name"
@@ -622,6 +623,49 @@ async def test_resolver_also_matches_the_public_datasets(settings, services, wor
     scout = scout_for(settings, services)
     scout.esi.http = dataset_client([], original=scout.esi.http)
     first = await scout.resolve_with_main(B)
-    assert first["no_access"] == 1 and first["history"] == {"EVE Ref": 1, "Adam4EVE": 1}
+    assert first["no_access"] == 1 and first["history"] == {"EVE Ref": 1, "Local index": 0, "Adam4EVE": 1}
     again = await scout.resolve_with_main(B)  # forced downloads are limited to one per 10 minutes
-    assert again["history"] == {"EVE Ref": 0, "Adam4EVE": 0}
+    assert again["history"] == {"EVE Ref": 0, "Local index": 0, "Adam4EVE": 0}
+
+
+async def test_the_local_index_fills_unresolved_structures_and_ranks_between_the_datasets(settings, services, world):
+    db = services["db"]
+    seed_unresolved(db, {S_PRIVATE: "no_access", S_HIGH: "no_access"})
+    index = settings.data_dir / "structure-index.jsonl"
+    index.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"structure_id": S_HIGH, "name": "Jita - Local High", "owner_id": CORP, "owner_name": "Local Corp",
+         "solar_system_id": JITA, "type_id": 35832, "type_name": "Astrahus", "observed": "2026-08-01T00:00:00Z"},
+        {"structure_id": S_PRIVATE, "name": "Jita - Local Private", "owner_id": CORP, "owner_name": "Local Corp",
+         "solar_system_id": JITA, "type_id": 35825, "type_name": "Raitaru", "observed": "2026-08-02T00:00:00Z"},
+        {"structure_id": S_NULL, "name": "Not wanted", "owner_id": CORP, "solar_system_id": DQ1},
+    ]
+    index.write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows), encoding="utf-8")
+    scout = scout_for(settings, services)
+    scout.esi.http = dataset_client([], original=scout.esi.http)
+    found = await scout._refresh_directory()
+    assert found["Local index"] == 2 and found["EVE Ref"] == 1  # EVE Ref knows S_PRIVATE as well
+    rows_in_db = history(db)
+    assert set(rows_in_db) == {S_HIGH, S_PRIVATE}
+    assert rows_in_db[S_PRIVATE]["source"] == "EVE Ref" and rows_in_db[S_PRIVATE]["name"] == "Ref Name"  # outranks it
+    assert rows_in_db[S_HIGH]["source"] == "Local index" and rows_in_db[S_HIGH]["name"] == "Jita - Local High"
+    assert rows_in_db[S_HIGH]["type_name"] == "Astrahus" and rows_in_db[S_HIGH]["observed"] == "2026-08-01T00:00:00Z"
+    # the local list outranks Adam4EVE: a later Adam4EVE run does not replace it
+    scout._directory_due = 0.0
+    await scout._refresh_directory()
+    assert history(db)[S_HIGH]["name"] == "Jita - Local High"
+    by_id = {r["structure_id"]: r for r in scout.listing({}, [])["rows"]}
+    assert by_id[S_HIGH]["historical_source"] == "Local index" and by_id[S_HIGH]["name"] == "Jita - Local High"
+
+
+async def test_a_missing_or_broken_local_index_changes_nothing(settings, services, world):
+    seed_unresolved(services["db"], {S_PRIVATE: "no_access"})
+    settings.structures.everef_enabled = False
+    scout = scout_for(settings, services)
+    scout.esi.http = dataset_client([], original=scout.esi.http)
+    assert (await scout._refresh_directory(force=True))["Local index"] == 0  # no file: nothing, no error
+    (settings.data_dir / "structure-index.jsonl").write_bytes(b"\xff\xfe not utf-8 \xff")
+    scout._directory_due = 0.0
+    assert (await scout._refresh_directory(force=True))["Local index"] == 0  # unreadable: logged, run goes on
+    settings.structures.index_file = str(settings.data_dir / "elsewhere.jsonl")
+    assert scout._fetch_local({S_PRIVATE}) == []

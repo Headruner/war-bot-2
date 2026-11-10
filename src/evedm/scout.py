@@ -29,6 +29,8 @@ from .crypto import redact
 from .db import Database
 from .esi import EsiClient, EsiError
 from .sso import SsoError
+from .structure_index import index_path
+from .structure_index import lookup as lookup_index
 from .universe import GateGraph, security_class
 
 SCOUT_ERROR_RESERVE = 60  # stop resolving structures when ESI has this few errors left in its 100-per-minute window
@@ -389,8 +391,8 @@ class StructureScout:
 
         await asyncio.gather(*(resolve(r["structure_id"], not r["name"] or not r["owner_id"]) for r in todo))
 
-    # historical details: public datasets, kept apart from live ESI records (EVE Ref outranks Adam4EVE)
-    HISTORY_PRIORITY = {"EVE Ref": 2, "Adam4EVE": 1}
+    # historical details: public datasets, kept apart from live ESI records (EVE Ref > local index > Adam4EVE)
+    HISTORY_PRIORITY = {"EVE Ref": 3, "Local index": 2, "Adam4EVE": 1}
 
     def _history_wanted(self) -> set[int]:
         return {
@@ -417,18 +419,26 @@ class StructureScout:
                 "owner_id=COALESCE(excluded.owner_id,owner_id), owner_name=COALESCE(excluded.owner_name,owner_name), "
                 "system_id=COALESCE(excluded.system_id,system_id), type_id=COALESCE(excluded.type_id,type_id), "
                 "type_name=COALESCE(excluded.type_name,type_name), observed=excluded.observed, source=excluded.source "
-                "WHERE ? >= CASE COALESCE(source,'Adam4EVE') WHEN 'EVE Ref' THEN 2 ELSE 1 END",
+                "WHERE ? >= CASE COALESCE(source,'Adam4EVE') "
+                "WHEN 'EVE Ref' THEN 3 WHEN 'Local index' THEN 2 ELSE 1 END",
                 [(*r, self.HISTORY_PRIORITY.get(source, 1)) for r in rows],
             )
 
     async def _refresh_directory(self, force: bool = False) -> dict[str, int]:
         """Match the public datasets locally (EVE Ref, then Adam4EVE); returns the matches stored per source."""
-        found = {"EVE Ref": 0, "Adam4EVE": 0}
+        found = {"EVE Ref": 0, "Local index": 0, "Adam4EVE": 0}
         if self.settings.demo:
             return found
         wanted = self._history_wanted()
         if not wanted:
             return found
+        try:  # the local flat list costs no network: asked on every run
+            rows = self._fetch_local(wanted)
+        except (OSError, ValueError) as exc:
+            log.warning("local structure index unreadable: %s", exc)
+        else:
+            self._store_history(rows, "Local index")
+            found["Local index"] = len(rows)
         if self.s.everef_enabled and (force or time.monotonic() >= self._everef_due):
             try:
                 rows = await self._fetch_everef(wanted)
@@ -450,6 +460,26 @@ class StructureScout:
                 found["Adam4EVE"] = len(rows)
                 self._directory_due = time.monotonic() + 86400
         return found
+
+    def _fetch_local(self, wanted: set[int]) -> list[tuple[Any, ...]]:
+        """Matches in ``data/structure-index.jsonl`` (scripts/build_structure_index.py); nothing without the file."""
+        rows: list[tuple[Any, ...]] = []
+        for rec in lookup_index(index_path(self.settings.data_dir, self.s.index_file), wanted):
+            if not (rec.get("name") or rec.get("owner_id") or rec.get("solar_system_id")):
+                continue
+            rows.append(
+                (
+                    int(rec["structure_id"]),
+                    rec.get("name"),
+                    rec.get("owner_id"),
+                    rec.get("owner_name"),
+                    rec.get("solar_system_id"),
+                    rec.get("type_id"),
+                    rec.get("type_name"),
+                    rec.get("observed"),
+                )
+            )
+        return rows
 
     async def _fetch_adam4eve(self, wanted: set[int]) -> list[tuple[Any, ...]]:
         url = "https://static.adam4eve.eu/IDs/playerStructure_extended.csv"

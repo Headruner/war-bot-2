@@ -48,6 +48,7 @@ structures:                                 # structure scout: player-owned stru
   everef_enabled: true                      # fill unreadable structures from the EVE Ref public dataset (and Adam4EVE), shown as "historical"
   everef_url: https://data.everef.net/structures/structures-latest.v2.json
   everef_max_mb: 300                        # refuse a larger download
+  index_file: ""                            # local flat list (scripts/build_structure_index.py); "" = data/structure-index.jsonl
 
 access:                                     # who sees the members-only tabs: Notifications and Structures
   alliance_ids: [99010320]                  # only a main in one of these alliances (BB); [] = every signed-in main
