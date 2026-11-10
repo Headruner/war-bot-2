@@ -97,15 +97,29 @@ def test_characters_page_renders_every_row(server, browser):
     assert errors == []
 
 
-def test_phone_layout_puts_map_above_list(server, browser):
+def test_phone_map_opens_with_controls_in_gear_drawer(server, browser):
     page, errors = open_page(
         browser, f"{server}/?target=Tama", viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True
     )
-    page.wait_for_selector(".row.selected")
-    map_box = page.locator(".map-pane").bounding_box()
-    list_box = page.locator(".list-pane").bounding_box()
-    assert map_box["y"] < list_box["y"]
-    assert page.evaluate("document.documentElement.scrollWidth") <= 390  # no horizontal scroll (WEB-03)
+    page.wait_for_selector(".row.selected", state="attached")
+    gear = page.get_by_role("button", name="Map controls")
+    assert page.locator("#map").bounding_box()["height"] == 844
+    assert page.locator("#target").is_hidden() and page.locator(".list-pane").is_hidden()
+    assert page.locator("#zoom-in").is_hidden() and page.locator("#route-bar").is_hidden()
+    gear.click()
+    assert page.locator("#mobile-map-controls").is_visible()
+    assert page.locator("#target").input_value() == "Tama"
+    page.get_by_role("button", name="Zoom in").click()
+    page.locator("#map-opts input").first.click()
+    assert page.locator(".row.selected").is_visible()
+    assert page.locator("#mobile-map-controls").evaluate("el => el.scrollWidth <= el.clientWidth")
+    page.keyboard.press("Escape")
+    assert gear.evaluate("el => el === document.activeElement")
+    gear.click()
+    page.set_viewport_size({"width": 1280, "height": 800})
+    assert page.locator(".topbar #target").is_visible()
+    assert page.locator(".map-pane #zoom-in").is_visible()
+    assert page.locator("#mobile-map-controls").is_hidden()
     assert errors == []
 
 

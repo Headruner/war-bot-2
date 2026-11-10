@@ -631,3 +631,31 @@ function setTab(tab) {
 document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
 setTab(Prefs.get("rank", { tab: "live" }).tab === "roster" ? "roster" : "live");
 loadRosterStats();
+
+
+// The mobile drawer uses the same live controls, selections and event handlers as the desktop layout.
+function setupMobileControls() {
+  const mobile = window.matchMedia("(max-width: 820px)");
+  const drawer = $("#mobile-map-controls");
+  const gear = $("#mobile-map-menu");
+  const sections = [".topbar", ".demo-banner", ".map-tools", "#map-opts", "#route-bar", ".list-pane"]
+    .map(selector => $(selector)).filter(Boolean)
+    .map(node => {
+      const slot = document.createComment("desktop position");
+      node.before(slot);
+      return { node, slot };
+    });
+
+  function updateLayout() {
+    if (!mobile.matches && drawer.open) drawer.close();
+    for (const { node, slot } of sections) {
+      if (mobile.matches) drawer.append(node);
+      else slot.after(node);
+    }
+  }
+
+  gear.addEventListener("click", () => drawer.showModal());
+  mobile.addEventListener("change", updateLayout);
+  updateLayout();
+}
+setupMobileControls();
