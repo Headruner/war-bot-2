@@ -8,6 +8,8 @@
     <a href="/characters">Characters</a> and <a href="/roster">Roster</a>.</p>
 <p class="small">Types come from the ESI notification list; a type ESI sends that is not in a group below
       appears under <b>Other notifications</b> once it has been seen.</p>
+<p>Turn on Sound to hear a chime when new notifications match your filters while this page is visible.
+    Turn it on again after reopening or reloading the page.</p>
 {% endblock %}
 {% block content %}
 <div class="page" data-poll-s="{{ poll_s }}">
@@ -22,6 +24,8 @@
       </select>
     </label>
     <button id="ntf-filters-btn" class="btn" type="button" aria-expanded="false" aria-controls="ntf-filters">Filters</button>
+    <label class="small"><input type="checkbox" id="ntf-sound" autocomplete="off"> Sound</label>
+    <span id="ntf-audio-status" class="small" role="status"></span>
     <button id="ntf-refresh" class="btn icon" type="button" title="Refresh now" aria-label="Refresh">&#8635;</button>
     <span id="ntf-status" class="small"></span>
   </div>

@@ -24,6 +24,52 @@ const state = { types: Array.isArray(prefs.types) ? prefs.types : null, hours: N
   groups: [], defaults: [], busy: false };
 $("#ntf-hours").value = String(state.hours);
 
+// Enable audio during a user gesture so mobile browsers can play later updates.
+const sound = $("#ntf-sound");
+const audioStatus = $("#ntf-audio-status");
+const AudioEngine = window.AudioContext || window.webkitAudioContext;
+let audio = null;
+let previousIds = null;
+sound.checked = false;
+sound.disabled = !AudioEngine;
+if (!AudioEngine) audioStatus.textContent = "Sound unavailable in this browser.";
+
+sound.addEventListener("change", async () => {
+  audioStatus.textContent = "";
+  if (!sound.checked) return;
+  try {
+    audio ??= new AudioEngine();
+    await audio.resume();
+  } catch {
+    sound.checked = false;
+    audioStatus.textContent = "Sound could not start. Tap Sound to retry.";
+  }
+});
+
+function checkNewNotifications(items) {
+  const ids = new Set(items.map(n => n.character_id + ":" + n.notification_id));
+  const fresh = previousIds && [...ids].some(id => !previousIds.has(id));
+  previousIds = ids;
+  if (!fresh || !sound.checked || document.hidden || !audio) return;
+  if (audio.state !== "running") {
+    sound.checked = false;
+    audioStatus.textContent = "Audio paused. Tap Sound to resume.";
+    return;
+  }
+  const tone = audio.createOscillator();
+  const gain = audio.createGain();
+  const now = audio.currentTime;
+  tone.frequency.value = 880;
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(0.12, now + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+  tone.connect(gain);
+  gain.connect(audio.destination);
+  tone.onended = () => { tone.disconnect(); gain.disconnect(); };
+  tone.start(now);
+  tone.stop(now + 0.33);
+}
+
 function secChip(security) {
   const chip = el("span", "sec", secText(security));
   chip.style.background = secColor(security);
@@ -36,13 +82,22 @@ function eveTime(iso) {
   return `EVE Time: ${utc}`;
 }
 
+function listQuery() {
+  const params = new URLSearchParams({ hours: String(state.hours) });
+  if (state.types) params.set("types", state.types.join(","));
+  return params.toString();
+}
+
 async function load() {
   if (state.busy) return;
   state.busy = true;
+  const query = listQuery();
   try {
-    const params = new URLSearchParams({ hours: String(state.hours) });
-    if (state.types) params.set("types", state.types.join(","));
-    const data = await api(`/api/notifications?${params}`);
+    const data = await api(`/api/notifications?${query}`);
+    if (query !== listQuery()) return;
+    if (query !== state.lastQuery) previousIds = null;  // newly selected filters can reveal older items
+    state.lastQuery = query;
+    checkNewNotifications(data.items);
     state.version = data.version;
     // redraw only what changed: an unchanged answer leaves the list, the scroll position and open filters alone
     const groupsKey = JSON.stringify([data.groups, data.defaults]);
@@ -60,6 +115,7 @@ async function load() {
     $("#ntf-status").textContent = `Error: ${err.message}`;
   } finally {
     state.busy = false;
+    if (query !== listQuery()) load();
   }
 }
 

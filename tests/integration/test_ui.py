@@ -118,7 +118,7 @@ def test_phone_map_opens_with_controls_in_gear_drawer(server, browser):
     gear.click()
     page.set_viewport_size({"width": 1280, "height": 800})
     assert page.locator(".topbar #target").is_visible()
-    assert page.locator(".map-pane #zoom-in").is_visible()
+    page.locator(".map-pane #zoom-in").wait_for(state="visible")
     assert page.locator("#mobile-map-controls").is_hidden()
     assert errors == []
 
@@ -377,6 +377,43 @@ def test_notification_filters_open_other_types_and_survive_a_reload(server, brow
     page.click("#ntf-defaults")
     page.wait_for_function("document.querySelectorAll('.card.ntf').length === 6")
     assert errors == []
+
+
+def test_notification_sound_only_chimes_for_new_matching_items(server, browser):
+    page = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
+    page.add_init_script("""window.chimes = 0;
+        const start = OscillatorNode.prototype.start;
+        OscillatorNode.prototype.start = function (...args) { window.chimes++; return start.apply(this, args); };
+    """)
+    page.goto(f"{server}/notifications")
+    page.wait_for_selector(".card.ntf")
+    assert not page.locator("#ntf-sound").is_checked()
+    page.locator("#ntf-sound").check()
+    page.wait_for_function("audio.state === 'running'")
+    payload = page.request.get(f"{server}/api/notifications").json()
+    page.route("**/api/notifications?*", lambda route: route.fulfill(json=payload))
+
+    def refresh():
+        with page.expect_response(lambda resp: "/api/notifications?" in resp.url):
+            page.click("#ntf-refresh")
+        page.wait_for_function("!state.busy")
+
+    refresh()
+    assert page.evaluate("window.chimes") == 0
+    item = payload["items"][0]
+    payload["items"].insert(0, {**item, "notification_id": item["notification_id"] + 1000000})
+    refresh()
+    refresh()
+    assert page.evaluate("window.chimes") == 1
+    payload["items"].append({**item, "notification_id": item["notification_id"] + 2000000})
+    page.select_option("#ntf-hours", "720")
+    page.wait_for_function("!state.busy")
+    assert page.evaluate("window.chimes") == 1
+    page.locator("#ntf-sound").uncheck()
+    payload["items"].insert(0, {**item, "notification_id": item["notification_id"] + 3000000})
+    refresh()
+    assert page.evaluate("window.chimes") == 1
+    page.close()
 
 
 def test_notifications_fit_a_phone(server, browser):
