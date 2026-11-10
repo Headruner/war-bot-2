@@ -1,5 +1,6 @@
 """Structure scout: player-owned structures found through every registered character's assets, shared by all mains."""
 
+import asyncio
 import json
 import time
 
@@ -12,12 +13,14 @@ from evedm.characters import REAUTH
 from evedm.config import ANSIBLEX_SCOPE, STRUCTURE_SCOPES, WAYPOINT_SCOPE, Settings, load_settings
 from evedm.esi import EsiError
 from evedm.scout import ResolveError, StructureScout
+from evedm.sso import SsoError
 from evedm.wars.config import WarsSettings
 from evedm.wars.structures import Structure, StructureIndex
 from evedm.web.app import create_app
 from fake_eve import ALL_SCOPES
 
 pytestmark = pytest.mark.anyio
+H = {"X-EVEDM": "1"}
 A, B, C = 2100000001, 2100000002, 2100000003  # characters of the fake (also used as mains here)
 S_HIGH, S_NULL, S_WH, S_PRIVATE, S_GONE = (
     1_035_000_000_001,
@@ -318,9 +321,11 @@ async def test_a_structure_stays_in_the_file_until_it_is_gone(settings, services
     # the structure is unanchored or destroyed: ESI answers 404, it is kept as a hidden 'gone' row, not asked again
     del world.structures[S_HIGH]
     db.execute("UPDATE known_structures SET checked_at=0")
+    db.execute("UPDATE structure_refusals SET refused_at=0")  # the refusal of A is old enough to ask A again
     services["esi"]._cache.clear()
     await scout.run()
     assert db.query("SELECT status FROM known_structures WHERE structure_id=?", (S_HIGH,))[0][0] == "gone"
+    assert db.query("SELECT COUNT(*) FROM structure_refusals WHERE structure_id=?", (S_HIGH,))[0][0] == 0
     assert S_HIGH not in {r["structure_id"] for r in scout.structures()}
 
 
@@ -454,70 +459,302 @@ def seed_unresolved(db, ids: dict[int, str]) -> None:
         )
 
 
+def sight(db, character_id: int, *structure_ids: int) -> None:
+    now = time.time()
+    with db.tx() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO structure_sightings(structure_id, character_id, seen_at) VALUES(?,?,?)",
+            [(sid, character_id, now) for sid in structure_ids],
+        )
+
+
+def refusals(db) -> set[tuple[int, int]]:
+    return {(r[0], r[1]) for r in db.query("SELECT structure_id, character_id FROM structure_refusals")}
+
+
+def statuses(db) -> dict[int, str]:
+    return {r[0]: r[1] for r in db.query("SELECT structure_id, status FROM known_structures")}
+
+
+def watch(scout: StructureScout, monkeypatch) -> list[tuple[int, int]]:
+    """(structure_id, character_id) of every structure read sent towards ESI, in order."""
+    sent: list[tuple[int, int]] = []
+    current: list[int] = []
+    real_token, real_get = scout.chars.access_token, scout.esi.get
+
+    async def token(character_id, owner_id=0):
+        current.append(character_id)
+        return await real_token(character_id, owner_id)
+
+    async def get(path, tok=None):
+        if path.startswith("/universe/structures/") and path != "/universe/structures/":
+            sent.append((int(path.rsplit("/", 1)[1]), current[-1]))
+        return await real_get(path, tok)
+
+    monkeypatch.setattr(scout.chars, "access_token", token)
+    monkeypatch.setattr(scout.esi, "get", get)
+    return sent
+
+
+def esi_window(scout: StructureScout, monkeypatch, sent: list, after: int, seconds: float = 41.0, on_sleep=None):
+    """ESI's error window runs low after ``after`` structure reads and has room again ``seconds`` later. Time is a
+    counter: the job's sleep advances it, nothing really waits. Reading while the window is low fails the test."""
+    clock = {"now": 0.0, "until": 0.0}
+    slept: list[float] = []
+    real_get = scout.esi.get
+
+    def blocked_for(reserve=5):
+        return max(0.0, clock["until"] - clock["now"])
+
+    async def guarded(path, token=None):
+        assert blocked_for() == 0, "sent to ESI while the error window was low"
+        try:
+            return await real_get(path, token)
+        finally:
+            if len(sent) == after and clock["until"] == 0.0:
+                clock["until"] = clock["now"] + seconds
+
+    async def fake_sleep(delay, cancel):
+        slept.append(delay)
+        state = scout.resolve_state()
+        assert state["running"] and state["paused_until"] is not None  # the page can show the pause
+        if on_sleep is not None:
+            on_sleep()
+        else:
+            clock["now"] += delay
+
+    monkeypatch.setattr(scout.esi, "blocked_for", blocked_for)
+    monkeypatch.setattr(scout.esi, "get", guarded)
+    scout._sleep = fake_sleep
+    return slept
+
+
 async def test_main_resolves_unresolved_structures_one_by_one(settings, services, world, monkeypatch):
     await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])  # the main: may read structures, no assets
     db = services["db"]
     seed_unresolved(db, {S_HIGH: "no_access", S_PRIVATE: "no_access", S_WH: "new", S_GONE: "new"})
     scout = scout_for(settings, services)
-    asked: list[str] = []
-    real = scout.esi.get
-
-    async def spy(path, token=None):
-        asked.append(path)
-        return await real(path, token)
-
-    monkeypatch.setattr(scout.esi, "get", spy)
-    result = await scout.resolve_with_main(C)
-    assert result["targets"] == 4 and result["public_first"] == 1 and result["stopped"] is None
-    assert (result["resolved"], result["no_access"], result["gone"], result["remaining"]) == (2, 1, 1, 0)
-    # the public list is read once without a token, and the public structure is asked before the others
-    assert asked[0] == "/universe/structures/" and asked[1] == f"/universe/structures/{S_WH}"
-    status = {r[0]: r[1] for r in db.query("SELECT structure_id, status FROM known_structures")}
-    assert status == {S_HIGH: "no_access", S_PRIVATE: "ok", S_WH: "ok", S_GONE: "gone"}
+    sent = watch(scout, monkeypatch)
+    result = await scout.run_resolve(C)
+    assert result["targets"] == 4 and result["public_first"] == 1 and result["stopped"] == "done"
+    assert (result["resolved"], result["no_access"], result["gone"], result["skipped"]) == (2, 1, 1, 0)
+    assert (result["done"], result["remaining"], result["errors"], result["running"]) == (4, 0, 0, False)
+    assert result["started_by"] == C and result["paused_until"] is None
+    assert result["finished_at"] >= result["started_at"]
+    # the public structure is asked before the others; nobody but the main can be asked here
+    assert sent[0] == (S_WH, C) and {c for _, c in sent} == {C}
+    assert statuses(db) == {S_HIGH: "no_access", S_PRIVATE: "ok", S_WH: "ok", S_GONE: "gone"}
     rows = {r["structure_id"]: r for r in scout.structures()}
     assert rows[S_PRIVATE]["name"] == "Secret" and rows[S_WH]["name"] == "J-Home" and rows[S_WH]["owner_id"] == CORP
     assert {r["structure_id"] for r in scout.unresolved()} == {S_HIGH}  # still refused: stays listed by ID only
+    assert refusals(db) == {(S_HIGH, C)}  # the 403 is remembered; 200 and 404 leave nothing behind
+    assert scout.resolve_state() == result
 
 
-async def test_a_limited_run_resumes_with_the_rows_not_yet_tried(settings, services, world):
-    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
+async def test_a_sighter_is_asked_before_the_main_and_the_main_comes_last(settings, services, world, monkeypatch):
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])  # the main
+    await link(services, A, C)  # A is an alt of the main; it may dock at S_HIGH
+    await link(services, B, B)  # B belongs to another main; it may dock at S_NULL
     db = services["db"]
     seed_unresolved(db, {S_HIGH: "new", S_NULL: "new", S_PRIVATE: "new"})
+    sight(db, A, S_HIGH, S_NULL)
+    sight(db, B, S_HIGH, S_NULL, S_PRIVATE)
     scout = scout_for(settings, services)
-    first = await scout.resolve_with_main(C, limit=1)
-    assert first["targets"] == 3 and first["remaining"] == 2
-    second = await scout.resolve_with_main(C, limit=10)
-    assert second["targets"] == 3  # the one still refused is asked again, after the two never tried
-    assert (second["resolved"], second["no_access"]) == (1, 2)
-    done = {r[0]: r[1] for r in db.query("SELECT structure_id, status FROM known_structures")}
-    assert done[S_PRIVATE] == "ok" and done[S_HIGH] == done[S_NULL] == "no_access"
+    sent = watch(scout, monkeypatch)
+    result = await scout.run_resolve(C)
+    # S_HIGH: A (the main's own) answers, B and the main are never asked. S_NULL: A is refused, then B (another main's)
+    # answers. S_PRIVATE: B is refused, the main itself is the last resort and may dock there
+    assert sent == [(S_HIGH, A), (S_NULL, A), (S_NULL, B), (S_PRIVATE, B), (S_PRIVATE, C)]
+    assert (result["resolved"], result["no_access"], result["skipped"], result["stopped"]) == (3, 0, 0, "done")
+    assert statuses(db) == {S_HIGH: "ok", S_NULL: "ok", S_PRIVATE: "ok"}
+    assert refusals(db) == set()  # a structure that answered keeps no refusals
+
+
+async def test_targets_go_public_first_then_never_asked_sighters_then_the_rest(settings, services, world, monkeypatch):
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
+    await link(services, B, B)
+    db = services["db"]
+    seed_unresolved(db, {S_HIGH: "new", S_NULL: "new", S_PRIVATE: "new", S_WH: "new"})
+    for sid, checked in ((S_HIGH, 1), (S_PRIVATE, 2), (S_NULL, 3)):
+        db.execute("UPDATE known_structures SET checked_at=? WHERE structure_id=?", (checked, sid))
+    sight(db, B, S_NULL)
+    scout = scout_for(settings, services)
+    sent = watch(scout, monkeypatch)
+    await scout.run_resolve(C)
+    assert sent == [(S_WH, C), (S_NULL, B), (S_HIGH, C), (S_PRIVATE, C)]
+
+
+async def test_a_refused_pair_is_not_asked_again_until_the_window_is_over(settings, services, world, fake_app):
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
+    db = services["db"]
+    seed_unresolved(db, {S_HIGH: "new"})  # the main may not dock there
+    scout = scout_for(settings, services)
+    first = await scout.run_resolve(C)
+    assert first["no_access"] == 1 and fake_app.state.fake.calls["structure"] == 1
+    assert refusals(db) == {(S_HIGH, C)} and statuses(db) == {S_HIGH: "no_access"}
+    again = await scout.run_resolve(C)  # nobody left to ask: no request, status as it was
+    assert (again["skipped"], again["no_access"], again["done"]) == (1, 0, 1)
+    assert fake_app.state.fake.calls["structure"] == 1 and statuses(db) == {S_HIGH: "no_access"}
+    inside = time.time() - 335 * 3600  # no_access_refresh_hours is 336
+    db.execute("UPDATE structure_refusals SET refused_at=?", (inside,))
+    assert (await scout.run_resolve(C))["skipped"] == 1 and fake_app.state.fake.calls["structure"] == 1
+    db.execute("UPDATE structure_refusals SET refused_at=?", (time.time() - 337 * 3600,))
+    third = await scout.run_resolve(C)  # the refusal is old: the pair is asked again, and the date is renewed
+    assert (third["no_access"], third["skipped"]) == (1, 0) and fake_app.state.fake.calls["structure"] == 2
+    assert db.query("SELECT refused_at FROM structure_refusals")[0][0] > inside
+
+
+async def test_a_structure_nobody_can_be_asked_about_is_not_sent_to_esi(settings, services, world, fake_app):
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
+    db = services["db"]
+    seed_unresolved(db, {S_HIGH: "new", S_PRIVATE: "new"})
+    now = time.time()
+    for sid in (S_HIGH, S_PRIVATE):
+        db.execute("INSERT INTO structure_refusals VALUES(?,?,?)", (sid, C, now))
+    scout = scout_for(settings, services)
+    result = await scout.run_resolve(C)
+    assert fake_app.state.fake.calls.get("structure", 0) == 0  # not one read request
+    assert (result["skipped"], result["resolved"], result["no_access"], result["gone"]) == (2, 0, 0, 0)
+    assert (result["done"], result["remaining"], result["stopped"]) == (2, 0, "done")
+    assert statuses(db) == {S_HIGH: "new", S_PRIVATE: "new"}  # statuses are left as they were
+    assert scout.resolve_state()["skipped"] == 2
 
 
 async def test_resolver_needs_the_main_with_the_structure_scope(settings, services, world):
     scout = scout_for(settings, services)
     with pytest.raises(ResolveError) as exc:
-        await scout.resolve_with_main(C)
+        await scout.run_resolve(C)
     assert exc.value.code == "no_character"
     await link(services, C, C, scopes=ALL_SCOPES)  # no read_structures scope
     with pytest.raises(ResolveError) as exc:
-        await scout.resolve_with_main(C)
+        scout.start_resolve(C)
     assert exc.value.code == "no_scope"
     await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
     services["db"].set_status(C, REAUTH, C)
     with pytest.raises(ResolveError) as exc:
-        await scout.resolve_with_main(C)
+        await scout.run_resolve(C)
     assert exc.value.code == "reauth"
+    assert scout.resolve_state()["running"] is False and scout.resolve_state()["started_at"] is None  # no job started
 
 
-async def test_resolver_stops_when_esi_is_error_limited(settings, services, world, monkeypatch):
+async def test_the_job_waits_for_the_error_window_and_goes_on(settings, services, world, monkeypatch):
     await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
-    seed_unresolved(services["db"], {S_HIGH: "new", S_PRIVATE: "new"})
+    seed_unresolved(services["db"], {S_HIGH: "new", S_NULL: "new", S_PRIVATE: "new"})
     scout = scout_for(settings, services)
-    monkeypatch.setattr(scout.esi, "blocked_for", lambda reserve=5: 42.0)
-    result = await scout.resolve_with_main(C)
-    assert result["stopped"] == "error_limit" and result["retry_after_s"] == 42
-    assert result["resolved"] == 0 and result["remaining"] == 2
-    assert {r[0] for r in services["db"].query("SELECT status FROM known_structures")} == {"new"}  # nothing marked
+    sent = watch(scout, monkeypatch)
+    slept = esi_window(scout, monkeypatch, sent, after=1)  # low after the first refusal, 41 s to the next window
+    result = await scout.run_resolve(C)
+    assert slept == [42.0]  # the 41 s of the window plus one second, once
+    assert len(sent) == 3  # nothing was sent while the window was low (the guard fails the test otherwise)
+    assert (result["resolved"], result["no_access"], result["done"], result["stopped"]) == (1, 2, 3, "done")
+    assert result["paused_until"] is None
+
+
+async def test_a_window_that_closes_between_two_characters_of_one_structure(settings, services, world, monkeypatch):
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
+    await link(services, A, C)
+    await link(services, B, B)
+    db = services["db"]
+    seed_unresolved(db, {S_NULL: "new"})
+    sight(db, A, S_NULL)
+    sight(db, B, S_NULL)
+    scout = scout_for(settings, services)
+    sent = watch(scout, monkeypatch)
+    slept = esi_window(scout, monkeypatch, sent, after=1)
+    result = await scout.run_resolve(C)
+    assert sent == [(S_NULL, A), (S_NULL, B)] and slept == [42.0]  # A refused, wait, then B answers
+    assert (result["resolved"], result["no_access"]) == (1, 0)
+
+
+async def test_cancel_ends_the_job_and_nothing_more_is_sent(settings, services, world, monkeypatch):
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
+    db = services["db"]
+    seed_unresolved(db, {S_HIGH: "new", S_NULL: "new", S_PRIVATE: "new"})
+    scout = scout_for(settings, services)
+    sent = watch(scout, monkeypatch)
+    esi_window(scout, monkeypatch, sent, after=1, on_sleep=lambda: scout.stop_resolve())  # cancelled during the pause
+    result = await scout.run_resolve(C)
+    assert result["stopped"] == "cancelled" and result["running"] is False and result["paused_until"] is None
+    assert len(sent) == 1 and (result["done"], result["remaining"]) == (1, 2)
+    assert statuses(db) == {S_HIGH: "no_access", S_NULL: "new", S_PRIVATE: "new"}
+
+
+async def test_start_runs_in_the_background_refuses_a_second_job_and_can_be_stopped(
+    settings, services, world, monkeypatch
+):
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
+    seed_unresolved(services["db"], {S_HIGH: "new", S_NULL: "new"})
+    scout = scout_for(settings, services)
+    monkeypatch.setattr(scout.esi, "blocked_for", lambda reserve=5: 30.0)  # waiting for ESI: the job stays alive
+    state = scout.start_resolve(C)
+    assert state["running"] is True and state["started_by"] == C
+    with pytest.raises(ResolveError) as exc:
+        scout.start_resolve(C)
+    assert exc.value.code == "busy"
+    for _ in range(100):  # the job reaches its pause
+        await asyncio.sleep(0.02)
+        if scout.resolve_state()["paused_until"]:
+            break
+    assert scout.resolve_state()["running"] and scout.resolve_state()["paused_until"] is not None
+    assert scout.stop_resolve()["running"] is True  # the stop is a request: the job ends at its next step
+    await scout._job_task
+    final = scout.resolve_state()
+    assert final["running"] is False and final["stopped"] == "cancelled" and final["remaining"] == 2
+    assert scout.start_resolve(C)["running"] is True  # a new job may start now
+    await scout.stop()  # shutdown cancels it and waits for it
+    assert scout.resolve_state()["running"] is False and scout.resolve_state()["stopped"] == "cancelled"
+
+
+async def test_three_failures_in_a_row_stop_the_job_and_mark_nothing(settings, services, world):
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
+    db = services["db"]
+    ids = [S_HIGH, S_NULL, S_WH, S_PRIVATE, S_GONE]
+    seed_unresolved(db, {sid: "new" for sid in ids})
+    scout = scout_for(settings, services)
+    real_get = scout.esi.get
+    failing = {"left": 3}
+
+    async def flaky(path, token=None):
+        if path != "/universe/structures/" and failing["left"] > 0:
+            failing["left"] -= 1
+            raise EsiError(503, "unavailable")
+        return await real_get(path, token)
+
+    scout.esi.get = flaky
+    result = await scout.run_resolve(C)
+    assert result["stopped"] == "esi_error" and result["errors"] == 3 and result["done"] == 0
+    assert result["remaining"] == 5 and result["resolved"] == 0
+    assert statuses(db) == {sid: "new" for sid in ids}
+    assert [r[0] for r in db.query("SELECT checked_at FROM known_structures")] == [0.0] * 5  # nothing marked checked
+    assert refusals(db) == set()
+    # two failures are not enough: the job goes on, and the two rows stay for the next run
+    failing["left"] = 2
+    result = await scout.run_resolve(C)
+    assert result["stopped"] == "done" and result["errors"] == 2 and result["remaining"] == 2
+    assert result["done"] == 3
+
+
+async def test_a_token_that_is_not_accepted_is_skipped_for_the_rest_of_the_job(settings, services, world, monkeypatch):
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
+    await link(services, A, C)
+    db = services["db"]
+    seed_unresolved(db, {S_HIGH: "new", S_PRIVATE: "new"})
+    sight(db, A, S_HIGH, S_PRIVATE)
+    scout = scout_for(settings, services)
+    real = scout.chars.access_token
+    tried: list[int] = []
+
+    async def token(character_id, owner_id=0):
+        tried.append(character_id)
+        if character_id == A:
+            raise SsoError("invalid_grant")
+        return await real(character_id, owner_id)
+
+    monkeypatch.setattr(scout.chars, "access_token", token)
+    result = await scout.run_resolve(C)
+    assert tried == [A, C, C]  # A is given up at the first failure; the main takes over without stopping the job
+    assert result["stopped"] == "done" and result["no_access"] == 1 and result["resolved"] == 1  # S_HIGH: refused to C
+    assert statuses(db) == {S_HIGH: "no_access", S_PRIVATE: "ok"}
 
 
 def test_resolve_endpoint_in_demo_is_refused(tmp_path):
@@ -525,6 +762,220 @@ def test_resolve_endpoint_in_demo_is_refused(tmp_path):
         assert c.post("/api/structures/resolve").status_code == 403  # the CSRF header is required
         reply = c.post("/api/structures/resolve", headers={"X-EVEDM": "1"})
         assert reply.status_code in (409, 422) and reply.json()["error"] in ("demo", "no_character")
+        idle = c.get("/api/structures/resolve").json()
+        assert idle["running"] is False and idle["started_at"] is None and idle["stopped"] is None
+        assert c.post("/api/structures/resolve/stop").status_code == 403  # CSRF here as well
+        assert c.post("/api/structures/resolve/stop", headers={"X-EVEDM": "1"}).json()["running"] is False
+        assert c.get("/api/structures/stats").json()["unknown"] == 0
+
+
+MEMBER, OUTSIDER, NO_CHARACTER = 2113000001, 2113000002, 2113000003
+
+
+def job_app(tmp_path, monkeypatch):
+    """A real (not demo) app with three mains: a member who may read structures, a member without any character and a
+    main outside the alliance. The hourly loop and the dataset downloads are switched off."""
+    from test_accounts_web import link as link_character
+    from test_accounts_web import settings as web_settings
+
+    monkeypatch.setattr(StructureScout, "start", lambda self: None)
+    s = web_settings(tmp_path)
+    app = create_app(s, WarsSettings(enabled=False))
+    return app, link_character
+
+
+def test_resolve_job_endpoints(tmp_path, monkeypatch):
+    from test_accounts_web import as_user
+
+    app, link_character = job_app(tmp_path, monkeypatch)
+    with TestClient(app) as c:
+        svc = c.app.state.svc
+        mains = ((MEMBER, "Member", 99010320), (NO_CHARACTER, "Bare", 99010320), (OUTSIDER, "Out", 5))
+        for uid, name, alliance in mains:
+            svc.db.upsert_user(uid, name)
+            svc.db.set_affiliation(uid, 1, alliance)  # fresh: the gate reads no ESI
+        link_character(svc, MEMBER, MEMBER, "Member", 30000142)
+        svc.db.upsert_character(MEMBER, "Member", "OK", [STRUCTURE_SCOPES[0]], owner_id=MEMBER)
+        seed_unresolved(svc.db, {S_HIGH: "new", S_NULL: "new"})
+        scout = svc.scout
+        zero = {"EVE Ref": 0, "Local index": 0, "Adam4EVE": 0}
+
+        async def no_datasets(force=False):
+            return zero
+
+        async def public_list(path, token=None):
+            return []
+
+        scout._refresh_directory = no_datasets
+        scout.esi.get = public_list
+        scout.esi.blocked_for = lambda reserve=5: 30.0  # ESI's window is low: the job waits and stays running
+        post = lambda path, who=MEMBER: as_user(c, who).post(path, headers=H)  # noqa: E731
+        state = lambda who=MEMBER: as_user(c, who).get("/api/structures/resolve")  # noqa: E731
+
+        # outside the alliance every structures endpoint is 404; signed out it is 401; the CSRF header is needed
+        assert state(OUTSIDER).status_code == 404 and post("/api/structures/resolve", OUTSIDER).status_code == 404
+        assert post("/api/structures/resolve/stop", OUTSIDER).status_code == 404
+        assert as_user(c, OUTSIDER).get("/api/structures/stats").status_code == 404
+        assert as_user(c, None).get("/api/structures/resolve").status_code == 401
+        assert as_user(c, MEMBER).post("/api/structures/resolve").status_code == 403
+        assert as_user(c, MEMBER).post("/api/structures/resolve/stop").status_code == 403
+        assert post("/api/structures/resolve", NO_CHARACTER).json()["error"] == "no_character"
+        assert post("/api/structures/resolve", NO_CHARACTER).status_code == 422
+        idle = state().json()
+        assert idle["running"] is False and idle["started_at"] is None and idle["history"] == {}
+
+        started = post("/api/structures/resolve")
+        assert started.status_code == 202 and started.json()["running"] is True
+        assert started.json()["started_by"] == MEMBER and started.json()["stopped"] is None
+        busy = post("/api/structures/resolve")
+        assert busy.status_code == 409 and busy.json()["error"] == "busy" and busy.json()["running"] is True
+        for _ in range(100):  # the job reaches its pause
+            body = state().json()
+            if body["paused_until"]:
+                break
+            time.sleep(0.02)
+        assert body["running"] is True and body["targets"] == 2 and body["paused_until"] > time.time()
+        assert body["remaining"] == 2 and set(body) >= {"done", "resolved", "no_access", "gone", "skipped", "errors"}
+        assert as_user(c, OUTSIDER).get("/api/structures/resolve").status_code == 404  # members only, also to read
+        stats = as_user(c, MEMBER).get("/api/structures/stats").json()
+        assert stats["unknown"] == 2 and stats["readers"] == 1
+        assert post("/api/structures/resolve/stop").status_code == 200
+        for _ in range(100):
+            body = state().json()
+            if not body["running"]:
+                break
+            time.sleep(0.02)
+        assert body["running"] is False and body["stopped"] == "cancelled" and body["remaining"] == 2
+        assert body["finished_at"] is not None and body["paused_until"] is None
+        assert post("/api/structures/resolve/stop").json()["stopped"] == "cancelled"  # nothing running: just the state
+        again = post("/api/structures/resolve")  # a new job may start; it is still running when the app shuts down
+        assert again.status_code == 202
+    # leaving the app cancelled that job and waited for it
+    assert scout._job.running is False and scout._job.stopped == "cancelled"
+
+
+async def test_the_hourly_step_leaves_the_reads_to_a_running_job(settings, services, world, fake_app):
+    await link(services, A, A)
+    scout = scout_for(settings, services)
+    await scout.run()  # reads A's structures; then something new is sighted
+    seed_unresolved(services["db"], {S_NULL: "new"})
+    sight(services["db"], A, S_NULL)
+    calls = fake_app.state.fake.calls["structure"]
+    stats = {"resolved": 0, "no_access": 0, "gone": 0, "errors": 0}
+    async with scout._main_lock:  # a job holds the reads
+        await scout._resolve(stats)
+    assert fake_app.state.fake.calls["structure"] == calls and statuses(services["db"])[S_NULL] == "new"
+    await scout._resolve(stats)  # no job: the structure is asked about (A is refused at S_NULL)
+    assert fake_app.state.fake.calls["structure"] == calls + 1 and refusals(services["db"]) >= {(S_NULL, A)}
+
+
+async def test_the_hourly_step_records_refusals_and_does_not_repeat_them(settings, services, world, fake_app):
+    await link(services, B, B)  # B may not dock at S_HIGH or S_PRIVATE
+    scout = scout_for(settings, services)
+    await scout.run()
+    db = services["db"]
+    assert refusals(db) == {(S_HIGH, B), (S_PRIVATE, B)}
+    calls = fake_app.state.fake.calls["structure"]
+    db.execute("UPDATE known_structures SET checked_at=0 WHERE status='no_access'")  # due by the long interval
+    await scout.run()
+    assert fake_app.state.fake.calls["structure"] == calls  # but B was refused there, and not long ago
+    db.execute("UPDATE structure_refusals SET refused_at=?", (time.time() - 400 * 3600,))
+    db.execute("UPDATE known_structures SET checked_at=0 WHERE status='no_access'")
+    await scout.run()
+    assert fake_app.state.fake.calls["structure"] == calls + 2  # the refusals are old: both pairs asked again
+    # a character that may dock reads S_HIGH: the 200 clears what refused it
+    await link(services, A, A)
+    db.execute("UPDATE known_structures SET checked_at=0 WHERE status='no_access'")
+    await scout.run()
+    assert statuses(db)[S_HIGH] == "ok" and S_HIGH not in {sid for sid, _ in refusals(db)}
+
+
+async def test_refusals_of_unlinked_characters_are_pruned_but_a_main_without_assets_keeps_them(
+    settings, services, world
+):
+    await link(services, B, B)
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])  # no assets scope: not one of the scout's contributors
+    db = services["db"]
+    scout = scout_for(settings, services)
+    await scout.run()  # S_HIGH is refused to B and then, as an unidentified one, to the other reader C
+    assert (S_HIGH, B) in refusals(db) and (S_HIGH, C) in refusals(db)
+    await scout.run()
+    assert (S_HIGH, C) in refusals(db) and (S_HIGH, B) in refusals(db)  # still linked: kept
+    await services["chars"].remove(B, B)
+    await scout.run()
+    assert {c for _, c in refusals(db)} == {C}  # B is gone, and so are its refusals
+
+
+async def test_stats_count_what_the_resolver_has_to_work_with(settings, services, world):
+    for cid in (A, B):
+        await link(services, cid, cid)
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
+    db = services["db"]
+    seed_unresolved(db, {S_HIGH: "new", S_NULL: "no_access", S_PRIVATE: "no_access", S_WH: "ok", S_GONE: "gone"})
+    sight(db, A, S_HIGH)
+    sight(db, B, S_HIGH, S_NULL)
+    sight(db, C, S_WH)
+    sight(db, 2100000099, S_WH)  # not a registered character: holds no scope
+    now = time.time()
+    db.execute(  # a structure that is fully known: not wanted by the resolver
+        "INSERT INTO known_structures(structure_id, name, owner_id, solar_system_id, status, first_seen, last_seen, "
+        "checked_at) VALUES(?,?,?,?,?,?,?,?)",
+        (S_NULL + 100, "Known", CORP, JITA, "ok", now, now, now),
+    )
+    with db.tx() as conn:
+        conn.executemany(
+            "INSERT INTO structure_refusals VALUES(?,?,?)",
+            [
+                (S_HIGH, A, now), (S_HIGH, B, now), (S_NULL, B, now),
+                (S_PRIVATE, A, now), (S_PRIVATE, B, now), (S_PRIVATE, C, now),
+                (S_WH, A, 0.0),  # old: no longer counts as recent
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO public_structure_history(structure_id, name, source) VALUES(?,?,?)",
+            [
+                (S_PRIVATE, "p", "EVE Ref"),
+                (S_HIGH, "h", "Adam4EVE"),
+                (S_NULL, "n", None),
+                (S_GONE, "g", "EVE Ref"),  # gone: not wanted
+                (1, "z", "EVE Ref"),  # not a known structure
+            ],
+        )
+    stats = scout_for(settings, services).stats()
+    assert stats["by_status"] == {"new": 1, "no_access": 2, "ok": 2, "gone": 1}
+    assert stats["readers"] == 3 and stats["unknown"] == 4  # the gone one is not wanted
+    # S_HIGH: 2 sighters with the scope, S_NULL: 1, S_WH: 1 (the unregistered one does not count), S_PRIVATE: none
+    assert stats["unknown_by_sighters"] == {"0": 1, "1": 2, "2+": 1}
+    # askable: S_PRIVATE was refused to all three readers; the others still have a reader that was not refused
+    assert (stats["askable"], stats["not_askable"]) == (3, 1)
+    # S_HIGH and S_NULL had all their sighters refused; S_WH has C (never refused there)
+    assert stats["askable_via_sighters"] == 1
+    assert (stats["refusal_pairs"], stats["refusal_pairs_recent"]) == (7, 6)
+    assert stats["public_history_matches"] == {"EVE Ref": 1, "Local index": 0, "Adam4EVE": 2}
+
+
+def test_the_stats_command_reads_the_database_and_changes_nothing(tmp_path, capsys):
+    from evedm.cli import main
+    from evedm.db import Database
+
+    data = tmp_path / "data"
+    db = Database(data / "evedm.sqlite3")
+    db.close()
+    import sqlite3
+
+    con = sqlite3.connect(data / "evedm.sqlite3")  # an old database: no refusals table yet
+    con.execute("DROP TABLE structure_refusals")
+    con.execute("PRAGMA user_version=13")
+    con.commit()
+    con.close()
+    assert main(["--data-dir", str(data), "structures", "stats"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["unknown"] == 0 and out["refusal_pairs"] == 0 and out["readers"] == 0
+    con = sqlite3.connect(data / "evedm.sqlite3")
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 13  # not migrated by a report
+    assert not con.execute("SELECT 1 FROM sqlite_master WHERE name='structure_refusals'").fetchone()
+    con.close()
+    assert main(["--data-dir", str(tmp_path / "nowhere"), "structures", "stats"]) == 2
 
 
 # ------------------------------------------------------------------------------------ public datasets
@@ -622,10 +1073,11 @@ async def test_resolver_also_matches_the_public_datasets(settings, services, wor
     seed_unresolved(services["db"], {S_PRIVATE: "no_access"})
     scout = scout_for(settings, services)
     scout.esi.http = dataset_client([], original=scout.esi.http)
-    first = await scout.resolve_with_main(B)
+    first = await scout.run_resolve(B)
     assert first["no_access"] == 1 and first["history"] == {"EVE Ref": 1, "Local index": 0, "Adam4EVE": 1}
-    again = await scout.resolve_with_main(B)  # forced downloads are limited to one per 10 minutes
+    again = await scout.run_resolve(B)  # forced downloads are limited to one per 10 minutes
     assert again["history"] == {"EVE Ref": 0, "Local index": 0, "Adam4EVE": 0}
+    assert again["skipped"] == 1  # B was refused a moment ago: nobody left to ask
 
 
 async def test_the_local_index_fills_unresolved_structures_and_ranks_between_the_datasets(settings, services, world):

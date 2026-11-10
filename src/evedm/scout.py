@@ -19,7 +19,9 @@ import json
 import logging
 import time
 from collections import Counter
-from typing import Any
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Any, NamedTuple
 
 import httpx
 
@@ -34,6 +36,13 @@ from .structure_index import lookup as lookup_index
 from .universe import GateGraph, security_class
 
 SCOUT_ERROR_RESERVE = 60  # stop resolving structures when ESI has this few errors left in its 100-per-minute window
+JOB_MAX_FAILURES = 3  # the Resolve unknown job stops after this many passing ESI failures in a row
+JOB_PUBLISH_EVERY = 50  # ... and shows what it found (names, caches, Wars page) after this many resolved structures
+# the structures the resolver still wants: no name, owner or system yet, not gone, not destroyed
+UNKNOWN = (
+    "status IN ('new','no_access','ok') AND destroyed_at IS NULL "
+    "AND (name IS NULL OR owner_id IS NULL OR solar_system_id IS NULL)"
+)
 
 log = logging.getLogger("evedm.scout")
 
@@ -41,12 +50,66 @@ READ_STRUCTURES, READ_ASSETS = STRUCTURE_SCOPES
 
 
 class ResolveError(Exception):
-    """The one-by-one resolver cannot start (``code``: busy, no_character, no_scope, reauth, demo)."""
+    """The Resolve unknown job cannot start (``code``: busy, no_character, no_scope, reauth, demo)."""
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+@dataclass
+class ResolveJob:
+    """One run of the Resolve unknown button; the last one is kept in memory for the page to poll."""
+
+    started_by: int
+    started_at: float = field(default_factory=time.time)
+    finished_at: float | None = None
+    running: bool = True
+    targets: int = 0
+    done: int = 0  # structures dealt with: resolved + no_access + gone + skipped (a failed read is not done)
+    resolved: int = 0
+    no_access: int = 0  # every character asked in this pass was refused
+    gone: int = 0
+    skipped: int = 0  # nobody left to ask: not sent to ESI
+    errors: int = 0
+    public_first: int = 0
+    paused_until: float | None = None  # epoch seconds, while waiting for ESI's error window
+    stopped: str | None = None  # done | cancelled | esi_error | reauth | failed (None while running)
+    failure: str | None = None  # what went wrong when stopped is "failed"
+    history: dict[str, int] = field(default_factory=dict)
+    cancel: asyncio.Event = field(default_factory=asyncio.Event)
+    published: int = 0  # value of ``resolved`` at the last publish
+
+    def as_dict(self) -> dict[str, Any]:
+        out = {
+            k: getattr(self, k)
+            for k in (
+                "running started_at finished_at started_by targets done resolved no_access gone skipped errors "
+                "public_first paused_until stopped failure history"
+            ).split()
+        }
+        out["remaining"] = max(0, self.targets - self.done)
+        return out
+
+
+@dataclass
+class _Pool:
+    """What the choice of a character needs, read once per pass."""
+
+    readers: dict[int, int]  # character_id -> owner_id of the link whose token is used (esi-universe.read_structures)
+    sightings: dict[int, list[int]]  # structure_id -> characters with assets there (ordered by character ID)
+    refused: dict[int, set[int]]  # structure_id -> characters refused less than no_access_refresh_hours ago
+    asked: dict[int, set[int]]  # structure_id -> characters ever refused (the pair was asked before)
+    dead: set[int] = field(default_factory=set)  # characters whose token was not accepted during this pass
+
+
+class _Read(NamedTuple):
+    """Outcome of asking ESI about one structure: ok | gone | no_access | skipped | blocked | error."""
+
+    kind: str
+    body: dict[str, Any] | None = None
+
 
 WSPACE_MIN_ID = 31000000
 ZKILL = "https://zkillboard.com"
@@ -77,7 +140,11 @@ class StructureScout:
         self._task: asyncio.Task[None] | None = None
         self._unresolved: tuple[int, list[dict[str, Any]]] | None = None
         self._rows: tuple[int, list[dict[str, Any]]] | None = None
-        self._main_lock = asyncio.Lock()  # one-by-one resolution with a main's token: one run at a time
+        self._main_lock = asyncio.Lock()  # ESI reads of unresolved structures: the job or the hourly step, not both
+        self._history_lock = asyncio.Lock()  # one public dataset download at a time
+        self._job: ResolveJob | None = None
+        self._job_task: asyncio.Task[None] | None = None
+        self._sleep: Callable[[float, asyncio.Event], Awaitable[None]] = self._cancellable_sleep  # tests replace it
 
     # -- which characters can contribute ---------------------------------------------------------
     def contributors(self, scope: str = READ_ASSETS) -> list[tuple[int, int, list[str]]]:
@@ -194,6 +261,11 @@ class StructureScout:
             )
         else:
             self.db.execute("DELETE FROM structure_sightings")
+        # refusals go with characters that no longer exist: every linked character counts here, whatever its scopes
+        # (the main that only granted esi-universe.read_structures.v1 has no assets and is not in ``linked``)
+        self.db.execute(
+            "DELETE FROM structure_refusals WHERE character_id NOT IN (SELECT character_id FROM characters)"
+        )
         # known_structures is never pruned: a structure stays until ESI answers 404 (destroyed or unanchored), then it
         # is kept as status 'gone' (not listed, not asked again), whoever sights it and whether or not anyone may dock
         await self._resolve(stats)
@@ -224,20 +296,102 @@ class StructureScout:
             ),
         )
 
-    async def resolve_with_main(self, main_id: int, *, limit: int = 200) -> dict[str, Any]:
-        """Read the unresolved structures one by one with the token of ONE character: the signed-in main.
+    # -- which character to ask, and what ESI said -------------------------------------------------
+    def _load_pool(self) -> _Pool:
+        readers = {c: o for c, o, _ in self.contributors(READ_STRUCTURES)}
+        sightings: dict[int, list[int]] = {}
+        for r in self.db.query("SELECT structure_id, character_id FROM structure_sightings ORDER BY character_id"):
+            sightings.setdefault(r[0], []).append(r[1])
+        since = time.time() - self.s.no_access_refresh_hours * 3600
+        asked: dict[int, set[int]] = {}
+        refused: dict[int, set[int]] = {}
+        for r in self.db.query("SELECT structure_id, character_id, refused_at FROM structure_refusals"):
+            asked.setdefault(r[0], set()).add(r[1])
+            if r[2] >= since:
+                refused.setdefault(r[0], set()).add(r[1])
+        return _Pool(readers, sightings, refused, asked)
 
-        1. ``GET /universe/structures/`` (no token) lists the structures with an open access list; any of them that
-           is unresolved is asked first because the main's token is certain to be accepted there.
-        2. ``GET /universe/structures/{id}`` (``esi-universe.read_structures.v1``, docking access needed) then reads
-           each remaining ID sequentially: 200 stores name, owner, system and type; 403 keeps the row unresolved
-           (``no_access``); 404 marks it gone (destroyed or unanchored). Rows never tried, or tried longest ago,
-           go first, so repeated runs work through the whole list instead of repeating the same refusals.
-        3. The run stops early, and says so, when ESI's error window is nearly used up (a 403 counts as an error),
-           on a passing ESI failure, or when the main's token is no longer accepted.
+    @staticmethod
+    def _candidates(
+        sid: int, pool: _Pool, *, main_id: int | None = None, unidentified: bool = False, public: bool = False
+    ) -> list[int]:
+        """The characters to ask about one structure, best first; refused pairs and dead tokens left out.
 
-        ESI cannot search a structure by ID (character search needs a name fragment), so there is no search step.
+        Sighters (characters with assets there, holding the structures scope) come first. With ``main_id`` (the button)
+        those linked to that main go before the others and the main itself comes last. Without it (the hourly step) an
+        ``unidentified`` structure is also offered to every other reader. A ``public`` structure (ESI lists it as open
+        to everyone) ignores earlier refusals and falls back to any reader: its answer does not depend on who asks.
         """
+        seen = [c for c in pool.sightings.get(sid, ()) if c in pool.readers]
+        if main_id is not None:
+            order = [c for c in seen if pool.readers[c] == main_id] + [c for c in seen if pool.readers[c] != main_id]
+            if main_id in pool.readers:
+                order.append(main_id)
+        else:
+            order = list(seen)
+            if unidentified:
+                order += [c for c in pool.readers if c not in seen]
+        if public:
+            order += list(pool.readers)
+        skip = pool.dead | (set() if public else pool.refused.get(sid, set()))
+        return [c for c in dict.fromkeys(order) if c not in skip]
+
+    def _record_refusal(self, sid: int, cid: int, pool: _Pool) -> None:
+        now = time.time()
+        self.db.execute(
+            "INSERT INTO structure_refusals(structure_id, character_id, refused_at) VALUES(?,?,?) "
+            "ON CONFLICT(structure_id, character_id) DO UPDATE SET refused_at=excluded.refused_at",
+            (sid, cid, now),
+        )
+        pool.refused.setdefault(sid, set()).add(cid)
+        pool.asked.setdefault(sid, set()).add(cid)
+
+    def _forget_refusals(self, sid: int, pool: _Pool) -> None:
+        """A 200 or a 404 settles the structure: what refused it before no longer matters."""
+        self.db.execute("DELETE FROM structure_refusals WHERE structure_id=?", (sid,))
+        pool.refused.pop(sid, None)
+        pool.asked.pop(sid, None)
+
+    async def _ask(self, sid: int, order: list[int], pool: _Pool) -> _Read:
+        """Ask ESI about one structure with each character of ``order`` in turn until one answers.
+
+        403 records the pair as refused and tries the next character; 404 means the structure is gone; a token that is
+        not accepted (SsoError, 401) skips that character for the rest of the pass. Nothing is sent while the error
+        window is low (``blocked``). Any other failure is passing (``error``): nothing is marked checked for it.
+        """
+        refused = 0
+        for cid in order:
+            if self.esi.blocked_for(reserve=SCOUT_ERROR_RESERVE) > 0:
+                return _Read("blocked")
+            try:
+                token = await self.chars.access_token(cid, pool.readers[cid])
+                body = await self.esi.get(f"/universe/structures/{sid}", token)
+            except SsoError:
+                pool.dead.add(cid)
+                continue
+            except EsiError as exc:
+                if exc.status == 404:
+                    self._forget_refusals(sid, pool)
+                    return _Read("gone")
+                if exc.status == 403:
+                    self._record_refusal(sid, cid, pool)
+                    refused += 1
+                    continue
+                if exc.status == 401:
+                    pool.dead.add(cid)
+                    continue
+                return _Read("error")
+            self._forget_refusals(sid, pool)
+            return _Read("ok", body) if isinstance(body, dict) and body else _Read("skipped")
+        return _Read("no_access" if refused else "skipped")
+
+    def _mark(self, sid: int, status: str) -> None:
+        self.db.execute(
+            "UPDATE known_structures SET status=?, checked_at=? WHERE structure_id=?", (status, time.time(), sid)
+        )
+
+    # -- Resolve unknown: a background job with the signed-in main ----------------------------------
+    def _check_resolver(self, main_id: int) -> None:
         if self.settings.demo:
             raise ResolveError("demo", "resolving structures is not available in demo mode")
         row = self.db.get_character(main_id, main_id)
@@ -247,94 +401,168 @@ class StructureScout:
             raise ResolveError("reauth", "the main character must sign in again (Add character) to read structures")
         if READ_STRUCTURES not in row.scopes:
             raise ResolveError("no_scope", f"the main character has not granted {READ_STRUCTURES}: Add character again")
-        if self._main_lock.locked():
+        if self._job is not None and self._job.running:
             raise ResolveError("busy", "a resolution run is already in progress")
-        async with self._main_lock:
-            return await self._resolve_with_main(main_id, max(1, limit))
 
-    async def _resolve_with_main(self, main_id: int, limit: int) -> dict[str, Any]:
-        out: dict[str, Any] = {
-            "character_id": main_id,
-            "targets": 0,
-            "public_first": 0,
-            "resolved": 0,
-            "no_access": 0,
-            "gone": 0,
-            "errors": 0,
-            "remaining": 0,
-            "stopped": None,
-        }
+    def start_resolve(self, main_id: int) -> dict[str, Any]:
+        """Start the job in the background (one at a time) and return its state; raises ResolveError."""
+        self._check_resolver(main_id)
+        job = self._job = ResolveJob(started_by=main_id)
+        self._job_task = asyncio.get_running_loop().create_task(self._run_job(job, main_id))
+        return job.as_dict()
+
+    async def run_resolve(self, main_id: int) -> dict[str, Any]:
+        """The same job, run to completion in the caller (tests, scripts); returns its final state."""
+        self._check_resolver(main_id)
+        job = self._job = ResolveJob(started_by=main_id)
+        await self._run_job(job, main_id)
+        return job.as_dict()
+
+    def resolve_state(self) -> dict[str, Any]:
+        if self._job is not None:
+            return self._job.as_dict()
+        idle = ResolveJob(started_by=0, started_at=0.0, running=False).as_dict()
+        return idle | {"started_at": None, "started_by": None}
+
+    def stop_resolve(self) -> dict[str, Any]:
+        """Cancel the running job (it ends at its next step, a pause is cut short); returns its state."""
+        if self._job is not None and self._job.running:
+            self._job.cancel.set()
+        return self.resolve_state()
+
+    @staticmethod
+    async def _cancellable_sleep(seconds: float, cancel: asyncio.Event) -> None:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(cancel.wait(), timeout=seconds)
+
+    async def _run_job(self, job: ResolveJob, main_id: int) -> None:
+        try:
+            async with self._main_lock:
+                await self._work(job, main_id)
+        except asyncio.CancelledError:  # the task was cancelled hard (shutdown did not wait for the job)
+            job.stopped = "cancelled"
+            raise
+        except Exception as exc:
+            log.exception("structure resolver failed")
+            job.stopped, job.failure = "failed", redact(repr(exc))[:200]
+        finally:
+            job.running = False
+            job.finished_at = time.time()
+            job.paused_until = None
+            self.version += 1
+            log.info("structure resolver (main %s): %s", main_id, job.as_dict())
+
+    async def _publish(self, job: ResolveJob) -> None:
+        """Let the page and the Wars page see what the job found so far."""
+        job.published = job.resolved
+        await self._names()
+        self.version += 1
+        self._notify()
+
+    async def _wait_window(self, job: ResolveJob) -> bool:
+        """Sleep until ESI's error window has room again; False when the job was cancelled meanwhile."""
+        shown = False
+        while True:
+            wait = self.esi.blocked_for(reserve=SCOUT_ERROR_RESERVE)
+            if wait <= 0:
+                return not job.cancel.is_set()
+            if job.cancel.is_set():
+                return False
+            job.paused_until = time.time() + wait
+            if not shown and job.resolved > job.published:  # a pause is a good moment to show the progress
+                shown = True
+                await self._publish(job)
+            await self._sleep(wait + 1.0, job.cancel)
+            job.paused_until = None
+
+    async def _work(self, job: ResolveJob, main_id: int) -> None:
+        # public datasets first, so the page shows the historical matches at once; forced at most every 10 minutes
+        force = time.monotonic() - self._history_forced > 600
+        if force:
+            self._history_forced = time.monotonic()
+        job.history = await self._refresh_directory(force=force)
+        if any(job.history.values()):
+            await self._publish(job)
         try:
             listed = await self.esi.get("/universe/structures/")
             public = {int(i) for i in listed} if isinstance(listed, list) else set()
         except EsiError as exc:
             log.warning("structure resolver: public structure list unavailable (%s); going one by one", exc)
             public = set()
+        pool = self._load_pool()
+        for row in self.db.list_characters(main_id):  # the main's own links: their tokens are used as this main
+            if not row.demo and row.status != REAUTH and READ_STRUCTURES in row.scopes:
+                pool.readers[row.character_id] = main_id
         rows = self.db.query(
-            "SELECT structure_id FROM known_structures WHERE status IN ('new','no_access','ok') "
-            "AND destroyed_at IS NULL AND (name IS NULL OR owner_id IS NULL OR solar_system_id IS NULL) "
-            "ORDER BY checked_at, structure_id"
+            f"SELECT structure_id FROM known_structures WHERE {UNKNOWN} ORDER BY checked_at, structure_id"  # noqa: S608
         )
-        ids = [r[0] for r in rows]
-        ids.sort(key=lambda sid: sid not in public)  # stable: public first, otherwise least recently tried first
-        out["targets"] = len(ids)
-        out["public_first"] = sum(1 for sid in ids if sid in public)
-        batch, rest = ids[:limit], ids[limit:]
-        for n, sid in enumerate(batch):
-            wait = self.esi.blocked_for(reserve=SCOUT_ERROR_RESERVE)
-            if wait > 0:
-                out["stopped"] = "error_limit"
-                out["retry_after_s"] = round(wait)
-                rest = batch[n:] + rest
-                break
-            try:
-                token = await self.chars.access_token(main_id, main_id)
-                body = await self.esi.get(f"/universe/structures/{sid}", token)
-            except SsoError:
-                out["stopped"] = "reauth"
-                rest = batch[n:] + rest
-                break
-            except EsiError as exc:
-                now = time.time()
-                if exc.status == 404:
-                    self.db.execute(
-                        "UPDATE known_structures SET status='gone', checked_at=? WHERE structure_id=?", (now, sid)
-                    )
-                    out["gone"] += 1
-                elif exc.status == 403:
-                    self.db.execute(
-                        "UPDATE known_structures SET status='no_access', checked_at=? WHERE structure_id=?", (now, sid)
-                    )
-                    out["no_access"] += 1
-                elif exc.status == 401:
-                    out["stopped"] = "reauth"
-                    rest = batch[n:] + rest
+
+        def tier(sid: int) -> int:  # public first, then a sighter never refused for it, then the rest
+            if sid in public:
+                return 0
+            asked = pool.asked.get(sid, ())
+            return 1 if any(c in pool.readers and c not in asked for c in pool.sightings.get(sid, ())) else 2
+
+        targets = sorted((r[0] for r in rows), key=tier)  # stable: least recently checked first within a tier
+        job.targets = len(targets)
+        job.public_first = sum(1 for sid in targets if sid in public)
+        failures = 0
+        for sid in targets:
+            result = _Read("skipped")
+            while True:
+                if not await self._wait_window(job):
                     break
-                else:  # 0, 420, 429, 5xx: a passing ESI failure; nothing is marked checked
-                    out["errors"] += 1
-                    out["stopped"] = "esi_error"
-                    rest = batch[n:] + rest
+                order = self._candidates(sid, pool, main_id=main_id, public=sid in public)
+                if not order:
+                    break  # nobody left to ask: not sent to ESI
+                result = await self._ask(sid, order, pool)
+                if result.kind != "blocked":
+                    break  # blocked in the middle of the list: wait for the window, then ask the rest
+            if job.cancel.is_set():
+                job.stopped = "cancelled"
+                break
+            if result.kind == "error":
+                job.errors += 1
+                failures += 1
+                if failures >= JOB_MAX_FAILURES:
+                    job.stopped = "esi_error"
                     break
                 continue
-            if isinstance(body, dict) and body:
-                self._save_read(sid, body, time.time())
-                out["resolved"] += 1
-        out["remaining"] = len(rest)
-        # structures ESI refuses to the main are matched against the public datasets (EVE Ref, Adam4EVE); the
-        # download is forced at most every 10 minutes so repeated clicks do not hammer the dataset hosts
-        force = time.monotonic() - self._history_forced > 600
-        if force:
-            self._history_forced = time.monotonic()
-        out["history"] = await self._refresh_directory(force=force)
-        if out["resolved"] or out["gone"] or any(out["history"].values()):
-            await self._names()
-            self.version += 1
-            self._notify()
-        log.info("structure resolver (main %s): %s", main_id, out)
-        return out
+            failures = 0
+            if result.kind == "ok" and result.body:
+                self._save_read(sid, result.body, time.time())
+                job.resolved += 1
+            elif result.kind == "gone":
+                self._mark(sid, "gone")
+                job.gone += 1
+            elif result.kind == "no_access":
+                self._mark(sid, "no_access")
+                job.no_access += 1
+            else:
+                job.skipped += 1
+            job.done += 1
+            if job.resolved - job.published >= JOB_PUBLISH_EVERY:
+                await self._publish(job)
+            if pool.readers and pool.dead >= set(pool.readers):
+                job.stopped = "reauth"  # no character with a token ESI accepts is left
+                break
+        else:
+            job.stopped = "done"
+        if job.stopped != "cancelled":  # structures ESI refused are matched again against the public datasets
+            again = await self._refresh_directory()
+            job.history = {k: max(v, again.get(k, 0)) for k, v in job.history.items()} or again
+        await self._publish(job)
 
+    # -- the hourly step ------------------------------------------------------------------------------
     async def _resolve(self, stats: dict[str, int]) -> None:
-        readers = {c: (c, o) for c, o, _ in self.contributors(READ_STRUCTURES)}
+        if self._main_lock.locked():  # a Resolve unknown job is reading: no second reader, no shared budget fights
+            log.info("structure scout: a resolve job is running; unresolved structures wait for the next run")
+            return
+        async with self._main_lock:
+            await self._resolve_locked(stats)
+
+    async def _resolve_locked(self, stats: dict[str, int]) -> None:
+        pool = self._load_pool()
         stale = time.time() - self.s.structure_refresh_hours * 3600
         stale_denied = time.time() - self.s.no_access_refresh_hours * 3600  # a refused read is an ESI error: ask rarely
         # a structure that was read (status ok) is known: skipped from then on, unless a refresh interval is set
@@ -348,48 +576,84 @@ class StructureScout:
         sem = asyncio.Semaphore(self.s.concurrency)
 
         async def resolve(sid: int, unidentified: bool) -> None:
-            seen_by = {
-                r[0] for r in self.db.query("SELECT character_id FROM structure_sightings WHERE structure_id=?", (sid,))
-            }
-            candidates = [readers[c] for c in sorted(seen_by) if c in readers]
-            if unidentified:
-                candidates.extend(reader for cid, reader in readers.items() if cid not in seen_by)
-            if not candidates:
+            order = self._candidates(sid, pool, unidentified=unidentified)
+            if not order:
                 # nobody who may read it right now: keep what we know and try again later, behind the rows not yet asked
                 self.db.execute("UPDATE known_structures SET checked_at=? WHERE structure_id=?", (time.time(), sid))
                 return
-            outcome = "no_access"
-            body: dict[str, Any] | None = None
             async with sem:
-                for cid, owner in candidates:
-                    if self.esi.blocked_for(reserve=SCOUT_ERROR_RESERVE) > 0:
-                        return  # leave the rest of ESI's error budget to the character refresh; retry next run
-                    try:
-                        token = await self.chars.access_token(cid, owner)
-                        body = await self.esi.get(f"/universe/structures/{sid}", token)
-                        outcome = "ok"
-                        break
-                    except SsoError:
-                        continue
-                    except EsiError as exc:
-                        if exc.status == 404:
-                            outcome = "gone"
-                            break
-                        if exc.status in (401, 403):
-                            continue
-                        stats["errors"] += 1
-                        return  # ESI trouble: retry next run
+                result = await self._ask(sid, order, pool)
+            if result.kind == "blocked":
+                return  # leave the rest of ESI's error budget to the character refresh; retry next run
+            if result.kind == "error":
+                stats["errors"] += 1
+                return  # ESI trouble: retry next run
             now = time.time()
-            if outcome == "ok" and body:
-                self._save_read(sid, body, now)
+            if result.kind == "ok" and result.body:
+                self._save_read(sid, result.body, now)
                 stats["resolved"] += 1
+            elif result.kind == "skipped":  # every token was refused by SSO: as if nobody could be asked
+                self.db.execute("UPDATE known_structures SET checked_at=? WHERE structure_id=?", (now, sid))
             else:
-                self.db.execute(
-                    "UPDATE known_structures SET status=?, checked_at=? WHERE structure_id=?", (outcome, now, sid)
-                )
-                stats["no_access" if outcome == "no_access" else "gone"] += 1
+                self._mark(sid, result.kind)
+                stats["no_access" if result.kind == "no_access" else "gone"] += 1
 
         await asyncio.gather(*(resolve(r["structure_id"], not r["name"] or not r["owner_id"]) for r in todo))
+
+    # -- numbers for the operator ---------------------------------------------------------------------
+    def stats(self) -> dict[str, Any]:
+        """What the resolver has to work with, from the database alone (no ESI call, no token)."""
+        since = time.time() - self.s.no_access_refresh_hours * 3600
+        readers = tuple(c for c, _, _ in self.contributors(READ_STRUCTURES))  # holders of the structures scope
+        marks = ",".join("?" * len(readers))
+        refusals = "structure_refusals"
+        if not self.db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='structure_refusals'"):
+            # a database that was not migrated yet (the read-only CLI): no refusals recorded
+            refusals = "(SELECT 0 AS structure_id, 0 AS character_id, 0.0 AS refused_at WHERE 0)"
+        q = self.db.query
+        unknown = f"SELECT structure_id FROM known_structures WHERE {UNKNOWN}"  # noqa: S608
+        sighters = (  # sighters holding the scope, per structure
+            f"(SELECT COUNT(*) FROM structure_sightings s WHERE s.structure_id=k.structure_id "  # noqa: S608
+            f"AND s.character_id IN ({marks}))"
+        )
+        split = {"0": 0, "1": 0, "2+": 0}
+        for n, count in q(  # noqa: S608
+            f"SELECT MIN(c, 2), COUNT(*) FROM (SELECT {sighters} AS c FROM known_structures k WHERE {UNKNOWN}) "  # noqa: S608
+            "GROUP BY MIN(c, 2)",
+            readers,
+        ):
+            split["2+" if n >= 2 else str(n)] = count
+        askable = q(  # a reader without a recent refusal for the structure exists
+            f"SELECT COUNT(*) FROM known_structures k WHERE {UNKNOWN} AND ? > (SELECT COUNT(*) FROM {refusals} r "  # noqa: S608
+            f"WHERE r.structure_id=k.structure_id AND r.refused_at >= ? AND r.character_id IN ({marks}))",
+            (len(readers), since, *readers),
+        )[0][0]
+        askable_sighters = q(  # a sighter holding the scope without a recent refusal for the structure exists
+            f"SELECT COUNT(*) FROM known_structures k WHERE {UNKNOWN} AND EXISTS (SELECT 1 FROM structure_sightings s "  # noqa: S608
+            f"WHERE s.structure_id=k.structure_id AND s.character_id IN ({marks}) AND NOT EXISTS "
+            f"(SELECT 1 FROM {refusals} r WHERE r.structure_id=s.structure_id AND r.character_id=s.character_id "
+            "AND r.refused_at >= ?))",
+            (*readers, since),
+        )[0][0]
+        total = q(f"SELECT COUNT(*) FROM ({unknown})")[0][0]  # noqa: S608
+        matches = {"EVE Ref": 0, "Local index": 0, "Adam4EVE": 0}
+        for source, count in q(
+            "SELECT COALESCE(source,'Adam4EVE'), COUNT(*) FROM public_structure_history "  # noqa: S608
+            f"WHERE structure_id IN ({unknown}) GROUP BY COALESCE(source,'Adam4EVE')"
+        ):
+            matches[source] = count
+        return {
+            "by_status": {r[0]: r[1] for r in q("SELECT status, COUNT(*) FROM known_structures GROUP BY status")},
+            "readers": len(readers),
+            "unknown": total,
+            "unknown_by_sighters": split,
+            "askable": askable,  # unknown structures some reader may still be asked about (the hourly rule)
+            "not_askable": total - askable,
+            "askable_via_sighters": askable_sighters,  # ... of which a sighter can be asked (the button's first choice)
+            "refusal_pairs": q(f"SELECT COUNT(*) FROM {refusals}")[0][0],  # noqa: S608
+            "refusal_pairs_recent": q(f"SELECT COUNT(*) FROM {refusals} WHERE refused_at >= ?", (since,))[0][0],  # noqa: S608
+            "public_history_matches": matches,
+        }
 
     # historical details: public datasets, kept apart from live ESI records (EVE Ref > local index > Adam4EVE)
     HISTORY_PRIORITY = {"EVE Ref": 3, "Local index": 2, "Adam4EVE": 1}
@@ -426,6 +690,10 @@ class StructureScout:
 
     async def _refresh_directory(self, force: bool = False) -> dict[str, int]:
         """Match the public datasets locally (EVE Ref, then Adam4EVE); returns the matches stored per source."""
+        async with self._history_lock:  # the hourly step and the job never download at the same time
+            return await self._refresh_directory_locked(force)
+
+    async def _refresh_directory_locked(self, force: bool) -> dict[str, int]:
         found = {"EVE Ref": 0, "Local index": 0, "Adam4EVE": 0}
         if self.settings.demo:
             return found
@@ -806,6 +1074,17 @@ class StructureScout:
 
     async def stop(self) -> None:
         self._stop.set()
+        job_task = self._job_task
+        if self._job is not None:
+            self._job.cancel.set()  # the Resolve unknown job ends at its next step; a pause is cut short
+        if job_task is not None and not job_task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(job_task), timeout=10)
+            except TimeoutError:
+                job_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await job_task
+        self._job_task = None
         if self._task is not None:
             try:
                 await asyncio.wait_for(asyncio.shield(self._task), timeout=10)

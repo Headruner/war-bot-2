@@ -95,6 +95,33 @@ def test_migration_is_idempotent(tmp_path):
     d.close()
 
 
+def test_an_old_database_gets_the_refusal_table_in_place(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.sqlite3"
+    d = Database(path)
+    d.execute("INSERT INTO structure_sightings(structure_id, character_id, seen_at) VALUES(1, 2, 3.0)")
+    d.close()
+    con = sqlite3.connect(path)  # a v13 database: no structure_refusals yet
+    con.execute("DROP TABLE structure_refusals")
+    con.execute("PRAGMA user_version=13")
+    con.commit()
+    con.close()
+    d = Database(path)
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 14
+    assert d.query("SELECT COUNT(*) FROM structure_refusals")[0][0] == 0  # the table exists now
+    assert d.query("SELECT structure_id, character_id FROM structure_sightings")[0][:] == (1, 2)  # data kept
+    d.execute("INSERT INTO structure_refusals(structure_id, character_id, refused_at) VALUES(1, 2, 3.0)")
+    with pytest.raises(sqlite3.IntegrityError):  # one row per pair
+        d.execute("INSERT INTO structure_refusals(structure_id, character_id, refused_at) VALUES(1, 2, 4.0)")
+    d.close()
+    ro = Database(path, read_only=True)
+    assert ro.query("SELECT COUNT(*) FROM structure_refusals")[0][0] == 1
+    with pytest.raises(sqlite3.OperationalError):
+        ro.execute("DELETE FROM structure_refusals")
+    ro.close()
+
+
 def test_upsert_keeps_local_settings(db):
     assert db.upsert_character(1, "A", "OK", ["s1"], tags=["x"]) is True
     db.set_enabled(1, False)

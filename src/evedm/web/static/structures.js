@@ -125,27 +125,83 @@ let typing = null;
 $("#s-q").addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => load(), 300); });
 ["#s-space", "#s-region", "#s-type", "#s-war", "#s-sort"].forEach((id) => $(id).addEventListener("change", () => load()));
 $("#s-reload").addEventListener("click", () => load());
-$("#s-resolve").addEventListener("click", async () => {
-  const btn = $("#s-resolve"), info = $("#s-resolve-info");
-  btn.disabled = true;
-  info.textContent = "Reading unknown structures one by one with your main character…";
+// Resolve unknown is a background job on the server: the button starts it, this page polls its state every 5 s.
+const num = (n) => Number(n || 0).toLocaleString("en-US").replace(/,/g, " ");
+const STOPPED = { cancelled: "stopped on request", reauth: "no character with a valid token is left",
+  esi_error: "ESI kept answering with errors, try again later", failed: "the job failed, see the server log" };
+let polling = null, watched = false;
+
+function jobLine(d) {
+  const parts = [`${num(d.done)} of ${num(d.targets)} done — ${num(d.resolved)} resolved, ${num(d.no_access)} refused, ` +
+    `${num(d.gone)} gone, ${num(d.skipped)} skipped`];
+  let text = (d.running ? "Resolving: " : "Resolve unknown: ") + parts[0] + ".";
+  if (d.running && d.paused_until) {
+    text += ` Waiting ${Math.max(1, Math.round(d.paused_until - Date.now() / 1000))} s for ESI's error window.`;
+  }
+  if (!d.running && STOPPED[d.stopped]) text += ` Stopped: ${STOPPED[d.stopped]}.`;
+  if (!d.running && d.stopped === "done") text += " Finished.";
+  if (!d.running && d.remaining) text += ` ${num(d.remaining)} left.`;
+  const h = d.history || {}, filled = Object.values(h).reduce((a, b) => a + b, 0);
+  if (filled) text += ` Public datasets matched ${filled} (${Object.entries(h).map(([k, v]) => `${k} ${v}`).join(", ")}).`;
+  return text;
+}
+
+function showJob(d) {
+  $("#s-resolve").disabled = d.running;
+  $("#s-resolve-stop").hidden = !d.running;
+  if (d.running || watched) $("#s-resolve-info").textContent = jobLine(d);
+}
+
+async function poll() {
+  clearTimeout(polling);
+  let d;
   try {
-    const resp = await fetch("/api/structures/resolve", { method: "POST", credentials: "same-origin", headers: { "X-EVEDM": "1" } });
-    if (resp.status === 401) { location.href = "/login"; return; }
-    const d = await resp.json();
-    if (!resp.ok) { info.textContent = d.detail || d.error || resp.statusText; return; }
-    const why = { error_limit: `ESI error limit reached, try again in ${d.retry_after_s || 60} s`,
-      esi_error: "ESI answered with an error, try again later", reauth: "your main character must sign in again" }[d.stopped];
-    info.textContent = `${d.targets} unknown: ${d.resolved} resolved, ${d.no_access} refused by ESI (no docking access), ` +
-      `${d.gone} gone, ${d.remaining} left.` + (why ? ` Stopped: ${why}.` : "");
-    const h = d.history || {}, filled = Object.values(h).reduce((a, b) => a + b, 0);
-    if (filled) info.textContent += ` Public datasets matched ${filled} (${Object.entries(h).map(([k, v]) => `${k} ${v}`).join(", ")}).`;
-    if (d.resolved || d.gone || filled) load();
+    d = await api("/api/structures/resolve");
   } catch (err) {
-    info.textContent = "Could not resolve: " + err.message;
+    if (watched) polling = setTimeout(poll, 5000);  // a failed poll is retried while a job is being watched
+    return;
+  }
+  showJob(d);
+  if (d.running) {
+    watched = true;
+    polling = setTimeout(poll, 5000);
+  } else if (watched) {
+    watched = false;
+    load();  // the job is over: the list has what it found
+  }
+}
+
+async function jobRequest(url) {
+  const resp = await fetch(url, { method: "POST", credentials: "same-origin", headers: { "X-EVEDM": "1" } });
+  if (resp.status === 401) { location.href = "/login"; return null; }
+  return { ok: resp.ok, status: resp.status, d: await resp.json() };
+}
+
+$("#s-resolve").addEventListener("click", async () => {
+  const info = $("#s-resolve-info");
+  $("#s-resolve").disabled = true;
+  info.textContent = "Starting…";
+  try {
+    const r = await jobRequest("/api/structures/resolve");
+    if (!r) return;
+    if (!r.ok && r.status !== 409) { info.textContent = r.d.detail || r.d.error; $("#s-resolve").disabled = false; return; }
+    watched = true;  // 409 busy: somebody else's job is running, shown the same way
+    showJob(r.d);
+    poll();
+  } catch (err) {
+    info.textContent = "Could not start: " + err.message;
+    $("#s-resolve").disabled = false;
+  }
+});
+$("#s-resolve-stop").addEventListener("click", async () => {
+  $("#s-resolve-stop").disabled = true;
+  try {
+    await jobRequest("/api/structures/resolve/stop");
+    await poll();
   } finally {
-    btn.disabled = false;
+    $("#s-resolve-stop").disabled = false;
   }
 });
 $("#s-more").addEventListener("click", () => load(true));
 load();
+poll();  // a job that is already running (page reloaded, or started by another member) is shown at once

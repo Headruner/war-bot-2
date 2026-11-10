@@ -1,4 +1,4 @@
-"""Command line: ``evedm serve | rank | db | users | wars | universe | import | export | check | ...``."""
+"""Command line: ``evedm serve | rank | db | users | wars | structures | universe | import | export | check | ...``."""
 
 from __future__ import annotations
 
@@ -262,6 +262,24 @@ def cmd_wars(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_structures(args: argparse.Namespace) -> int:
+    from .db import Database
+    from .scout import StructureScout
+
+    s = _settings(args)
+    if not s.db_path.exists():
+        print(f"evedm: no database at {s.db_path}", file=sys.stderr)
+        return 2
+    db = Database(s.db_path, read_only=True)  # no migration, no write: safe next to a running server
+    try:
+        # stats() reads the database only; the graph, the character service and the ESI client are not needed
+        scout = StructureScout(s, db, None, None, None)  # type: ignore[arg-type]
+        print(json.dumps(scout.stats(), indent=2))
+    finally:
+        db.close()
+    return 0
+
+
 def cmd_launches(args: argparse.Namespace) -> int:
     from .db import Database
 
@@ -345,6 +363,10 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--out", default="evedm-characters.json")
     sp.add_argument("--owner", type=int, default=0, help="main character ID whose characters are exported")
     sp.set_defaults(fn=cmd_export)
+
+    sp = sub.add_parser("structures", help="structure scout numbers from the database (no network)")
+    sp.add_argument("action", choices=["stats"])
+    sp.set_defaults(fn=cmd_structures)
 
     sp = sub.add_parser("launches", help="show recorded launches")
     sp.add_argument("--limit", type=int, default=20)

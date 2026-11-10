@@ -934,17 +934,39 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         return JSONResponse(result)
 
     @app.post("/api/structures/resolve")
-    async def resolve_structures(request: Request, limit: int = 200) -> JSONResponse:
-        """Read the unresolved structures one by one with the signed-in main's own token (members only)."""
+    async def resolve_structures(request: Request) -> JSONResponse:
+        """Start the Resolve unknown job (members only): 202 with its state, 409 busy when one is running."""
         uid = owner(request)
         require_csrf(request)
         scout = await scout_of(request)
         try:
-            result = await scout.resolve_with_main(uid, limit=max(1, min(limit, 500)))
+            state = scout.start_resolve(uid)
         except ResolveError as exc:
             status = {"busy": 409, "demo": 409}.get(exc.code, 422)
-            return JSONResponse({"error": exc.code, "detail": exc.message}, status_code=status)
-        return JSONResponse(result)
+            body: dict[str, Any] = scout.resolve_state() if exc.code == "busy" else {}
+            body |= {"error": exc.code, "detail": exc.message}
+            return JSONResponse(body, status_code=status)
+        return JSONResponse(state, status_code=202)
+
+    @app.get("/api/structures/resolve")
+    async def resolve_state(request: Request) -> JSONResponse:
+        """State of the Resolve unknown job (the running one, or the last one since the app started)."""
+        scout = await scout_of(request)
+        return JSONResponse(scout.resolve_state())
+
+    @app.post("/api/structures/resolve/stop")
+    async def resolve_stop(request: Request) -> JSONResponse:
+        """Cancel the running Resolve unknown job; it ends at its next step."""
+        owner(request)
+        require_csrf(request)
+        scout = await scout_of(request)
+        return JSONResponse(scout.stop_resolve())
+
+    @app.get("/api/structures/stats")
+    async def structure_stats(request: Request) -> JSONResponse:
+        """What the resolver has to work with (database only, no ESI call)."""
+        scout = await scout_of(request)
+        return JSONResponse(scout.stats())
 
     # ------------------------------------------------------------------ alerts + destinations
     def closest_characters(

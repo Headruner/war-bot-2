@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 13  # v12: historical structure directory entries; v13: their source (Adam4EVE, EVE Ref)
+SCHEMA_VERSION = 14  # v12: historical structure directory entries; v13: their source; v14: structure_refusals
 log = logging.getLogger("evedm.db")
 
 SCHEMA = """
@@ -93,6 +93,13 @@ CREATE TABLE IF NOT EXISTS structure_sightings (
     structure_id INTEGER NOT NULL,
     character_id INTEGER NOT NULL,
     seen_at      REAL NOT NULL,
+    PRIMARY KEY (structure_id, character_id)
+);
+-- which character ESI refused (403) for which structure, and when: that pair is not asked again for a long time
+CREATE TABLE IF NOT EXISTS structure_refusals (
+    structure_id INTEGER NOT NULL,
+    character_id INTEGER NOT NULL,
+    refused_at   REAL NOT NULL,
     PRIMARY KEY (structure_id, character_id)
 );
 CREATE TABLE IF NOT EXISTS scout_characters (
@@ -351,8 +358,15 @@ class RosterRow:
 class Database:
     """Thin, thread-safe wrapper around one sqlite3 connection (the app runs one process)."""
 
-    def __init__(self, path: str | Path, journal_mode: str = "wal"):
+    def __init__(self, path: str | Path, journal_mode: str = "wal", *, read_only: bool = False):
         self.path = Path(path) if str(path) == ":memory:" else Path(path).resolve()
+        if read_only:  # for reports on a database another process may be using: no migration, no pragma that writes
+            self._lock = threading.RLock()
+            self._conn = sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True, check_same_thread=False)
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA busy_timeout=5000")
+            self.journal_mode = "read-only"
+            return
         if str(path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
