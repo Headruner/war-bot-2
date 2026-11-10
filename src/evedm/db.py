@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS ansiblex_gates (
     name            TEXT,
     owner_id        INTEGER,
     solar_system_id INTEGER,
-    dest_system_id  INTEGER,                      -- parsed from the "A В» B - name" convention
+    dest_system_id  INTEGER,                      -- parsed from the "A » B - name" convention
     checked_at      REAL NOT NULL DEFAULT 0,
     status          TEXT NOT NULL DEFAULT 'ok'    -- ok | not_gate | no_access
 );

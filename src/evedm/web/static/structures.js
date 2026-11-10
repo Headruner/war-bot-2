@@ -43,7 +43,7 @@ function fillSelect(sel, facets, keep, label = (x) => x) {
 function row(r) {
   const tr = el("tr");
   const jumps = el("td", "num jumps");
-  jumps.append(el("b", null, r.jumps == null ? "вЂ”" : String(r.jumps)));
+  jumps.append(el("b", null, r.jumps == null ? "—" : String(r.jumps)));
   if (r.nearest && r.nearest.characters.length) jumps.append(el("div", "small", r.nearest.characters[0]));
   else if (r.system.space === "wormhole") jumps.append(el("div", "small", "no gates"));
   const sys = el("td");
@@ -56,11 +56,11 @@ function row(r) {
     a.append(secChip(r.system.security), document.createTextNode(` ${r.system.name}`));
     sys.append(a);
   }
-  sys.append(el("div", "small", `${r.system.region} В· ${SPACE[r.system.space] || r.system.space}`));
+  sys.append(el("div", "small", `${r.system.region} · ${SPACE[r.system.space] || r.system.space}`));
   const st = el("td");
   const prefix = `${r.system.name} - `;
   st.append(el("div", null, r.name.startsWith(prefix) ? r.name.slice(prefix.length) : r.name), el("div", "small", r.type));
-  st.append(el("div", "small", `ID ${r.structure_id} В· ${STATUS[r.status] || r.status}`));
+  st.append(el("div", "small", `ID ${r.structure_id} · ${STATUS[r.status] || r.status}`));
   if (r.historical_source) {
     const date = r.historical_date ? " · last seen " + r.historical_date : "";
     st.append(el("div", "small", "Historical details: " + r.historical_source + date));
@@ -95,7 +95,7 @@ async function load(append = false) {
   Prefs.set("structures", f);
   const qs = new URLSearchParams({ q: f.q, space: f.space, region: f.region, type: f.type, at_war: f.war ? 1 : 0,
     sort: f.sort, limit: PAGE, offset });
-  $("#s-info").textContent = "LoadingвЂ¦";
+  $("#s-info").textContent = "Loading…";
   const d = await api(`/api/structures?${qs}`);
   fillSelect($("#s-region"), d.facets.regions, f.region);
   fillSelect($("#s-type"), d.facets.types, f.type);
@@ -109,7 +109,7 @@ async function load(append = false) {
   if (d.scout.last_run) parts.push(`scouted ${ago(d.scout.last_run.at)}`);
   else if (d.scout.running) parts.push("first scout run in progress");
   if (!d.characters) parts.push("add characters to see jumps");
-  $("#s-info").textContent = parts.join(" В· ");
+  $("#s-info").textContent = parts.join(" · ");
 }
 
 $("#s-q").value = prefs.q || "";
