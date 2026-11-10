@@ -1,0 +1,42 @@
+@startuml seq-ansiblex-route
+title UC-16 · Ranking over the Ansiblex jump gates each character can see
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+autonumber
+actor "User" as user
+participant "Browser UI\n(rank.js + map.js)" as ui
+participant "Routes" as web
+participant "AnsiblexService" as ax
+participant "RankingService" as rs
+participant "GateGraph" as g
+participant "ESI" as esi
+database "SQLite" as db
+
+user -> ui : choose Ansiblex (fourth radio button, kept in the evedm_prefs cookie)
+ui -> web : GET /api/rank?target=T&hub=ansiblex  (422 when ansiblex.enabled is off)
+web -> ax : ensure(characters, wait_s)
+alt a character's gate list is older than refresh_hours (6 h)
+  ax -> ax : single-flight background read (concurrency 3)
+  loop each character with esi-search.search_structures.v1
+    ax -> esi : GET /characters/{id}/search/?categories=structure&search=" » "
+    esi --> ax : structure IDs the character can see
+    loop IDs not read within gate_refresh_hours (168 h)
+      ax -> esi : GET /universe/structures/{id}
+      esi --> ax : name "A » B - name", type_id 35841, solar_system_id
+      ax -> db : ansiblex_gates (dest_system_id parsed from the name; not_gate / no_access kept)
+    end
+    ax -> db : ansiblex_access (character, gate), ansiblex_characters (checked_at, gates, error)
+  end
+end
+web -> rs : rank(target, ansiblex)
+loop each character
+  rs -> ax : links_for(character)
+  ax --> rs : one-way links system -> system the character can see
+  rs -> g : route_with_links(origin, target, links, avoid)
+  g --> rs : path + positions of the Ansiblex hops (BFS over stargates + links, 1 jump each)
+end
+rs --> web : rows with jumps, route_legs [gate | ansiblex], ansiblex{status, gates, jumps, direct_jumps, used, hops}
+web --> ui : JSON + ansiblex {gates_known, reading, error}
+ui -> ui : "via Ansiblex" badge, hop chips in the route bar, dotted cyan legs labelled Ansiblex on the map
+note over ax, esi : ESI has no gate list and no access list: a gate found by the character's own search is treated as usable
+@enduml
