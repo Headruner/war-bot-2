@@ -3,7 +3,7 @@
 For each character that granted ``esi-assets.read_assets.v1`` the scout reads the asset list (locations only are
 kept) and takes every location that is not one of the character's own items as a structure candidate. Candidates are
 read from ``/universe/structures/{id}`` with ``esi-universe.read_structures.v1``, using the token of a character
-that has assets there first, then other scoped characters for unidentified structures. NPC stations never appear: only Upwell
+with assets there first, then other scoped characters for unidentified structures. Only Upwell
 structures answer that endpoint. The result is shared by every main on the site (the Structures page) and also feeds
 the structure lists of the Wars page.
 """
