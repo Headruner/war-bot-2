@@ -1,22 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Roster · EVE Distance Meter{% endblock %}
-{% block content %}
-<div class="page">
-  <h1>Static roster</h1>
-  <p class="small">Upload a JSON file of <code>char_name</code> + <code>star_system_name</code> pairs (no limit on
+{% block page_help %}
+<p class="small">Upload a JSON file of <code>char_name</code> + <code>star_system_name</code> pairs (no limit on
     the number of entries or the file size). They are ranked by stargate jumps on the
     <a href="/">Ranking</a> page, on the <b>Roster</b> tab, and appear under the closest characters on the
     Alerts page. A roster entry has no tokens: nothing is ever read from ESI for it, so it shows no ship, no
     online state and no <b>Set destination</b> button. An upload merges into this pool by character name:
     names already here move to their new system and keep their tags and their <b>Ranked</b> setting.</p>
-  <div class="toolbar">
-    <label class="btn primary">Import JSON<input id="roster-file" type="file" accept="application/json,.json" hidden></label>
-    <button id="roster-export" class="btn" type="button">Export JSON</button>
-    <button id="roster-resolve" class="btn" type="button">Re-resolve unknown systems</button>
-    <button id="roster-clear" class="btn danger" type="button">Clear roster</button>
-    <span id="roster-stats" class="small"></span>
-  </div>
-  <details class="card">
+<details class="card">
     <summary class="small">File format (schema evedm-static-roster v1)</summary>
 <pre class="small">{ "schema": "evedm-static-roster", "version": 1, "label": "Alt parking list",
   "characters": [
@@ -27,6 +18,17 @@
       whole is rejected (not JSON or not the schema).
       The file is not kept and its contents are never written to the log.</p>
   </details>
+{% endblock %}
+{% block content %}
+<div class="page">
+  <h1>Static roster</h1>
+  <div class="toolbar">
+    <label class="btn primary">Import JSON<input id="roster-file" type="file" accept="application/json,.json" hidden></label>
+    <button id="roster-export" class="btn" type="button">Export JSON</button>
+    <button id="roster-resolve" class="btn" type="button">Re-resolve unknown systems</button>
+    <button id="roster-clear" class="btn danger" type="button">Clear roster</button>
+    <span id="roster-stats" class="small"></span>
+  </div>
   <div id="roster-report" class="notice" hidden></div>
   <div class="roster-filters">
     <label class="small">Show

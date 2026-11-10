@@ -1,5 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Characters · EVE Distance Meter{% endblock %}
+{% block page_help %}
+<span class="small">Tick characters to export only those. Exports contain credentials.</span>
+{% if structures_enabled %}<p class="small">Characters that granted the structure scopes share the player-owned
+    structures where they have assets with everyone on this site (<a href="/structures">Structures</a>). Re-authorize a
+    character with <b>Add character</b> to grant them.</p>{% endif %}
+{% if auth == "sso" and user and user.id %}<p>Only you see the characters linked to this main.
+      You stay signed in on this browser for {{ session_days }} days after your last visit.</p>{% endif %}
+{% endblock %}
 {% block content %}
 <div class="page">
   <h1>Characters</h1>
@@ -14,11 +22,7 @@
     {% else %}<span class="small">EVE SSO is not configured (set EVE_CLIENT_ID / EVE_CLIENT_SECRET) - demo characters only.</span>{% endif %}
     <label class="btn">Import JSON<input id="import-file" type="file" accept="application/json,.json" hidden></label>
     <button id="export-btn" class="btn" type="button">Export JSON</button>
-    <span class="small">Tick characters to export only those. Exports contain credentials.</span>
   </div>
-  {% if structures_enabled %}<p class="small">Characters that granted the structure scopes share the player-owned
-    structures where they have assets with everyone on this site (<a href="/structures">Structures</a>). Re-authorize a
-    character with <b>Add character</b> to grant them.</p>{% endif %}
   <div id="import-report" class="notice" hidden></div>
   <div class="card">
     <table class="grid">
@@ -30,8 +34,7 @@
   {% if auth == "sso" and user and user.id %}
   <div class="card account">
     <h2>Account</h2>
-    <p class="small">Signed in as <b>{{ user.name }}</b> (main). Only you see the characters linked to this main.
-      You stay signed in on this browser for {{ session_days }} days after your last visit.</p>
+    <p class="small">Signed in as <b>{{ user.name }}</b> (main).</p>
     <button id="delete-account" class="btn danger" type="button">Delete account</button>
   </div>
   {% endif %}

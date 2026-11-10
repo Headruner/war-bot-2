@@ -1,13 +1,17 @@
 {% extends "base.html" %}
 {% block title %}Notifications · EVE Distance Meter{% endblock %}
-{% block content %}
-<div class="page" data-poll-s="{{ poll_s }}">
-  <h1>Notifications</h1>
-  <p class="small">Notifications of <b>every character registered on this site</b> that has a valid token, read from ESI
+{% block page_help %}
+<p class="small">Notifications of <b>every character registered on this site</b> that has a valid token, read from ESI
     with each character's own token (<code>esi-characters.read_notifications.v1</code>) and refreshed every
     {{ poll_s }} seconds. Asset safety and structure attacks are shown by default; everything else is one tick away
     in <b>Filters</b>. Each notification shows the system with its region and the closest characters from your own
     <a href="/characters">Characters</a> and <a href="/roster">Roster</a>.</p>
+<p class="small">Types come from the ESI notification list; a type ESI sends that is not in a group below
+      appears under <b>Other notifications</b> once it has been seen.</p>
+{% endblock %}
+{% block content %}
+<div class="page" data-poll-s="{{ poll_s }}">
+  <h1>Notifications</h1>
   <div class="toolbar">
     <label class="small">Period
       <select id="ntf-hours">
@@ -22,8 +26,6 @@
     <span id="ntf-status" class="small"></span>
   </div>
   <div id="ntf-filters" class="card" hidden>
-    <p class="small">Types come from the ESI notification list; a type ESI sends that is not in a group below
-      appears under <b>Other notifications</b> once it has been seen.</p>
     <div id="ntf-groups" class="ntf-groups"></div>
     <div class="toolbar">
       <button id="ntf-defaults" class="btn" type="button">Back to the default selection</button>

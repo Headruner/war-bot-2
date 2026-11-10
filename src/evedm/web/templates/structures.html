@@ -1,12 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Structures · EVE Distance Meter{% endblock %}
-{% block content %}
-<div class="page structures-page">
-  <h1>Structures</h1>
-  <p class="small">Every player-owned structure where any character registered on this site has an asset, in all
+{% block page_help %}
+<p class="small">Every player-owned structure where any character registered on this site has an asset, in all
     kinds of space. The assets come from ESI (<code>esi-assets.read_assets.v1</code>); each structure is then read
     from ESI by its ID for its name, owner, type and system. A character contributes once it has granted
     {% for s in scopes %}<code>{{ s }}</code>{% if not loop.last %} and {% endif %}{% endfor %}.</p>
+{% endblock %}
+{% block content %}
+<div class="page structures-page">
+  <h1>Structures</h1>
   <div class="toolbar filters">
     <label class="small">Search <input id="s-q" type="search" placeholder="name, system or owner" spellcheck="false"></label>
     <label class="small">Space

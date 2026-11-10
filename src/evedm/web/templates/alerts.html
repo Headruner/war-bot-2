@@ -1,13 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Alerts · EVE Distance Meter{% endblock %}
-{% block content %}
-<div class="page alerts-page">
-  <h1>Structure alerts</h1>
-  <p class="small">From zKillboard's live killmail feed: structures <b>destroyed</b> (citadels, engineering complexes and
+{% block page_help %}
+<p class="small">From zKillboard's live killmail feed: structures <b>destroyed</b> (citadels, engineering complexes and
     refineries drop their quantum core), <b>combat</b> next to a known structure, and structures <b>firing</b>. Kills
     are kept only when a battleship or capital (T2 variants included) is on either side or the single killmail is
     worth 500 million ISK or more; destroyed structures are always kept. Attack timers themselves are not public. Each alert lists your closest characters; an online one can get its autopilot
     destination set from here.</p>
+{% endblock %}
+{% block content %}
+<div class="page alerts-page">
+  <h1>Structure alerts</h1>
   <div class="toolbar filters">
     <label class="small"><input type="checkbox" class="a-kind" value="destroyed"> destroyed</label>
     <label class="small"><input type="checkbox" class="a-kind" value="combat"> combat</label>

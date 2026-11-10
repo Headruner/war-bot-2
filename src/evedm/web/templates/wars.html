@@ -1,5 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Wars · EVE Distance Meter{% endblock %}
+{% block page_help %}
+<p class="small">New war declarations from ESI with public structures of both sides. Pick a system to rank your
+      characters by jumps to it.</p>
+{% if census %}
+<p class="small">Every active war in New Eden (declared, fighting or ending), read from ESI.</p>
+<p class="small">Public high-sec structures owned by either side of an active war, nearest to your characters
+      first. A structure can be shot once its war is fighting; pick the system to rank your characters.</p>
+{% endif %}
+{% endblock %}
 {% block content %}
 <div class="page wars-page">
   <h1>Wars</h1>
@@ -8,10 +17,7 @@
     {% if census %}<button class="tab" role="tab" id="tab-btn-stats" data-tab="stats" aria-controls="tab-stats">Statistics</button>
     <button class="tab" role="tab" id="tab-btn-loot" data-tab="loot" aria-controls="tab-loot">High-sec structures</button>{% endif %}
   </div>
-
   <section id="tab-feed" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-feed" hidden>
-    <p class="small">New war declarations from ESI with public structures of both sides. Pick a system to rank your
-      characters by jumps to it.</p>
     <div class="toolbar">
       <label class="small">Type
         <select id="war-type">
@@ -32,7 +38,6 @@
 
   {% if census %}
   <section id="tab-stats" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-stats" hidden>
-    <p class="small">Every active war in New Eden (declared, fighting or ending), read from ESI.</p>
     <div id="kpis" class="kpis"></div>
     <div class="stat-grid">
       <div class="card"><h2>Most wars declared</h2><table class="grid compact" id="top-aggressors"></table></div>
@@ -43,10 +48,7 @@
     </div>
     <p id="census" class="small"></p>
   </section>
-
   <section id="tab-loot" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-loot" hidden>
-    <p class="small">Public high-sec structures owned by either side of an active war, nearest to your characters
-      first. A structure can be shot once its war is fighting; pick the system to rank your characters.</p>
     <div class="toolbar filters">
       <label class="small">Type <select id="f-type"><option value="">all</option></select></label>
       <label class="small">Region <select id="f-region"><option value="">all</option></select></label>

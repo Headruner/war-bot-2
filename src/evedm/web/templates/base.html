@@ -26,6 +26,15 @@
         {% endif %}
       {% endif %}
     </nav>
+    <button type="button" class="info-trigger" popovertarget="page-help" aria-label="Page information" title="Page information">
+      <span aria-hidden="true">i</span>
+    </button>
+    <aside id="page-help" popover aria-label="Page information">
+      <header><strong>Page information</strong>
+        <button type="button" popovertarget="page-help" popovertargetaction="hide" aria-label="Close information">×</button>
+      </header>
+      {% block page_help %}{% endblock %}
+    </aside>
   </header>
   {% if demo %}<div class="demo-banner">Demo mode: fictional characters, no EVE login needed.<span class="detail"> Universe data: {{ universe }}</span></div>{% endif %}
   {% block content %}{% endblock %}

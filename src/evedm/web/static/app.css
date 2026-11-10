@@ -340,3 +340,38 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
 .badge.wh, .hop.wh { background: rgba(180, 140, 255, 0.2); color: #d9c7ff; border: 1px solid rgba(180, 140, 255, 0.5); }
 .route-bar .wh-note { margin-top: 2px; color: #d9c7ff; font-size: 0.9em; }
 .legend .wh-line { display: inline-block; width: 18px; border-top: 2px dashed #b48cff; vertical-align: middle; margin-right: 4px; }
+
+
+/* Shared page help. Native popovers support keyboard activation, Escape and outside dismissal. */
+.info-trigger, #page-help button {
+  display: inline-grid; place-items: center; width: 44px; height: 44px; padding: 0;
+  background: transparent; color: var(--text); border: 0; cursor: pointer;
+}
+.info-trigger span { border: 1.5px solid currentColor; border-radius: 50%; width: 21px; line-height: 18px;
+  text-align: center; font: bold 16px/18px Georgia, serif; }
+#page-help { position: fixed; inset: 56px 12px auto auto; margin: 0; padding: 12px 16px;
+  width: min(28rem, calc(100% - 24px)); max-height: calc(100dvh - 72px); overflow: auto;
+  background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 8px 30px #0008; overflow-wrap: anywhere; }
+#page-help header { display: flex; align-items: center; justify-content: space-between; }
+#page-help button { font-size: 24px; }
+#page-help pre { white-space: pre-wrap; }
+#page-help p, #page-help .small { font-size: 14px; }
+:focus-visible { outline: 2px solid var(--high); outline-offset: 2px; }
+
+@media (max-width: 820px) {
+  .topbar { gap: 4px 8px; }
+  .info-trigger { order: 1; margin-left: auto; }
+  .nav { order: 2; flex: 0 0 100%; flex-wrap: nowrap; justify-content: flex-start;
+    gap: 12px; overflow-x: auto; }
+  .nav:empty { display: none; }
+  .nav a, .nav .link { display: inline-flex; align-items: center; min-height: 44px; white-space: nowrap; }
+  .combo, .list-pane, .page .card { min-width: 0; }
+  .page .card:has(table), .page .notice:has(table) { overflow-x: auto; }
+  .toolbar .btn, .tab, .btn.icon, .target .btn { min-height: 44px; }
+  .btn.icon { min-width: 44px; }
+  .toolbar label:has(input[type=checkbox]), .hub-toggle label { display: inline-flex; align-items: center; min-height: 44px; }
+  .grid input[type=checkbox] { width: 24px; height: 24px; }
+  .page input:not([type=checkbox]), .page select, .target input:not([type=radio]) { font-size: 16px; }
+  .hub-toggle { flex-wrap: wrap; min-width: 0; }
+}

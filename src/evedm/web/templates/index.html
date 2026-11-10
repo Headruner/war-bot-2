@@ -19,16 +19,18 @@
     <label><input type="radio" name="hub" value="{{ h | lower }}"> {{ h }}</label>
     {% endfor %}{% endif %}
     {% if ansiblex_enabled %}<label title="Adds the Ansiblex jump gates each character may use (read through ESI)"><input type="radio" name="hub" value="ansiblex"> Ansiblex</label>{% endif %}
-    {% if evescout_enabled %}<span class="small">(EVE-Scout)</span>{% endif %}
   </fieldset>
   {% endif %}
 </form>
+{% endblock %}
+{% block page_help %}
+<p class="hint">Type a target system or paste the notification text. Characters are ranked by stargate jumps; click one to see its route.</p>
+{% if evescout_enabled %}<p>Thera and Turnur connections come from EVE-Scout.</p>{% endif %}
 {% endblock %}
 {% block content %}
 <main class="split" data-auto-refresh="{{ auto_refresh_s }}">
   <section class="list-pane" aria-label="Characters ranked by jumps">
     <div id="target-info" class="target-info">
-      <p class="hint">Type a target system or paste the notification text. Characters are ranked by stargate jumps; click one to see its route.</p>
     </div>
     <div id="thera-info" class="small thera-info" hidden></div>
     <div id="recent" class="chips"></div>
