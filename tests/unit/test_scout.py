@@ -128,6 +128,22 @@ async def test_unreadable_by_one_character_is_read_with_another(settings, servic
     )
 
 
+async def test_unknown_structure_resolved_by_reader_without_assets(settings, services, world):
+    await link(services, B, B)
+    scout = scout_for(settings, services)
+    await scout.run()
+    assert S_PRIVATE in {row["structure_id"] for row in scout.unresolved()}
+
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
+    services["db"].execute("UPDATE known_structures SET checked_at=0 WHERE structure_id=?", (S_PRIVATE,))
+    await scout.run()
+    row = next(row for row in scout.structures() if row["structure_id"] == S_PRIVATE)
+    assert row["name"] == "Secret" and row["owner"] == "Citadel Owners Inc"
+    assert row["owner_zkill"] == f"https://zkillboard.com/corporation/{CORP}/"
+    assert row["seen_by"] == 1
+    assert S_PRIVATE not in {row["structure_id"] for row in scout.unresolved()}
+
+
 async def test_refresh_intervals_and_unlinked_characters(settings, services, world, fake_app):
     await link(services, A, A)
     scout = scout_for(settings, services)

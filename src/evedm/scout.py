@@ -3,7 +3,7 @@
 For each character that granted ``esi-assets.read_assets.v1`` the scout reads the asset list (locations only are
 kept) and takes every location that is not one of the character's own items as a structure candidate. Candidates are
 read from ``/universe/structures/{id}`` with ``esi-universe.read_structures.v1``, using the token of a character
-that has assets there (403 for one character: the next one is tried). NPC stations never appear: only Upwell
+that has assets there first, then other scoped characters for unidentified structures. NPC stations never appear: only Upwell
 structures answer that endpoint. The result is shared by every main on the site (the Structures page) and also feeds
 the structure lists of the Wars page.
 """
@@ -59,8 +59,8 @@ class StructureScout:
         self._rows: tuple[int, list[dict[str, Any]]] | None = None
 
     # -- which characters can contribute ---------------------------------------------------------
-    def contributors(self) -> list[tuple[int, int, list[str]]]:
-        """(character_id, owner_id, scopes) per EVE character with the asset scope, one link per character."""
+    def contributors(self, scope: str = READ_ASSETS) -> list[tuple[int, int, list[str]]]:
+        """(character_id, owner_id, scopes) per EVE character with the requested scope, one link per character."""
         best: dict[int, tuple[int, int, list[str]]] = {}
         rows = self.db.query(
             "SELECT c.owner_id, c.character_id, c.scopes, c.status, c.demo, t.updated_at FROM characters c "
@@ -68,7 +68,7 @@ class StructureScout:
         )
         for r in rows:
             scopes = json.loads(r["scopes"])
-            if r["status"] == REAUTH or r["demo"] or READ_ASSETS not in scopes:
+            if r["status"] == REAUTH or r["demo"] or scope not in scopes:
                 continue
             best[r["character_id"]] = (r["character_id"], r["owner_id"], scopes)  # newest token wins
         return list(best.values())
@@ -175,7 +175,7 @@ class StructureScout:
             self.db.execute("DELETE FROM structure_sightings")
         # known_structures is never pruned: a structure stays until ESI answers 404 (destroyed or unanchored), then it
         # is kept as status 'gone' (not listed, not asked again), whoever sights it and whether or not anyone may dock
-        await self._resolve(contributors, stats)
+        await self._resolve(stats)
         await self._names()
         self.version += 1
         self._notify()
@@ -183,25 +183,27 @@ class StructureScout:
         log.info("structure scout: %s", self.state["last_run"])
         return self.state["last_run"]
 
-    async def _resolve(self, contributors: list[tuple[int, int, list[str]]], stats: dict[str, int]) -> None:
-        readers = {c: (c, o) for c, o, scopes in contributors if READ_STRUCTURES in scopes}
+    async def _resolve(self, stats: dict[str, int]) -> None:
+        readers = {c: (c, o) for c, o, _ in self.contributors(READ_STRUCTURES)}
         stale = time.time() - self.s.structure_refresh_hours * 3600
         stale_denied = time.time() - self.s.no_access_refresh_hours * 3600  # a refused read is an ESI error: ask rarely
         # a structure that was read (status ok) is known: skipped from then on, unless a refresh interval is set
         refresh_known = self.s.structure_refresh_hours > 0
         todo = self.db.query(
-            "SELECT structure_id FROM known_structures WHERE status = 'new' "
+            "SELECT structure_id, name, owner_id FROM known_structures WHERE status = 'new' "
             "OR (status = 'ok' AND ? AND checked_at < ?) OR (status = 'no_access' AND checked_at < ?) "
             "ORDER BY checked_at LIMIT 2000",
             (int(refresh_known), stale, stale_denied),
         )
         sem = asyncio.Semaphore(self.s.concurrency)
 
-        async def resolve(sid: int) -> None:
-            seen_by = [
+        async def resolve(sid: int, unidentified: bool) -> None:
+            seen_by = {
                 r[0] for r in self.db.query("SELECT character_id FROM structure_sightings WHERE structure_id=?", (sid,))
-            ]
-            candidates = [readers[c] for c in seen_by if c in readers]
+            }
+            candidates = [readers[c] for c in sorted(seen_by) if c in readers]
+            if unidentified:
+                candidates.extend(reader for cid, reader in readers.items() if cid not in seen_by)
             if not candidates:
                 # nobody who may read it right now: keep what we know and try again later, behind the rows not yet asked
                 self.db.execute("UPDATE known_structures SET checked_at=? WHERE structure_id=?", (time.time(), sid))
@@ -252,7 +254,7 @@ class StructureScout:
                 )
                 stats["no_access" if outcome == "no_access" else "gone"] += 1
 
-        await asyncio.gather(*(resolve(r[0]) for r in todo))
+        await asyncio.gather(*(resolve(r["structure_id"], not r["name"] or not r["owner_id"]) for r in todo))
 
     async def _names(self) -> None:
         ids = {r[0] for r in self.db.query("SELECT DISTINCT owner_id FROM known_structures WHERE owner_id IS NOT NULL")}

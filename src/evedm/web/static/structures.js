@@ -12,7 +12,7 @@ const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const PAGE = 100;
 const SPACE = { high: "high-sec", low: "low-sec", null: "null-sec", wormhole: "wormhole", unknown: "unknown space" };
-const STATUS = { ok: "readable", no_access: "no docking access: name, owner and system unknown", unread: "not read yet" };
+const STATUS = { ok: "readable", no_access: "structure details unavailable from ESI", unread: "not read yet" };
 let offset = 0;
 
 function secChip(security) {
@@ -76,7 +76,7 @@ function row(r) {
   }
   const seen = el("td", "small");
   seen.append(el("div", null, ago(r.last_seen)), el("div", null, `${r.seen_by} character${r.seen_by === 1 ? "" : "s"}`));
-  if (!r.access && r.status === "ok") seen.append(el("div", null, "no docking access now"));
+  if (!r.access && r.status === "ok") seen.append(el("div", null, "structure details currently unavailable from ESI"));
   tr.append(jumps, sys, st, owner, seen);
   return tr;
 }
