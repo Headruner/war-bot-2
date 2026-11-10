@@ -18,12 +18,11 @@
   </div>
   {% if structures_enabled %}<p class="small">Characters that granted the structure scopes share the player-owned
     structures where they have assets with everyone on this site (<a href="/structures">Structures</a>). Re-authorize a
-    character with <b>Add character</b> to grant them. <b>Notifications</b> is on for every character; it takes effect once
-    the character has assets in at least {{ min_structures }} player structures.</p>{% endif %}
+    character with <b>Add character</b> to grant them.</p>{% endif %}
   <div id="import-report" class="notice" hidden></div>
   <div class="card">
     <table class="grid">
-      <thead><tr><th></th><th>Character</th><th>Status</th><th>Ranked</th><th title="Read this character's notifications for the Notifications page">Notifications</th><th>Tags</th><th class="hide-sm">Scopes</th><th></th></tr></thead>
+      <thead><tr><th></th><th>Character</th><th>Status</th><th>Ranked</th><th title="Read this character's notifications for the Notifications page">Notifications</th><th>Tags</th><th></th></tr></thead>
       <tbody id="char-rows"></tbody>
     </table>
     <p id="empty" class="small" hidden>No characters yet. Add one through EVE SSO or import a JSON bundle.</p>

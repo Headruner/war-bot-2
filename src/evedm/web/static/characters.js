@@ -59,20 +59,12 @@ async function load() {
         load();
       });
       tdNotify.append(notify);
-      if (c.notify && c.min_structures > 0 && c.structures < c.min_structures) {
-        const hint = el("div", "small", `${c.structures} of ${c.min_structures} structures`);
-        hint.title = `Not read yet: a character is read only with assets in at least ${c.min_structures} player ` +
-          "structures (NPC stations do not count). Counted by the structure scout.";
-        tdNotify.append(hint);
-      }
     }
 
     const tdTags = el("td");
     const tags = el("input"); tags.type = "text"; tags.value = c.tags.join(", "); tags.placeholder = "e.g. cyno, logi";
     tags.addEventListener("change", () => api(`/api/characters/${c.character_id}`, { method: "PATCH", body: JSON.stringify({ tags: tags.value.split(",") }) }));
     tdTags.append(tags);
-
-    const tdScopes = el("td", "small hide-sm", c.scopes.map((s) => s.split(".")[1]).join(", "));
 
     const tdActions = el("td");
     const rm = el("button", "btn danger", "Remove"); rm.type = "button";
@@ -83,7 +75,7 @@ async function load() {
       load();
     });
     tdActions.append(rm);
-    tr.append(tdSel, tdName, tdStatus, tdEnabled, tdNotify, tdTags, tdScopes, tdActions);
+    tr.append(tdSel, tdName, tdStatus, tdEnabled, tdNotify, tdTags, tdActions);
     body.append(tr);
   }
 }
