@@ -6,9 +6,9 @@
 2. Callback URL: the address you open the app at, plus `/sso/callback`, e.g. `http://localhost:8080/sso/callback` or
    `https://evedm.<tailnet>.ts.net/sso/callback`.
 3. Scopes: `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
-   for the Notifications page `esi-characters.read_notifications.v1`, for the Structures page `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1`, and for the **Set
+   for the Notifications page `esi-characters.read_notifications.v1`, for the Structures page `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1`, for the **Ansiblex** route mode `esi-search.search_structures.v1`, and for the **Set
    destination** buttons `esi-ui.write_waypoint.v1`. EVE SSO refuses the sign-in (`invalid_scope`) while one of them
-   is missing on the application; `EVE_OPTIONAL_SCOPES=none` leaves the last three out. Characters signed in before
+   is missing on the application; `EVE_OPTIONAL_SCOPES=none` leaves the last four out. Characters signed in before
    a scope was added grant it with **Add character** (sign in with the main first).
 4. Put the client ID and secret into `.env` (copy `.env.example`), together with a long random `EVEDM_SECRET_KEY` and your
    character ID in `EVEDM_ALLOWED_LOGIN_CHARACTERS`.
@@ -96,7 +96,7 @@ At <https://developers.eveonline.com/applications> create an application with
 - callback `http://<vm-address>:<port>/sso/callback`, identical to `EVE_CALLBACK_URL` in step 6 (scheme, host, port);
 - the scopes `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
   `esi-characters.read_notifications.v1` (Notifications page), `esi-universe.read_structures.v1`,
-  `esi-assets.read_assets.v1` (Structures page) and `esi-ui.write_waypoint.v1` (Set destination). A scope missing on
+  `esi-assets.read_assets.v1` (Structures page), `esi-search.search_structures.v1` (Ansiblex routes) and `esi-ui.write_waypoint.v1` (Set destination). A scope missing on
   the application makes EVE SSO answer `invalid_scope`.
 
 Note the Client ID and the Secret.

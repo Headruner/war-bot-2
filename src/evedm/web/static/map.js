@@ -76,7 +76,8 @@ class StarMap {
   /* ---------------------------------------------------------------- state */
   setScene({ targetId, routeIds, originName, markers, legs }) {
     this.target = targetId != null ? this.indexOf(targetId) ?? null : null;
-    // legs: [{mode: "gate"|"wormhole", ids, hub}] - gate legs are drawn solid, the wormhole leg dashed
+    // legs: [{mode: "gate"|"wormhole"|"ansiblex", ids, hub}] - gate legs are drawn solid, the wormhole leg dashed,
+    // an Ansiblex jump dotted in cyan
     this.legs = legs ? legs.map((l) => ({ mode: l.mode, hub: l.hub,
       pts: l.ids.map((id) => this.indexOf(id)).filter((i) => i !== undefined) })) : null;
     this.route = routeIds ? routeIds.map((id) => this.indexOf(id)).filter((i) => i !== undefined) : null;
@@ -276,20 +277,28 @@ class StarMap {
 
     // selected route: one gold line, or gold gate legs with a dashed wormhole leg between them
     if (this.route && this.route.length > 1) {
-      const legs = this.legs ? this.legs.filter((l) => l.pts.length > 1 || l.mode === "wormhole")
+      const legs = this.legs ? this.legs.filter((l) => l.pts.length > 1 || l.mode === "wormhole" || l.mode === "ansiblex")
         : [{ mode: "gate", pts: this.route }];
       ctx.lineJoin = "round"; ctx.lineCap = "round";
       for (const leg of legs) {
         const pts = leg.pts.map((i) => this.toScreen(i));
         if (pts.length < 2) continue;
-        const wh = leg.mode === "wormhole";
+        const wh = leg.mode === "wormhole", ax = leg.mode === "ansiblex";
         const line = () => { ctx.beginPath(); pts.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke(); };
         ctx.setLineDash([]);
-        ctx.strokeStyle = wh ? "rgba(180,140,255,0.25)" : "rgba(255,209,102,0.22)"; ctx.lineWidth = 9; line();
-        ctx.strokeStyle = wh ? "#b48cff" : "#ffd166"; ctx.lineWidth = 2.6;
+        ctx.strokeStyle = wh ? "rgba(180,140,255,0.25)" : ax ? "rgba(92,225,230,0.25)" : "rgba(255,209,102,0.22)";
+        ctx.lineWidth = 9; line();
+        ctx.strokeStyle = wh ? "#b48cff" : ax ? "#5ce1e6" : "#ffd166"; ctx.lineWidth = 2.6;
         if (wh) ctx.setLineDash([7, 6]);
+        if (ax) ctx.setLineDash([2, 5]);
         line();
         ctx.setLineDash([]);
+        if (ax) {
+          const [x0, y0] = pts[0], [x1, y1] = pts[pts.length - 1];
+          ctx.font = "600 12px Segoe UI, Inter, system-ui, sans-serif";
+          ctx.fillStyle = "#9defe2"; ctx.textAlign = "center";
+          ctx.fillText("Ansiblex", (x0 + x1) / 2, (y0 + y1) / 2 - 8);
+        }
         if (wh && leg.hub) {
           const [x0, y0] = pts[0], [x1, y1] = pts[pts.length - 1];
           ctx.font = "600 12px Segoe UI, Inter, system-ui, sans-serif";

@@ -37,6 +37,17 @@ log = logging.getLogger("evedm.alerts")
 
 STRUCTURE_CATEGORY = 65  # inventory category "Structure" (Upwell)
 CORE_GROUPS = {"Citadel", "Engineering Complex", "Refinery"}  # these drop a quantum core when destroyed
+# Hull groups that count as "big" (T2 variants have their own groups). Freighters are not capital ships in EVE.
+BATTLESHIP_GROUPS = {"Battleship", "Black Ops", "Marauder"}
+CAPITAL_GROUPS = {
+    "Carrier",
+    "Dreadnought",
+    "Lancer Dreadnought",
+    "Force Auxiliary",
+    "Supercarrier",
+    "Titan",
+    "Capital Industrial Ship",  # Rorqual
+}
 RESUME_MAX_AGE_S = 20 * 3600  # R2Z2 keeps files at least 24 h: older positions restart at the pointer
 BLOCKED_BACKOFF_S = 600
 ZKILL = "https://zkillboard.com"
@@ -202,6 +213,26 @@ class AlertService:
     async def is_structure(self, type_id: int | None) -> bool:
         return (await self.type_info(type_id))[0] == STRUCTURE_CATEGORY
 
+    async def hull_class(self, type_id: int | None) -> str:
+        """"capital", "battleship" or "" (any other hull, or a type ESI could not tell us about yet)."""
+        group = (await self.type_info(type_id))[1]
+        if group in CAPITAL_GROUPS:
+            return "capital"
+        return "battleship" if group in BATTLESHIP_GROUPS else ""
+
+    async def weigh(self, victim: dict[str, Any], attackers: list[dict[str, Any]], isk: float) -> tuple[bool, bool]:
+        """(big, capitals) of a killmail.
+
+        big: a battleship or capital hull (T2 variants included) on either side, or a loss worth at least
+        ``min_value_isk``. capitals: the victim is a capital and at least one attacker flew one too.
+        """
+        victim_class = await self.hull_class(victim.get("ship_type_id"))
+        types = {a.get("ship_type_id") for a in attackers if a.get("ship_type_id")}
+        classes = {await self.hull_class(t) for t in types}
+        capitals = victim_class == "capital" and "capital" in classes
+        big = bool(victim_class or classes - {""}) or (self.s.min_value_isk > 0 and isk >= self.s.min_value_isk)
+        return big, capitals
+
     # -- known structures -------------------------------------------------------------------------
     def known_in(self, system_id: int) -> list[dict[str, Any]]:
         """Known structures of a system: the scout's finds and the public dataset (positions where known)."""
@@ -276,6 +307,7 @@ class AlertService:
             "victim_corp_id": victim.get("corporation_id"),
             "attackers": len(attackers),
             "isk": float(zkb.get("totalValue") or 0),
+            "capitals": 0,
         }
         found: list[dict[str, Any]] = []
         if await self.is_structure(victim.get("ship_type_id")):
@@ -330,6 +362,11 @@ class AlertService:
                     "core_drop": 0,
                 }
             )
+        if any(a["kind"] != "destroyed" for a in found):
+            big, capitals = await self.weigh(victim, attackers, base["isk"])
+            if self.s.big_kills_only and not big:  # a destroyed structure is always kept, whatever the kill is worth
+                found = [a for a in found if a["kind"] == "destroyed"]
+            found = [a | {"capitals": int(capitals)} if a["kind"] != "destroyed" else a for a in found]
         new = []
         now = time.time()
         with self.db.tx() as c:
@@ -337,8 +374,8 @@ class AlertService:
                 cur = c.execute(
                     "INSERT OR IGNORE INTO structure_alerts(kind, killmail_id, killmail_hash, killmail_time,"
                     " solar_system_id, structure_id, structure_type_id, structure_name, owner_id, distance_km,"
-                    " victim_type_id, victim_corp_id, attackers, isk, core_drop, created_at)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " victim_type_id, victim_corp_id, attackers, isk, core_drop, created_at, capitals)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         a["kind"],
                         a["killmail_id"],
@@ -356,6 +393,7 @@ class AlertService:
                         a["isk"],
                         a["core_drop"],
                         now,
+                        a["capitals"],
                     ),
                 )
                 if cur.rowcount:  # 0 when the same killmail already raised this alert
@@ -443,6 +481,7 @@ class AlertService:
             "attackers": r["attackers"],
             "isk": r["isk"],
             "core_drop": bool(r["core_drop"]),
+            "capitals": bool(r["capitals"]),
             "zkill": f"{ZKILL}/kill/{r['killmail_id']}/",
         }
 
@@ -492,9 +531,13 @@ class AlertService:
         return payload
 
     # -- reading ------------------------------------------------------------------------------------------
-    def recent(self, hours: float = 24, kinds: list[str] | None = None, limit: int = 200) -> list[Any]:
+    def recent(
+        self, hours: float = 24, kinds: list[str] | None = None, limit: int = 200, capitals_only: bool = False
+    ) -> list[Any]:
         sql = "SELECT * FROM structure_alerts WHERE created_at > ?"
         params: list[Any] = [time.time() - hours * 3600]
+        if capitals_only:
+            sql += " AND capitals=1"
         if kinds:
             sql += f" AND kind IN ({','.join('?' * len(kinds))})"
             params += kinds

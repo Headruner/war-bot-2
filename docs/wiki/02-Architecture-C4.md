@@ -47,7 +47,25 @@ Key mechanisms:
   answer 404 for anyone else, so there is no link to find and no endpoint to probe.
 - **Notifications for the whole site** (`NotificationService`): every registered character with the notifications
   scope and a valid token is polled with its own token once per ESI cache window (600 s), whoever linked it; the
-  page lists them all and adds the viewer's own three closest characters to each card.
+  page lists them all and adds the viewer's own three closest characters to each card. A character is polled only
+  when its `notify` tick is on and `structure_counts()` (player structures, location id >= 1e12, holding assets) reaches
+  `min_structures` (10). The next check is `Expires` + 1 s from ESI (`esi.cached_expiry`), clamped to
+  `min_interval_s`..`character_interval_s`; transient errors retry after `retry_s`; the loop sleeps until the earliest due
+  character. Each card gets the closer of Thera / Turnur (`EveScout.nearest`) and each closest character its route type.
+  Kept fast: a re-read parses only entries not stored yet (`Database.notification_ids`, libyaml loader), any failure
+  backs the character off, the purge runs hourly over an index on `created_at` (schema v10), the API measures each
+  system once per request and never waits for EVE-Scout once a list exists (`ensure_fresh_soon`), and the page
+  redraws only when the answer changed. Delivery: reads are spread over ESI's window (`staggered()`), a stored
+  notification bumps `version` and wakes the pages holding `GET /api/notifications/wait` (long poll), and
+  `post_discord()` sends one embed per event through the wars webhook (`DiscordNotifier.send` / `edit`,
+  `notification_posts`, `character_notifications.posted`; schema v11).
+- **Big-kill filter** (`alerts.py`): `hull_class()` maps a hull's ESI group to battleship (Battleship, Black Ops,
+  Marauder) or capital (Carrier, Dreadnought, Lancer, FAX, Supercarrier, Titan, Capital Industrial); `weigh()` returns
+  (big, capitals). Combat / firing alerts without a big hull or `min_value_isk` are dropped; the `capitals` flag is stored.
+- **Ansiblex** (`AnsiblexService`, `ansiblex.py`): per character, ESI structure search (`esi-search.search_structures.v1`,
+  term " » ") lists visible gates, `/universe/structures/{id}` names them; the "A » B - name" convention gives the two
+  systems. `UniverseGraph.route_with_links` runs the BFS over stargates plus the character's one-way links (1 jump each);
+  `RankingService` adds `ansiblex` and `route_legs` (mode `ansiblex`). Single-flight background refresh.
 - **Structures from assets** (`StructureScout`): the assets of every registered character (ESI) reveal the structure
   IDs where something is stored; each ID is then read from `/universe/structures/{id}` with the token of a
   character that has an asset there (next character on 403). The pooled result feeds the Structures page.
@@ -73,6 +91,8 @@ Key mechanisms:
 ![Members-only tabs: Notifications and Structures](../diagrams/seq-members-tabs.svg)
 
 ![Ranking through Thera / Turnur](../diagrams/seq-thera-route.svg)
+
+![Ranking over Ansiblex jump gates](../diagrams/seq-ansiblex-route.svg)
 
 ## Data model
 

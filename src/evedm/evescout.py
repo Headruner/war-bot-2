@@ -23,6 +23,20 @@ log = logging.getLogger("evedm.evescout")
 
 HUB_IDS = {"thera": 31000005, "turnur": 30002086}  # fallbacks when the feed has no id
 WORMHOLE_JUMPS = 2  # system -> hub, hub -> system
+SIZES = ("small", "medium", "large", "xlarge", "capital")  # smallest to largest mass allowance
+
+
+def normalize_size(value: Any) -> str | None:
+    """EVE-Scout's ``max_ship_size`` as one of ``SIZES`` (it spells the fourth class "xlarge" / "x-large"), or None."""
+    text = "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+    text = {"xl": "xlarge", "extralarge": "xlarge", "xlarges": "xlarge", "cap": "capital"}.get(text, text)
+    return text if text in SIZES else None
+
+
+def min_size(*values: Any) -> str | None:
+    """The smaller of the given ship sizes (what fits through both wormholes); unknown sizes are ignored."""
+    known = [v for v in (normalize_size(x) for x in values) if v]
+    return min(known, key=SIZES.index) if known else None
 
 
 def _int(value: Any) -> int | None:
@@ -52,6 +66,7 @@ class EveScout:
         self.fetched_at = 0.0
         self.error: str | None = None
         self._lock = asyncio.Lock()
+        self._background: asyncio.Task[None] | None = None
         self._searches: dict[tuple[str, tuple[int, ...]], tuple[int, Any]] = {}
         if demo:
             self.load(self.demo_payload())
@@ -70,7 +85,9 @@ class EveScout:
                         "out_system_id": HUB_IDS[hub.lower()],
                         "in_system_name": name,
                         "wh_type": "K162",
-                        "max_ship_size": "large",
+                        "max_ship_size": ("small", "medium", "large", "xlarge", "capital")[n % 5],
+                        "in_signature": f"{'ABCDEF'[n]}{'XYZABC'[n]}{'QRSTUV'[n]}-{100 + n * 17}",
+                        "out_signature": f"{'KLMNOP'[n]}{'DEFGHI'[n]}{'WXYZAB'[n]}-{200 + n * 13}",
                         "remaining_hours": 20 - n,
                         "signature_type": "wormhole",
                     }
@@ -99,6 +116,10 @@ class EveScout:
                 "system_index": idx,
                 "wh_type": item.get("wh_type"),
                 "max_ship_size": item.get("max_ship_size"),
+                "size": normalize_size(item.get("max_ship_size")),
+                # EVE-Scout: in_* is the k-space system's side of the wormhole, out_* the hub's side
+                "in_signature": item.get("in_signature") or item.get("in_sig"),
+                "out_signature": item.get("out_signature") or item.get("out_sig"),
                 "remaining_hours": remaining,
                 "expires_at": item.get("expires_at"),
             }
@@ -145,6 +166,17 @@ class EveScout:
                 log.warning("EVE-Scout list not read (keeping the last one): %s", self.error)
             self.fetched_at = time.time()  # also after a failure: do not hammer a server that is down
 
+    async def ensure_fresh_soon(self) -> None:
+        """Like ``ensure_fresh`` but never makes a page wait for EVE-Scout once a list exists: a stale list is
+        served as it is and re-read in the background (the first read still waits)."""
+        if self.demo or self.http is None or time.time() - self.fetched_at < self.s.refresh_s:
+            return
+        if self.fetched_at <= 0:
+            await self.ensure_fresh()
+            return
+        if self._background is None or self._background.done():
+            self._background = asyncio.ensure_future(self.ensure_fresh())
+
     async def _get(self, url: str) -> Any:
         assert self.http is not None
         resp = await self.http.get(
@@ -176,7 +208,18 @@ class EveScout:
                     {
                         "hub": hub,
                         "system": self.g.describe(idx),
-                        **{k: info[k] for k in ("wh_type", "max_ship_size", "remaining_hours", "expires_at")},
+                        **{
+                            k: info[k]
+                            for k in (
+                                "wh_type",
+                                "max_ship_size",
+                                "size",
+                                "in_signature",
+                                "out_signature",
+                                "remaining_hours",
+                                "expires_at",
+                            )
+                        },
                     }
                 )
         return out
@@ -195,6 +238,31 @@ class EveScout:
         """The configured spelling of a hub (``thera`` -> ``Thera``), or None when it is not configured."""
         wanted = value.strip().lower()
         return next((h for h in self.s.hubs if h.lower() == wanted), None)
+
+    def nearest(self, origin: int, avoid: list[int] | tuple[int, ...] = ()) -> dict[str, Any] | None:
+        """The hub (Thera or Turnur) closest to ``origin``: gates to the nearest listed system plus the wormhole.
+
+        Both hubs are measured and only the closer one is returned (the first configured one on a tie); None when
+        no hub lists a system reachable by gates from ``origin``.
+        """
+        avoid_key = tuple(sorted(avoid))
+        best: dict[str, Any] | None = None
+        for hub, h in self.hubs.items():
+            dist, orig, _step = self._search(hub, avoid_key)
+            if dist[origin] < 0:
+                continue
+            entry = orig[origin]
+            link = h["links"][entry]
+            plan = {
+                "hub": hub,
+                "hub_id": h["id"],
+                "gates": int(dist[origin]),
+                "jumps": int(dist[origin]) + 1,  # the gates, then the wormhole into the hub
+                "entry": self.g.describe(entry) | {k: link.get(k) for k in ("wh_type", "size", "in_signature")},
+            }
+            if best is None or plan["jumps"] < best["jumps"]:
+                best = plan
+        return best
 
     def via(
         self,

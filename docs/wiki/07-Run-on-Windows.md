@@ -47,9 +47,10 @@ docker run --rm -p 8080:8080 -v "${PWD}\data\demo:/app/data" `
 2. Callback URL: `http://localhost:8080/sso/callback` (must match `EVE_CALLBACK_URL` exactly).
 3. Scopes: `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
    `esi-characters.read_notifications.v1` (Notifications page), for the Structures page
-   `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1`, and for **Set
+   `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1`, for the Ansiblex route mode
+   `esi-search.search_structures.v1`, and for **Set
    destination** `esi-ui.write_waypoint.v1`. EVE SSO refuses the sign-in (`invalid_scope`) while one of them is
-   missing on the application; `EVE_OPTIONAL_SCOPES=none` leaves the last three out.
+   missing on the application; `EVE_OPTIONAL_SCOPES=none` leaves the last four out.
 4. Copy the **Client ID** and **Secret Key**.
 
 ## 4. Create `.env`
@@ -216,14 +217,19 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
   Which kinds are posted: `alerts.discord.kinds` in `config/evedm.example.yaml`.
 - Put your mail or Discord name into `EVEDM_ALERTS_CONTACT` so zKillboard can reach you about your traffic. Switch
   alerts off with `EVEDM_ALERTS_ENABLED=0`. Alerts are kept 7 days.
+- **Big kills only**: combat and firing alerts are kept only when the kill has a battleship (Black Ops and Marauders
+  included) or capital hull (T2 included) or a single loss above 500M ISK (`alerts.big_kills_only`,
+  `alerts.min_value_isk`). Destroyed structures always alert. The **capitals** checkbox on the page shows only kills
+  with at least one capital on each side.
 
 ## Notifications page (0.8.0, site-wide after 0.8.0)
 
 The EVE notifications of **every character registered on the site that has a valid token**, read from ESI with
 each character's own token: **assets moved to asset safety**, **structures under attack**, structure state and
 fuel, starbase alerts. Each card names the character that received it (and its main), shows the system with its
-security and region, the EVE time, and the three closest characters from *your* **Characters** set and *your*
-**Roster** set, so you can see at a glance who is near.
+security and region, the EVE time (no local time), a violet **Thera** or orange **Turnur** label for whichever hub is closer
+to the system, and the three closest characters from *your* **Characters** set and *your*
+**Roster** set (live characters with their route type: gates, Thera or Turnur; roster characters with jumps only), so you can see at a glance who is near.
 
 - The **Notifications** and **Structures** tabs are open to one alliance (BB, 99010320): `access.alliance_ids` in
   `config/evedm.example.yaml` (or `EVEDM_ACCESS_ALLIANCES=99010320,...` in `.env`; the old
@@ -231,16 +237,28 @@ security and region, the EVE time, and the three closest characters from *your* 
   sign-in and again every 6 hours. Mains of other alliances do not see either link, and the pages answer 404.
   An empty list opens both tabs to every signed-in main.
 - Every member sees the notifications of all registered characters, including those linked by other mains. A
-  character is read as long as it has granted the notifications scope and its token has not been revoked; the
-  on/off switch on the Characters page (which only affects the ranking) does not matter.
+  character is read when it has granted the notifications scope, its token has not been revoked, its **Notifications**
+  tick on the Characters page is on (default) and it holds assets in at least **10 player structures** (NPC stations do
+  not count; `notifications.min_structures`). The ranking on/off switch does not matter. The Characters page shows
+  "N of M structures" next to the tick.
 - It needs one more scope on your EVE application: tick `esi-characters.read_notifications.v1`, then
   **Add character** again for every character. A character that has not granted it is marked Limited and is
   never polled.
 - ESI caches notifications for 600 seconds per character, so the app asks once per character per cache window
-  and the page refreshes every minute; a new notification shows up within about a minute of ESI publishing it.
+  and the page refreshes every minute. The next read of a character is scheduled at ESI's own cache expiry (not a fixed
+  10 minutes after the last read, which could delay a notification by up to ~15-20 minutes); a transient ESI error
+  is retried after 60 s (`notifications.min_interval_s`, `retry_s`).
 - Everything else ESI sends (corporation mail, bills, insurance, sovereignty…) is filtered out until you tick it
   under **Filters**; types ESI sends that CCP added after this release appear under **Other notifications**.
   Your selection and the period are remembered in your browser.
+- **Fast delivery**: the page keeps one request open and reloads the moment a new notification is stored; the
+  characters' reads are spread over ESI's 10-minute window, so an event several characters receive appears after
+  the earliest of them. ESI's 10-minute cache per character remains the limit.
+- **Discord**: new notifications are posted through the wars webhook (`EVEDM_WARS_DISCORD_WEBHOOK`), one message per
+  event, edited to list every character that received it. Own channel: `EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK`; ping a
+  role on attacks: `EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID`; off: `EVEDM_NOTIFICATIONS_DISCORD_ENABLED=0`.
+  Nothing older than an hour is posted, so switching it on does not flood the channel. Everyone in that channel
+  sees the notifications of all registered characters.
 - Notifications are kept 30 days (`notifications.retention_days`). Switch the section off with
   `EVEDM_NOTIFICATIONS_ENABLED=0`.
 
@@ -255,6 +273,22 @@ Thera: ..." and the map draws a dashed purple leg between two gold gate legs. Co
 site are kept; J-space exits are skipped because they have no gates. If EVE-Scout cannot be reached the last list is kept and
 the error is shown. Switch it off with `EVEDM_EVESCOUT_ENABLED=0`; change the cache time with `EVEDM_EVESCOUT_REFRESH_S`. The
 Roster tab is not affected.
+
+The route bar shows **InSig / OutSig** (the signature IDs at the k-space system and at the hub) next to the entry and exit
+systems, and the wormhole hop carries an icon of the **smallest ship size** of the two neighbouring systems: small, medium,
+large, X-large or capital (from EVE-Scout's `max_ship_size`).
+
+## Ansiblex routes on the Ranking page
+
+The fourth radio button, **Ansiblex**, routes every character over stargates plus the Ansiblex jump gates **that
+character can see**; each gate is one jump and is drawn as a dotted cyan leg labelled "Ansiblex". ESI has no list of gates
+or of who may use them, so the app asks ESI's structure search as the character (term " » ") and reads each hit with
+`/universe/structures/{id}`; a gate the character finds is treated as usable. Tick `esi-search.search_structures.v1` on
+your EVE application and **Add character** again; the first use reads the gates in the background. Refresh times:
+`ansiblex.refresh_hours` (6) and `ansiblex.gate_refresh_hours` (168); switch off with `EVEDM_ANSIBLEX_ENABLED=0`.
+
+The **Auto-refresh** selector sits in the header of the Characters / Roster tabs and stays visible when a target is
+selected. The Characters page no longer shows tokens.
 
 ## ESI error limit (`esi:420`)
 

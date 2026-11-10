@@ -32,6 +32,45 @@ function ago(iso) {
   return `${Math.round(s / 86400)} d ago`;
 }
 
+/* Largest ship that fits through a wormhole (EVE-Scout max_ship_size): a hull icon that grows with the class. */
+const SIZE_LABEL = { small: "Small", medium: "Medium", large: "Large", xlarge: "X-large", capital: "Capital" };
+const SIZE_SCALE = { small: 0.5, medium: 0.64, large: 0.78, xlarge: 0.9, capital: 1 };
+function sizeIcon(size, what) {
+  if (!SIZE_LABEL[size]) return null;
+  const ns = "http://www.w3.org/2000/svg";
+  const wrap = el("span", `wh-size sz-${size}`);
+  wrap.title = `${what || "Largest ship"}: ${SIZE_LABEL[size]}`;
+  wrap.setAttribute("role", "img");
+  wrap.setAttribute("aria-label", wrap.title);
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 20 20");
+  const hull = document.createElementNS(ns, "path");
+  const k = SIZE_SCALE[size], c = 10;  // a ship seen from above, scaled around the centre
+  const pts = [[0, -9], [4, -2], [9, 5], [4, 4], [3, 9], [0, 7], [-3, 9], [-4, 4], [-9, 5], [-4, -2]];
+  hull.setAttribute("d", "M" + pts.map(([x, y]) => `${(c + x * k).toFixed(1)} ${(c + y * k).toFixed(1)}`).join("L") + "Z");
+  hull.setAttribute("class", "hull");
+  svg.append(hull);
+  if (size === "capital" || size === "xlarge") {  // a second ring for the two biggest classes
+    const ring = document.createElementNS(ns, "circle");
+    ring.setAttribute("cx", "10"); ring.setAttribute("cy", "10"); ring.setAttribute("r", size === "capital" ? "9.4" : "8.4");
+    ring.setAttribute("fill", "none"); ring.setAttribute("stroke", "currentColor"); ring.setAttribute("stroke-width", "1");
+    ring.setAttribute("opacity", "0.55");
+    svg.append(ring);
+  }
+  wrap.append(svg);
+  return wrap;
+}
+
+/* The signatures to look for: InSig is in the k-space system, OutSig is the other end in Thera / Turnur. */
+function sigTag(end, hub) {
+  if (!end || (!end.in_signature && !end.out_signature)) return null;
+  const tag = el("span", "sig");
+  tag.title = `Wormhole signatures: InSig is in ${end.name}, OutSig is the same wormhole in ${hub}`;
+  if (end.in_signature) { const s = el("span"); s.append("InSig ", el("b", null, end.in_signature)); tag.append(s); }
+  if (end.out_signature) { const s = el("span"); s.append("OutSig ", el("b", null, end.out_signature)); tag.append(s); }
+  return tag;
+}
+
 const state = { target: null, result: null, selected: null, timer: null, busy: false, tab: "live",
   hub: $("#hub-toggle") ? String(Prefs.get("rank", { hub: "" }).hub || "") : "" };  // "" = gates only
 const main = document.querySelector("main.split");
@@ -107,6 +146,8 @@ function renderRow(row, n) {
     name.append(badge);
   }
   if (row.stale) name.append(el("span", "badge stale", "Stale"));
+  const axNote = ansiblexNote(row);
+  if (axNote) name.append(axNote);
   who.append(name);
 
   const ship = el("div", "ship");
@@ -136,12 +177,26 @@ function renderRow(row, n) {
   if (row.reachable) {
     jumps.append(el("b", null, String(row.jumps)), el("span", null, row.jumps === 1 ? "jump" : "jumps"));
     if (row.wormhole && row.wormhole.used) jumps.append(el("span", "badge wh", `via ${row.wormhole.hub}`));
+    if (row.ansiblex && row.ansiblex.used) jumps.append(el("span", "badge ax", "via Ansiblex"));
   } else jumps.append(el("b", null, "No gate route"));
 
   li.append(el("div", "rank", String(n)), who, jumps);
   li.addEventListener("click", () => select(row.character_id));
   li.addEventListener("keydown", (ev) => { if (ev.key === "Enter") select(row.character_id); });
   return li;
+}
+
+const AX_STATUS = {
+  no_scope: ["no Ansiblex data", "Re-authorize this character (Add character) to let the app search the Ansiblex gates it can use"],
+  pending: ["reading gates…", "The gates this character can use are being read from ESI; refresh in a moment"],
+  error: ["gate read failed", "ESI refused the Ansiblex search for this character; it is retried later"],
+};
+function ansiblexNote(row) {
+  const a = row.ansiblex;
+  if (!a || !AX_STATUS[a.status]) return null;
+  const badge = el("span", "badge stale", AX_STATUS[a.status][0]);
+  badge.title = AX_STATUS[a.status][1];
+  return badge;
 }
 
 function select(id) {
@@ -156,9 +211,11 @@ function showSelection() {
   const row = r.rows.find((x) => x.character_id === state.selected);
   const markers = r.rows.filter((x) => x.system).map((x) => ({ systemId: x.system.id, name: x.name }));
   const wh = row && row.wormhole && row.wormhole.used ? row.wormhole : null;  // two gate legs joined by a wormhole
+  const ax = row && row.ansiblex && row.ansiblex.used ? row.ansiblex : null;  // gate legs joined by Ansiblex jumps
   map.setScene({ targetId: r.target.id, routeIds: row && row.route, originName: row && row.name, markers,
-    legs: wh ? row.route_legs : null });
+    legs: wh || ax ? row.route_legs : null });
   $("#legend-wh").hidden = !wh;
+  $("#legend-ax").hidden = !ax;
   const bar = $("#route-bar");
   bar.innerHTML = "";
   if (!row) { bar.hidden = true; return; }
@@ -176,18 +233,40 @@ function showSelection() {
       title.append(el("div", "wh-note",
         `${row.wormhole.hub} would take ${row.wormhole.jumps} jumps; the gate route is not longer, so it is kept`));
     }
+    if (ax) {
+      const direct = ax.direct_jumps == null ? "no gate route" : `${ax.direct_jumps} jumps by stargates`;
+      title.append(el("div", "ax-note",
+        `${ax.hops.length} Ansiblex jump${ax.hops.length === 1 ? "" : "s"}: ` +
+        ax.hops.map((h) => `${h.from.name} » ${h.to.name}`).join(", ") + ` (${direct} otherwise)`));
+    } else if (row.ansiblex && row.ansiblex.status === "ok") {
+      title.append(el("div", "ax-note", row.ansiblex.hops.length
+        ? `Ansiblex would take ${row.ansiblex.jumps} jumps; the stargate route is not longer, so it is kept`
+        : `No Ansiblex gate shortens this route (${row.ansiblex.gates} gate${row.ansiblex.gates === 1 ? "" : "s"} usable)`));
+    }
     const path = el("div", "path");
+    const hopAt = (a, b) => ax && ax.hops.find((h) => h.from.id === a && h.to.id === b);
     row.route.forEach((id, k) => {
       const i = map.indexOf(id);
       if (k) path.append(el("span", "arrow", "›"));
       if (wh && k === wh.gates_to_entry + 1) {  // the wormhole sits between the two gate legs
         const hop = el("span", "hop wh", `${wh.hub} wormhole`);
         hop.title = `${wh.entry.name} → ${wh.hub} → ${wh.exit.name}`;
+        const icon = sizeIcon(wh.min_size, "Largest ship through both wormholes");
+        if (icon) hop.append(icon);
+        path.append(hop, el("span", "arrow", "›"));
+      }
+      if (k && hopAt(row.route[k - 1], id)) {  // an Ansiblex jump between two systems
+        const hop = el("span", "hop ax", "Ansiblex");
+        hop.title = `${map.names[map.indexOf(row.route[k - 1])]} » ${map.names[i]}`;
         path.append(hop, el("span", "arrow", "›"));
       }
       const hop = el("span", "hop");
       hop.append(secChip(map.sec[i]), el("span", null, map.names[i]));
       path.append(hop);
+      // the systems next to the hub: where to find the wormhole (InSig) and its other end (OutSig)
+      const sig = wh && k === wh.gates_to_entry ? sigTag(wh.entry, wh.hub)
+        : wh && k === wh.gates_to_entry + 1 ? sigTag(wh.exit, wh.hub) : null;
+      if (sig) path.append(sig);
     });
     bar.append(title, path, routeButton(row, r.target));
   } else {
@@ -203,6 +282,13 @@ function renderThera(r) {
   const info = $("#thera-info");
   if (!info) return;
   const e = r.evescout;
+  if (r.ansiblex && !e) {
+    const a = r.ansiblex;
+    info.hidden = false;
+    info.textContent = `Ansiblex: ${a.gates_known} gate${a.gates_known === 1 ? "" : "s"} known` +
+      (a.reading ? " · reading the gates your characters can use…" : "") + (a.error ? ` · last read failed (${a.error})` : "");
+    return;
+  }
   info.hidden = !e;
   if (!e) return;
   const shown = Object.entries(e.hubs).filter(([name]) => !e.selected || e.selected.includes(name));

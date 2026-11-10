@@ -60,6 +60,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         access_log=False,
         log_config=None,
         timeout_keep_alive=5,
+        timeout_graceful_shutdown=5,  # open long polls (Notifications page) must not hold a shutdown back
         backlog=256,
         limit_concurrency=200,
         proxy_headers=True,

@@ -103,6 +103,7 @@ function card(g) {
   const head = el("div", "war-head");
   head.append(el("span", `badge state-${g.state === "destroyed" ? "fighting" : g.state === "combat" ? "pending" : "ending"}`, STATE[g.state]));
   if (g.core_drop) head.append(el("span", "badge closest", "Core drop"));
+  if (g.capitals) head.append(el("span", "badge capitals", "Capitals"));
   head.append(el("span", "war-title", g.structure.name),
     el("span", "small", g.structure.type));
   head.append(el("span", "small when", ago(g.latest)));
@@ -138,7 +139,7 @@ function card(g) {
 }
 
 /* ---------------------------------------------------------------- preferences, notifications */
-const DEFAULTS = { kinds: ["destroyed", "combat", "firing"], core: false, space: "", hours: "24", notify: false,
+const DEFAULTS = { kinds: ["destroyed", "combat", "firing"], core: false, capitals: false, space: "", hours: "24", notify: false,
   sound: false, seen: 0 };
 const prefs = Prefs.get("alerts", DEFAULTS);
 let firstLoad = true;
@@ -175,10 +176,10 @@ function notifyLabel() {
 
 async function load() {
   const kinds = [...document.querySelectorAll(".a-kind:checked")].map((x) => x.value);
-  Prefs.set("alerts", { kinds, core: $("#a-core").checked, space: $("#a-space").value, hours: $("#a-hours").value,
-    sound: $("#a-sound").checked });
+  Prefs.set("alerts", { kinds, core: $("#a-core").checked, capitals: $("#a-capitals").checked,
+    space: $("#a-space").value, hours: $("#a-hours").value, sound: $("#a-sound").checked });
   const qs = new URLSearchParams({ kinds: kinds.join(","), core_only: $("#a-core").checked ? 1 : 0,
-    space: $("#a-space").value, hours: $("#a-hours").value });
+    capitals: $("#a-capitals").checked ? 1 : 0, space: $("#a-space").value, hours: $("#a-hours").value });
   const d = kinds.length ? await api(`/api/alerts?${qs}`) : { groups: [], newest_alert_id: 0, feed: {} };
   const list = $("#a-groups");
   list.innerHTML = "";
@@ -207,10 +208,11 @@ function focusHash() {  // a link from Discord (#alert-<id>): the card that hold
 
 document.querySelectorAll(".a-kind").forEach((b) => { b.checked = (prefs.kinds || []).includes(b.value); b.addEventListener("change", load); });
 $("#a-core").checked = Boolean(prefs.core);
+$("#a-capitals").checked = Boolean(prefs.capitals);
 $("#a-space").value = prefs.space || "";
 if ([...$("#a-hours").options].some((o) => o.value === String(prefs.hours))) $("#a-hours").value = String(prefs.hours);
 $("#a-sound").checked = Boolean(prefs.sound);
-["#a-core", "#a-space", "#a-hours", "#a-sound"].forEach((id) => $(id).addEventListener("change", load));
+["#a-core", "#a-capitals", "#a-space", "#a-hours", "#a-sound"].forEach((id) => $(id).addEventListener("change", load));
 $("#a-reload").addEventListener("click", load);
 $("#a-notify").addEventListener("click", async () => {
   if (!("Notification" in window)) { $("#a-notify").textContent = "Desktop notifications: not supported"; return; }

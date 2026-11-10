@@ -110,8 +110,8 @@ class CharacterService:
     # -- views ---------------------------------------------------------------------------------------
     def list_view(self, owner_id: int = 0) -> list[dict[str, Any]]:
         out = []
+        counts = self.db.structure_counts()
         for c in self.db.list_characters(owner_id):
-            tok = self.db.get_tokens(c.character_id, owner_id)
             out.append(
                 {
                     "character_id": c.character_id,
@@ -125,8 +125,11 @@ class CharacterService:
                     "tags": c.tags,
                     "demo": c.demo,
                     "main": c.character_id == owner_id,
-                    "token_expires_at": tok["access_expires_at"] if tok else None,
-                    "refresh_tail": ("…" + tok["refresh_tail"]) if tok and tok["refresh_tail"] else "",
+                    # Notifications column: the tick, and what the poller needs besides it (player structures with
+                    # assets; the count comes from the structure scout)
+                    "notify": c.notify,
+                    "structures": counts.get(c.character_id, 0),
+                    "min_structures": self.settings.notifications.min_structures,
                 }
             )
         return out

@@ -36,6 +36,7 @@ def test_feed_alerts_closest_characters_and_set_destination(tmp_path):
                 "killmail_id": 2,
                 "hash": "h2",
                 "esi": killmail(2, AMARR, 587, SHOOTERS, [{"ship_type_id": 35836, "corporation_id": OWNER}]),
+                "zkb": {"totalValue": 6e8},  # small ship, but worth 500 million ISK or more: kept
             },
             {"killmail_id": 3, "hash": "h3", "esi": killmail(3, JITA, 587, SHOOTERS)},  # a plain kill: no alert
             {"killmail_id": 4, "hash": "h4", "zkb": {"hash": "h4"}},  # body only through ESI

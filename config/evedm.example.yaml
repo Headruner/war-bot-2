@@ -55,6 +55,17 @@ notifications:                              # notifications of every registered 
   character_interval_s: 600                 # so a character is asked again only after its cache expires
   retention_days: 30
   concurrency: 4
+  min_structures: 10                        # a character is checked only with at least this many player structures holding assets (NPC stations do not count)
+  min_interval_s: 30                        # the next check is set to ESI's cache expiry, but never sooner than this
+  retry_s: 60                               # retry after a transient ESI error (420/429/5xx, network)
+  stagger_s: 60                             # spread the characters' reads over ESI's 600 s window (a read moves at most this much later per round; 0 = off)
+  wait_s: 20                                # the page's "anything new?" request is held open this long (new notifications appear at once)
+  discord:                                  # post notifications to Discord (one message per event, edited when more characters receive it)
+    enabled: ${EVEDM_NOTIFICATIONS_DISCORD_ENABLED:-true}
+    webhook_url: ${EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK:-}   # empty = the wars webhook (EVEDM_WARS_DISCORD_WEBHOOK); none = nothing is posted
+    mention_role_id: ${EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID:-}   # pinged on "structure attacked" only
+    groups: []                              # groups to post; [] = the groups shown by default (below)
+    max_age_min: 60                         # older notifications are never posted (no history flood)
   # which groups are shown without a filter: asset_safety, structure_attack, structure_state, tower,
   # other_attacks, sovereignty (every other type ESI sends appears under "Other notifications")
   groups: [asset_safety, structure_attack, structure_state, tower]
@@ -66,6 +77,8 @@ alerts:                                     # structure alerts from zKillboard's
   grid_km: 1000                             # a kill this close to a known structure counts as combat on its grid
   retention_days: 7
   max_per_poll: 300                         # killmails read per poll at most
+  big_kills_only: true                      # "combat"/"firing" alerts only for a battleship or capital hull (T2 included) or a loss above min_value_isk
+  min_value_isk: 500000000
   contact: ${EVEDM_ALERTS_CONTACT:-}        # added to the User-Agent zKillboard sees (mail or Discord name)
   discord:                                  # post alerts to a Discord channel too
     enabled: ${EVEDM_ALERTS_DISCORD_ENABLED:-false}
@@ -80,3 +93,9 @@ evescout:                                   # Thera / Turnur filter on the Ranki
   refresh_s: ${EVEDM_EVESCOUT_REFRESH_S:-900}      # the list is read at most this often
   timeout_s: 8
   hubs: [Thera, Turnur]
+
+ansiblex:                                   # Ansiblex jump gates per character (Ranking, "Ansiblex" route mode)
+  enabled: ${EVEDM_ANSIBLEX_ENABLED:-true}  # needs scopes esi-search.search_structures.v1 and esi-universe.read_structures.v1 (re-authorize characters)
+  refresh_hours: 6                          # a character's visible gates are searched again this often
+  gate_refresh_hours: 168                   # a gate's endpoints are re-read this often
+  concurrency: 3

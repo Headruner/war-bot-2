@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 11  # v10: index on character_notifications(created_at); v11: Discord posts of notifications
 log = logging.getLogger("evedm.db")
 
 SCHEMA = """
@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS characters (
     owner_hash     TEXT,
     demo           INTEGER NOT NULL DEFAULT 0,
     added_at       REAL NOT NULL,
+    notify         INTEGER NOT NULL DEFAULT 1,      -- read this link's character on the Notifications page
     PRIMARY KEY (owner_id, character_id)
 );
 CREATE INDEX IF NOT EXISTS characters_by_id ON characters(character_id);
@@ -114,11 +115,34 @@ CREATE TABLE IF NOT EXISTS structure_alerts (
     isk               REAL,
     core_drop         INTEGER NOT NULL DEFAULT 0,
     created_at        REAL NOT NULL,
-    posted            INTEGER NOT NULL DEFAULT 0
+    posted            INTEGER NOT NULL DEFAULT 0,
+    capitals          INTEGER NOT NULL DEFAULT 0   -- a capital ship on both sides of the killmail
 );
 CREATE UNIQUE INDEX IF NOT EXISTS structure_alerts_unique ON structure_alerts(
     kind, killmail_id, COALESCE(structure_id, 0), COALESCE(structure_type_id, 0), COALESCE(owner_id, 0));
 CREATE INDEX IF NOT EXISTS structure_alerts_by_time ON structure_alerts(created_at);
+-- Ansiblex jump gates (UC-16): the gate itself, and which characters may see (= use) it
+CREATE TABLE IF NOT EXISTS ansiblex_gates (
+    structure_id    INTEGER PRIMARY KEY,
+    name            TEXT,
+    owner_id        INTEGER,
+    solar_system_id INTEGER,
+    dest_system_id  INTEGER,                      -- parsed from the "A » B - name" convention
+    checked_at      REAL NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'ok'    -- ok | not_gate | no_access
+);
+CREATE TABLE IF NOT EXISTS ansiblex_access (
+    character_id INTEGER NOT NULL,
+    structure_id INTEGER NOT NULL,
+    seen_at      REAL NOT NULL,
+    PRIMARY KEY (character_id, structure_id)
+);
+CREATE TABLE IF NOT EXISTS ansiblex_characters (
+    character_id INTEGER PRIMARY KEY,
+    checked_at   REAL NOT NULL DEFAULT 0,
+    gates        INTEGER NOT NULL DEFAULT 0,
+    error        TEXT
+);
 -- type -> group -> category from ESI (is this an Upwell structure? does it drop a quantum core?)
 CREATE TABLE IF NOT EXISTS type_groups (
     type_id     INTEGER PRIMARY KEY,
@@ -161,10 +185,19 @@ CREATE TABLE IF NOT EXISTS character_notifications (
     structure_id      INTEGER,
     structure_type_id INTEGER,
     created_at        REAL NOT NULL,
+    posted            INTEGER NOT NULL DEFAULT 0,   -- Discord: 0 pending, 1 posted, 2 not posted (old, filtered)
     PRIMARY KEY (character_id, notification_id)
+);
+-- one Discord message per event: the same notification reaches several characters, the message lists them all
+CREATE TABLE IF NOT EXISTS notification_posts (
+    event_key  TEXT PRIMARY KEY,
+    message_id TEXT,
+    characters TEXT NOT NULL DEFAULT '[]',
+    created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS notifications_by_time ON character_notifications(timestamp);
 CREATE INDEX IF NOT EXISTS notifications_by_type ON character_notifications(type);
+CREATE INDEX IF NOT EXISTS notifications_by_created ON character_notifications(created_at);
 -- one row per character the notification poller reads (ESI caches notifications 600 s per character)
 CREATE TABLE IF NOT EXISTS notification_characters (
     character_id  INTEGER PRIMARY KEY,
@@ -290,6 +323,7 @@ class CharacterRow:
     demo: bool
     added_at: float
     owner_id: int = 0
+    notify: bool = True
 
 
 @dataclass
@@ -403,6 +437,14 @@ class Database:
                 self._add_columns(  # v7 -> v8: the main's affiliation, for the notifications alliance gate
                     "users", {"corporation_id": "INTEGER", "alliance_id": "INTEGER", "affiliation_at": "REAL"}
                 )
+                self._add_columns("characters", {"notify": "INTEGER NOT NULL DEFAULT 1"})  # v8 -> v9
+                # v10 -> v11: notifications stored before this are marked "not posted" so Discord gets no history
+                self._add_columns("character_notifications", {"posted": "INTEGER NOT NULL DEFAULT 2"})
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS notifications_pending ON character_notifications(posted) "
+                    "WHERE posted=0"
+                )
+                self._add_columns("structure_alerts", {"capitals": "INTEGER NOT NULL DEFAULT 0"})  # v8 -> v9
                 self._add_columns(  # v5 -> v6: structure positions for "combat on grid"
                     "known_structures",
                     {"pos_x": "REAL", "pos_y": "REAL", "pos_z": "REAL", "destroyed_at": "REAL"},
@@ -456,6 +498,7 @@ class Database:
             demo=bool(row["demo"]),
             added_at=row["added_at"],
             owner_id=row["owner_id"],
+            notify=bool(row["notify"]),
         )
 
     def list_characters(self, owner_id: int = 0) -> list[CharacterRow]:
@@ -534,6 +577,19 @@ class Database:
             (int(enabled), owner_id, character_id),
         )
 
+    def set_notify(self, character_id: int, notify: bool, owner_id: int = 0) -> None:
+        self.execute(
+            "UPDATE characters SET notify=? WHERE owner_id=? AND character_id=?",
+            (int(notify), owner_id, character_id),
+        )
+
+    def structure_counts(self) -> dict[int, int]:
+        """character_id -> number of player structures where the character has assets (NPC stations never count)."""
+        return {
+            r[0]: r[1]
+            for r in self.query("SELECT character_id, COUNT(*) FROM structure_sightings GROUP BY character_id")
+        }
+
     def set_tags(self, character_id: int, tags: list[str], owner_id: int = 0) -> None:
         clean = sorted({t.strip()[:32] for t in tags if t.strip()})
         self.execute(
@@ -563,8 +619,8 @@ class Database:
             for r in rows:
                 cur = c.execute(
                     "INSERT OR IGNORE INTO character_notifications(character_id,notification_id,type,sender_id,"
-                    "sender_type,timestamp,body,solar_system_id,structure_id,structure_type_id,created_at)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    "sender_type,timestamp,body,solar_system_id,structure_id,structure_type_id,created_at,posted)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,0)",
                     (
                         r["character_id"],
                         r["notification_id"],
@@ -581,6 +637,39 @@ class Database:
                 )
                 new += cur.rowcount or 0
         return new
+
+    def pending_notification_posts(self, limit: int = 100) -> list[sqlite3.Row]:
+        """Notifications not yet looked at for Discord, oldest first."""
+        return self.query(
+            "SELECT * FROM character_notifications WHERE posted=0 ORDER BY timestamp, notification_id LIMIT ?",
+            (int(limit),),
+        )
+
+    def mark_notification_posted(self, character_id: int, notification_id: int, state: int) -> None:
+        self.execute(
+            "UPDATE character_notifications SET posted=? WHERE character_id=? AND notification_id=?",
+            (state, character_id, notification_id),
+        )
+
+    def notification_post(self, event_key: str) -> sqlite3.Row | None:
+        rows = self.query("SELECT * FROM notification_posts WHERE event_key=?", (event_key,))
+        return rows[0] if rows else None
+
+    def save_notification_post(self, event_key: str, message_id: str | None, characters: list[str]) -> None:
+        self.execute(
+            "INSERT INTO notification_posts(event_key,message_id,characters,created_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(event_key) DO UPDATE SET message_id=excluded.message_id, characters=excluded.characters",
+            (event_key, message_id, json.dumps(characters), time.time()),
+        )
+
+    def notification_ids(self, character_id: int) -> set[int]:
+        """IDs already stored for a character, so a re-read of ESI's list parses only what is new."""
+        return {
+            r[0]
+            for r in self.query(
+                "SELECT notification_id FROM character_notifications WHERE character_id=?", (character_id,)
+            )
+        }
 
     def notifications(
         self,
@@ -614,9 +703,9 @@ class Database:
         return {r[0]: r[1] for r in rows}
 
     def purge_notifications(self, days: float) -> int:
-        return self.execute(
-            "DELETE FROM character_notifications WHERE created_at < ?", (time.time() - days * 86400,)
-        )
+        cutoff = time.time() - days * 86400
+        self.execute("DELETE FROM notification_posts WHERE created_at < ?", (cutoff,))
+        return self.execute("DELETE FROM character_notifications WHERE created_at < ?", (cutoff,))
 
     def due_notification_characters(self, character_ids: list[int], now: float | None = None) -> list[int]:
         """Characters whose cached copy has expired (never read ones first)."""

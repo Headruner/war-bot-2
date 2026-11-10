@@ -27,4 +27,6 @@
 | **Set destination** answers "ESI refused (404): is the character online?" | ESI only accepts waypoints for a logged-in character; the online state shown can be up to a minute old |
 | Ranking row shows `esi:420` | ESI's error limit was exhausted (often by the structure scout hitting 403s). The client pauses all ESI calls until the window resets and the rows recover by themselves; the scout stops at 60 errors left |
 | Thera / Turnur shows no systems for a hub | `GET /api/evescout`: check the per-hub counts, `EVEDM_EVESCOUT_URL` and `evescout.hubs`; the list is cached 15 minutes and J-space exits are skipped |
+| A notification arrives late | each character is read at ESI's cache expiry (`notifications.min_interval_s` 30 .. `character_interval_s` 600) and retried after `retry_s` 60 on a transient error; check the Characters page "N of M structures" and the Notifications tick: a character with fewer than `notifications.min_structures` (10) structures holding assets is not polled |
+| Ansiblex mode shows no gates | the character has not granted `esi-search.search_structures.v1` (Add character again) or sees no gate in the structure search; `ansiblex.refresh_hours` (6) controls re-reading |
 | `data directory /app/data is not writable by uid 10001` | Linux host folder owned by another user: `sudo chown -R 10001:10001 data`, or use a named volume |

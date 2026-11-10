@@ -193,6 +193,7 @@ def demo_client(tmp_path, enabled=True):
     s.demo = True
     s.web.auth = "none"
     s.evescout.enabled = enabled
+    s.ansiblex.enabled = enabled
     return TestClient(create_app(s))
 
 

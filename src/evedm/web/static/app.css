@@ -310,10 +310,33 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
 .card.ntf .where-line { flex-wrap: wrap; }
 
 /* Thera / Turnur filter (UC-15) */
-.hub-toggle { display: inline-flex; align-items: center; gap: 12px; white-space: nowrap; border: 0; margin: 0; padding: 0;
+.hub-toggle { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; white-space: nowrap; border: 0; margin: 0; padding: 0;
   color: var(--fg, #e6ebf2); }
 .hub-toggle label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
 .thera-info { margin: 4px 0 8px; opacity: 0.85; }
+/* auto-refresh sits in the header of the Characters / Roster tabs, visible on both tabs */
+.tabs-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  border-bottom: 1px solid var(--line); margin: 0 0 10px; }
+.tabs-bar .tabs { border-bottom: 0; margin: 0; }
+.tabs-bar .auto-refresh { white-space: nowrap; }
+/* Thera is violet, Turnur orange: the hub label and route type on the Notifications page */
+.badge.hub-label, .badge.route-type { border: 1px solid transparent; }
+.badge.thera { background: rgba(180, 140, 255, 0.2); color: #d9c7ff; border-color: rgba(180, 140, 255, 0.55); }
+.badge.turnur { background: rgba(255, 150, 60, 0.2); color: #ffc58a; border-color: rgba(255, 150, 60, 0.55); }
+.badge.route-type.gates { background: var(--panel-2); color: var(--muted); border-color: var(--line); }
+.badge.capitals { background: rgba(230, 70, 70, 0.2); color: #ff9c9c; border: 1px solid rgba(230, 70, 70, 0.5); }
+/* Ansiblex (UC-16) */
+.badge.ax, .hop.ax { background: rgba(92, 225, 230, 0.15); color: #9defe2; border: 1px solid rgba(92, 225, 230, 0.5); }
+.legend .ax-line { display: inline-block; width: 18px; border-top: 2px dotted #5ce1e6; vertical-align: middle; margin-right: 4px; }
+.route-bar .ax-note { margin-top: 2px; color: #9defe2; font-size: 0.9em; }
+/* wormhole signatures and the largest ship that fits through both wormholes */
+.sig { display: inline-flex; gap: 6px; font-size: 11.5px; color: var(--muted); font-family: ui-monospace, Consolas, monospace; }
+.sig b { color: #d9c7ff; font-weight: 600; }
+.wh-size { display: inline-flex; vertical-align: middle; }
+.wh-size svg { width: 16px; height: 16px; }
+.wh-size .hull { fill: currentColor; }
+.wh-size.sz-small { color: #7fd88a; } .wh-size.sz-medium { color: #b6d96a; } .wh-size.sz-large { color: #f0d060; }
+.wh-size.sz-xlarge { color: #ff9f5a; } .wh-size.sz-capital { color: #ff6b6b; }
 .badge.wh, .hop.wh { background: rgba(180, 140, 255, 0.2); color: #d9c7ff; border: 1px solid rgba(180, 140, 255, 0.5); }
 .route-bar .wh-note { margin-top: 2px; color: #d9c7ff; font-size: 0.9em; }
 .legend .wh-line { display: inline-block; width: 18px; border-top: 2px dashed #b48cff; vertical-align: middle; margin-right: 4px; }

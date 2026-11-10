@@ -27,13 +27,13 @@ async function load() {
     const nameLine = el("div", null, c.name);
     if (c.main) nameLine.append(el("span", "badge main", "Main"));
     tdName.append(nameLine);
-    tdName.append(el("div", "small", c.demo ? "demo character" : `token ${c.refresh_tail}`));
+    if (c.demo) tdName.append(el("div", "small", "demo character"));
 
     const tdStatus = el("td");
     tdStatus.append(el("span", `status-pill status-${c.status}`, STATUS_TEXT[c.status] || c.status));
     if (c.missing_scopes.length) tdStatus.append(el("div", "small", "missing: " + c.missing_scopes.map((s) => s.split(".")[1]).join(", ")));
     if (!c.demo && c.optional_missing && c.optional_missing.length) {
-      tdStatus.append(el("div", "small", "structures not shared (re-authorize to grant " +
+      tdStatus.append(el("div", "small", "optional access not granted (re-authorize to grant " +
         c.optional_missing.map((s) => s.split(".")[1]).join(", ") + ")"));
     }
     if (c.status === "REAUTH") {
@@ -45,16 +45,27 @@ async function load() {
     const toggle = el("input"); toggle.type = "checkbox"; toggle.checked = c.enabled;
     toggle.addEventListener("change", async () => {
       await api(`/api/characters/${c.character_id}`, { method: "PATCH", body: JSON.stringify({ enabled: toggle.checked }) });
-      const del = $("#delete-account");
-if (del) del.addEventListener("click", async () => {
-  if (!confirm("Delete your account? All linked characters are removed and their tokens revoked. This cannot be undone.")) return;
-  const resp = await api("/api/me", { method: "DELETE", body: JSON.stringify({ confirm: true }) });
-  if (resp.ok) location.href = "/login";
-});
-
-load();
+      load();
     });
     tdEnabled.append(toggle);
+
+    // Notifications: on by default; the page reads a character only once it has assets in enough player structures
+    const tdNotify = el("td");
+    if (!c.demo) {
+      const notify = el("input"); notify.type = "checkbox"; notify.checked = c.notify;
+      notify.setAttribute("aria-label", `Read the notifications of ${c.name}`);
+      notify.addEventListener("change", async () => {
+        await api(`/api/characters/${c.character_id}`, { method: "PATCH", body: JSON.stringify({ notify: notify.checked }) });
+        load();
+      });
+      tdNotify.append(notify);
+      if (c.notify && c.min_structures > 0 && c.structures < c.min_structures) {
+        const hint = el("div", "small", `${c.structures} of ${c.min_structures} structures`);
+        hint.title = `Not read yet: a character is read only with assets in at least ${c.min_structures} player ` +
+          "structures (NPC stations do not count). Counted by the structure scout.";
+        tdNotify.append(hint);
+      }
+    }
 
     const tdTags = el("td");
     const tags = el("input"); tags.type = "text"; tags.value = c.tags.join(", "); tags.placeholder = "e.g. cyno, logi";
@@ -69,17 +80,10 @@ load();
     rm.addEventListener("click", async () => {
       if (!confirm(`Remove ${c.name}? Its tokens are deleted and revoked.`)) return;
       await api(`/api/characters/${c.character_id}`, { method: "DELETE" });
-      const del = $("#delete-account");
-if (del) del.addEventListener("click", async () => {
-  if (!confirm("Delete your account? All linked characters are removed and their tokens revoked. This cannot be undone.")) return;
-  const resp = await api("/api/me", { method: "DELETE", body: JSON.stringify({ confirm: true }) });
-  if (resp.ok) location.href = "/login";
-});
-
-load();
+      load();
     });
     tdActions.append(rm);
-    tr.append(tdSel, tdName, tdStatus, tdEnabled, tdTags, tdScopes, tdActions);
+    tr.append(tdSel, tdName, tdStatus, tdEnabled, tdNotify, tdTags, tdScopes, tdActions);
     body.append(tr);
   }
 }
@@ -112,14 +116,7 @@ $("#import-file").addEventListener("change", async (ev) => {
     out.append(table);
   }
   ev.target.value = "";
-  const del = $("#delete-account");
-if (del) del.addEventListener("click", async () => {
-  if (!confirm("Delete your account? All linked characters are removed and their tokens revoked. This cannot be undone.")) return;
-  const resp = await api("/api/me", { method: "DELETE", body: JSON.stringify({ confirm: true }) });
-  if (resp.ok) location.href = "/login";
-});
-
-load();
+  load();
 });
 
 $("#export-btn").addEventListener("click", async () => {

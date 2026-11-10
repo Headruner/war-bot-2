@@ -26,6 +26,9 @@ pytestmark = pytest.mark.anyio
 CORP, OTHER, SHOOTER = 98000001, 98000002, 98000003
 FORT, FORT2, REFINERY, TOWER = 1_040_000_000_001, 1_040_000_000_002, 1_040_000_000_003, 1_040_000_000_004
 ASTRAHUS, ATHANOR, ANSIBLEX, RIFTER, LOKI = 35832, 35835, 35841, 587, 29990
+MEGATHRON, GOLEM, REDEEMER, ARCHON, REVELATION, REVENANT, RORQUAL, CHARON = (
+    641, 28710, 22428, 23757, 19720, 3514, 28352, 20185,
+)
 P_FORT = (1.0e12, 2.0e10, -3.0e11)
 P_FORT2 = (1.0e12 + 5.0e9, 2.0e10, -3.0e11)  # 5 million km away: another grid
 P_REFINERY = (4.0e11, 0.0, 0.0)
@@ -118,6 +121,7 @@ def package(
     pos: dict | None = None,
     attackers: list[dict] | None = None,
     body: bool = True,
+    value: float = 1.5e9,
 ) -> dict:
     victim = {"ship_type_id": victim_type, "corporation_id": corp, "character_id": 90000001}
     if pos is not None:
@@ -129,7 +133,7 @@ def package(
         "victim": victim,
         "attackers": attackers or [{"ship_type_id": RIFTER, "corporation_id": SHOOTER, "final_blow": True}],
     }
-    pkg = {"killmail_id": kid, "hash": f"h{kid}", "zkb": {"hash": f"h{kid}", "totalValue": 1.5e9}}
+    pkg = {"killmail_id": kid, "hash": f"h{kid}", "zkb": {"hash": f"h{kid}", "totalValue": value}}
     return pkg | {"esi": km} if body else pkg | {"_km": km}
 
 
@@ -296,6 +300,58 @@ async def test_combat_on_grid_uses_positions(make, db):
     assert await svc.handle(package(13, RIFTER, system=AMARR, pos=near(P_FORT, 1))) == []  # Amarr's has no position
     small = make(grid_km=10)
     assert await small.handle(package(14, RIFTER, pos=near(P_FORT, 50))) == []
+
+
+def shooters(*types: int) -> list[dict]:
+    return [{"ship_type_id": t, "corporation_id": SHOOTER} for t in types]
+
+
+async def test_only_big_kills_are_kept(make, db):
+    """Battleship or capital hulls (T2 included) on either side, or a loss of 500 million ISK or more."""
+    svc = make(grid_km=1000)
+    pos = near(P_FORT, 5)
+    small = dict(pos=pos, value=4.0e8, attackers=shooters(RIFTER, LOKI))
+    assert await svc.handle(package(70, RIFTER, **small)) == []  # cheap frigate loss against cruisers
+    assert await svc.handle(package(71, RIFTER, pos=pos, value=5.0e8, attackers=shooters(RIFTER))) != []  # the value
+    for kid, victim, att in [
+        (72, MEGATHRON, shooters(RIFTER)),  # a battleship died
+        (73, GOLEM, shooters(RIFTER)),  # Marauder: a T2 battleship
+        (74, REDEEMER, shooters(RIFTER)),  # Black Ops
+        (75, RIFTER, shooters(RIFTER, MEGATHRON)),  # a battleship shot
+        (76, RIFTER, shooters(ARCHON)),  # a capital shot
+        (77, RORQUAL, shooters(RIFTER)),  # Capital Industrial Ship
+        (78, RIFTER, shooters(REVENANT)),
+    ]:
+        assert len(await svc.handle(package(kid, victim, pos=pos, value=1.0e8, attackers=att))) == 1, kid
+    # a freighter is not a capital ship, and a plain battlecruiser is not a battleship
+    assert await svc.handle(package(79, CHARON, pos=pos, value=1.0e8, attackers=shooters(RIFTER))) == []
+    assert await svc.handle(package(80, 24702, pos=pos, value=1.0e8, attackers=shooters(LOKI))) == []
+
+
+async def test_a_destroyed_structure_is_kept_whatever_it_cost(make, db):
+    svc = make()
+    new = await svc.handle(package(90, ASTRAHUS, corp=CORP, value=1.0e6))
+    assert [a["kind"] for a in new] == ["destroyed"]
+
+
+async def test_the_size_filter_can_be_switched_off_and_the_value_limit_changed(make, db):
+    pos = near(P_FORT, 5)
+    every = make(grid_km=1000, big_kills_only=False)
+    assert len(await every.handle(package(91, RIFTER, pos=pos, value=1.0, attackers=shooters(RIFTER)))) == 1
+    strict = make(grid_km=1000, min_value_isk=2.0e9)
+    assert await strict.handle(package(92, RIFTER, pos=pos, value=1.5e9, attackers=shooters(RIFTER))) == []
+
+
+async def test_capitals_need_a_capital_on_both_sides(make, db):
+    svc = make(grid_km=1000)
+    pos = near(P_FORT, 5)
+    both = await svc.handle(package(100, REVELATION, pos=pos, attackers=shooters(ARCHON, RIFTER)))
+    one_side = await svc.handle(package(101, REVELATION, pos=pos, attackers=shooters(RIFTER)))
+    other_side = await svc.handle(package(102, RIFTER, pos=pos, attackers=shooters(REVENANT)))
+    assert [a["capitals"] for a in both] == [1]
+    assert [a["capitals"] for a in one_side] == [0] and [a["capitals"] for a in other_side] == [0]
+    assert [svc.describe(r)["capitals"] for r in svc.recent(24, capitals_only=True)] == [True]
+    assert len(svc.recent(24)) == 3
 
 
 async def test_structures_on_the_attacker_list_are_firing(make, db):

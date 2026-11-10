@@ -1,5 +1,5 @@
 @startuml data-model
-title Database schema v8 (one file evedm.sqlite3, WAL, on the /app/data volume)
+title Database schema v11 (one file evedm.sqlite3, WAL, on the /app/data volume)
 skinparam shadowing false
 hide circle
 hide methods
@@ -22,6 +22,7 @@ entity characters {
   --
   name : TEXT
   enabled : INTEGER
+  notify : INTEGER (Notifications tick, default 1)
   tags : TEXT (JSON)
   status : OK | LIMITED | REAUTH
   scopes : TEXT (JSON)
@@ -107,12 +108,40 @@ entity character_notifications {
   structure_type_id : INTEGER
   created_at : REAL
 }
+entity notification_posts {
+  * event_key : TEXT <<PK>> (type : structure or system : time)
+  --
+  message_id : TEXT (Discord message, edited for more recipients)
+  characters : TEXT (JSON names)
+  created_at : REAL
+}
 entity notification_characters {
   * character_id : INTEGER <<PK>>
   --
   checked_at : REAL
   next_check_at : REAL
   notifications : INTEGER
+  error : TEXT
+}
+entity ansiblex_gates {
+  * structure_id : INTEGER <<PK>>
+  --
+  name, owner_id, solar_system_id
+  dest_system_id : INTEGER (parsed from "A » B - name")
+  status : ok | not_gate | no_access
+  checked_at : REAL
+}
+entity ansiblex_access {
+  * character_id : INTEGER <<PK>>
+  * structure_id : INTEGER <<PK, FK>>
+  --
+  seen_at : REAL (the character's structure search found the gate)
+}
+entity ansiblex_characters {
+  * character_id : INTEGER <<PK>>
+  --
+  checked_at : REAL
+  gates : INTEGER
   error : TEXT
 }
 entity known_structures {
@@ -143,4 +172,7 @@ characters ||--o| snapshots
 characters ||--o{ character_notifications
 characters ||--o| notification_characters
 characters ||--o| scout_characters
+characters ||--o| ansiblex_characters
+characters ||--o{ ansiblex_access
+ansiblex_gates ||--o{ ansiblex_access
 @enduml

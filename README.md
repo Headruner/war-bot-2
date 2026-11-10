@@ -23,7 +23,9 @@ when you press **Set destination** for an online character.
   nearest first, owners at war marked.
 - **Structure alerts** (Alerts page): zKillboard's live killmail feed shows structures **destroyed** (citadels,
   engineering complexes and refineries drop their quantum core), **combat** within 1000 km of a known structure, and
-  structures **firing**, in all space. Each alert lists your three closest characters; browser notification, sound
+  structures **firing**, in all space. Combat and firing alerts are kept only for kills with a **battleship or capital
+  hull (T2 included)** or a single loss above **500M ISK** (`alerts.big_kills_only`, `alerts.min_value_isk`); the
+  *capitals* filter shows only kills with at least one capital on each side. Each alert lists your three closest characters; browser notification, sound
   and an optional Discord webhook. Attack timers themselves are not public, so these killmail signals are the hint.
   ([screenshot](docs/screenshots/alerts-desktop.png))
 - **Set destination**: one click sets the in-game autopilot destination of an online character (ranking route bar
@@ -35,12 +37,30 @@ when you press **Set destination** for an online character.
   replaces the gate route only when it is shorter and is drawn on the map (gold gate legs, dashed purple wormhole).
   Connections marked *End Of Life* are kept, J-space exits are skipped (no gates). The list is cached and read at
   most **every 15 minutes** (`EVEDM_EVESCOUT_REFRESH_S`, 900 s); if EVE-Scout is down the last list is used.
+  The route bar shows each system's **InSig / OutSig** next to the entry and exit system, and the wormhole hop carries
+  an icon for the **smallest ship size** of the two neighbouring signatures (small, medium, large, X-large, capital).
+- **Ansiblex mode** (Ranking page): a fourth radio button routes each character over stargates plus the Ansiblex
+  jump gates **that character can see** (ESI structure search `esi-search.search_structures.v1`, gate details
+  `esi-universe.read_structures.v1`; each gate is one jump). ESI has no list of gates or their access lists, so a
+  gate the character finds in the search is treated as usable. Characters must re-authorize once for the new scope;
+  the first run reads the gates in the background (`ansiblex.*`).
 - **Remembered per browser** (cookie): Alerts filters and notification choice, Wars tab and filters, Structures
   filters, map options, ranking auto-refresh.
 - **Notifications** (Notifications page, members of one alliance only): the ESI notifications of **every registered
   character with a valid token**, whoever linked it - assets moved to **asset safety**, structures **under attack**,
-  fuel and state - polled every minute (ESI caches them 600 s per character), each with the character (and its main),
-  the system, its region, EVE time and your closest characters from both the Characters and the Roster set.
+  fuel and state - read once per ESI cache window (600 s per character, at ESI's own expiry), each with the character (and its main),
+  the system, its region, EVE time (no local time), a violet **Thera** or orange **Turnur** label for whichever is
+  closer to the system, and your closest characters from both the Characters and the Roster set; live characters show
+  their route type (gates, Thera or Turnur), roster characters jumps only. A character is checked only when its *Notifications* tick on the Characters page is
+  on (default) **and** it has at least **10 player structures with assets** (NPC stations do not count;
+  `notifications.min_structures`). The next check is scheduled at ESI's cache expiry (not a fixed 10 minutes), and
+  transient ESI errors are retried after 60 s; this removes the up-to-15-minute delays. The characters' reads are
+  spread over ESI's 10-minute window (`notifications.stagger_s`), so a notification that several characters receive
+  shows up after the earliest of them; the page is told at once when something new is stored (long poll) instead
+  of waiting for its timer. New notifications are also **posted to Discord** through the wars webhook
+  (`EVEDM_WARS_DISCORD_WEBHOOK`, or their own `EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK`): one message per event, edited
+  to list every character that received it; nothing older than an hour is posted; `EVEDM_NOTIFICATIONS_DISCORD_ENABLED=0`
+  switches it off.
   Everything else ESI sends is one tick away in the filters. Needs `esi-characters.read_notifications.v1`.
 - **Members-only tabs**: Notifications and Structures are visible only when the main that signed in belongs to the
   configured alliance (BB, `access.alliance_ids`, default 99010320; read from ESI at sign-in and every 6 h). For any
@@ -83,7 +103,7 @@ A ready-made demo database is in [`data/demo/evedm.sqlite3`](data/demo) (key `de
 
 1. Create an application at <https://developers.eveonline.com/applications> with callback `http://<host>:8080/sso/callback`
    and scopes `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
-   `esi-characters.read_notifications.v1` (Notifications page), `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1` (Structures page) and `esi-ui.write_waypoint.v1`
+   `esi-characters.read_notifications.v1` (Notifications page), `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1` (Structures page), `esi-search.search_structures.v1` (Ansiblex routes) and `esi-ui.write_waypoint.v1`
    (Set destination). Characters signed in before a scope was added: **Add character** again to grant it.
 2. `cp .env.example .env` and fill in `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET`, `EVEDM_SECRET_KEY`, `EVEDM_ALLOWED_LOGIN_CHARACTERS`.
 3. `docker compose pull && docker compose up -d --no-build` with `EVEDM_IMAGE=ghcr.io/headruner/war-bot-2:latest`
@@ -191,7 +211,7 @@ At <https://developers.eveonline.com/applications> create an application with
 - callback `http://<vm-address>:<port>/sso/callback`, identical to `EVE_CALLBACK_URL` in step 6 (scheme, host, port);
 - the scopes `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
   `esi-characters.read_notifications.v1` (Notifications page), `esi-universe.read_structures.v1`,
-  `esi-assets.read_assets.v1` (Structures page) and `esi-ui.write_waypoint.v1` (Set destination). A scope missing on
+  `esi-assets.read_assets.v1` (Structures page), `esi-search.search_structures.v1` (Ansiblex routes) and `esi-ui.write_waypoint.v1` (Set destination). A scope missing on
   the application makes EVE SSO answer `invalid_scope`.
 
 Note the Client ID and the Secret.
@@ -333,13 +353,17 @@ docker compose stop evedm && cp -a data data-backup-$(date +%F) && docker compos
 | `EVEDM_WARS_ENABLED` | `true` in `config/wars.yaml` | `0` switches the war watcher off |
 | `EVEDM_WARS_DISCORD_ENABLED`, `EVEDM_WARS_DISCORD_WEBHOOK` | `0`, empty | post new wars to a Discord channel |
 | `EVEDM_PUBLIC_URL` | from `EVE_CALLBACK_URL` | address of the site, used in Discord links to the Wars page |
-| `EVE_OPTIONAL_SCOPES` | `esi-universe.read_structures.v1 esi-assets.read_assets.v1 esi-ui.write_waypoint.v1` | extra scopes (structure scout, Set destination); `none` = only the ranking scopes |
+| `EVE_OPTIONAL_SCOPES` | `esi-universe.read_structures.v1 esi-assets.read_assets.v1 esi-ui.write_waypoint.v1 esi-search.search_structures.v1` | extra scopes (structure scout, Set destination); `none` = only the ranking scopes |
 | `EVEDM_STRUCTURES_ENABLED` | `1` | `0` switches the structure scout and the Structures page off |
 | `EVEDM_ACCESS_ALLIANCES` | `99010320` | comma-separated alliance IDs whose mains see the Notifications and Structures tabs; empty list = every signed-in main (the 0.8.0 name `EVEDM_NOTIFICATIONS_ALLIANCES` still works) |
 | `EVEDM_NOTIFICATIONS_ENABLED` | `1` | `0` switches the notification poller and the Notifications page off |
 | `EVEDM_ALERTS_ENABLED` | `1` | `0` switches structure alerts and the Alerts page off |
 | `EVEDM_EVESCOUT_ENABLED` | `1` | `0` removes the Thera / Turnur filter |
 | `EVEDM_EVESCOUT_URL`, `EVEDM_EVESCOUT_REFRESH_S` | `https://api.eve-scout.com/v2/public/signatures`, `900` | where and how often (15 min, cached) the wormhole list is read |
+| `EVEDM_ALERTS_BIG_KILLS_ONLY`, `EVEDM_ALERTS_MIN_VALUE_ISK` | `1`, `500000000` | combat/firing alerts only for battleship/capital hulls or a loss above this value |
+| `EVEDM_NOTIFICATIONS_MIN_STRUCTURES` | `10` | a character is polled for notifications only with this many player structures holding assets |
+| `EVEDM_NOTIFICATIONS_DISCORD_ENABLED`, `EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK`, `EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID` | `1`, empty, empty | notifications on Discord: on when a webhook exists; empty webhook = the wars webhook; role pinged on "structure attacked" only |
+| `EVEDM_ANSIBLEX_ENABLED` | `1` | `0` removes the Ansiblex route mode |
 | `EVEDM_ALERTS_CONTACT` | empty | added to the User-Agent zKillboard sees |
 | `EVEDM_ALERTS_GRID_KM` | `1000` | a kill this close to a known structure is "combat" |
 | `EVEDM_ALERTS_DISCORD_ENABLED`, `EVEDM_ALERTS_DISCORD_WEBHOOK`, `EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID` | `0`, empty, empty | post alerts to Discord; the role is pinged on "destroyed" |
@@ -360,7 +384,7 @@ All settings can also go into a YAML file (`config/evedm.example.yaml`, `EVEDM_C
 pip install -r requirements-dev.txt && pip install -e . --no-deps && python -m playwright install chromium
 scripts/run-tests.sh                 # unit + integration + browser + footprint; logs in logs/tests and logs/perf
 ruff check src tests scripts
-scripts/render-diagrams.sh           # C4 diagrams (PlantUML) -> docs/diagrams
+scripts/render-diagrams.sh           # C4 diagrams (PlantUML) -> docs/diagrams (Windows: scripts\render-diagrams.ps1)
 ```
 
 CI (`.github/workflows/ci.yml`): lint → unit (Linux + Windows, Python 3.13 only) → integration + browser → footprint →

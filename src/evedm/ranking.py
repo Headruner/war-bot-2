@@ -6,15 +6,18 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from .characters import REAUTH, CharacterService
 from .config import WAYPOINT_SCOPE
 from .db import CharacterRow, Database
 from .esi import EsiClient, EsiError
-from .evescout import EveScout
+from .evescout import EveScout, min_size
 from .sso import SsoError
 from .universe import CAPSULE_TYPE_IDS, GateGraph
+
+if TYPE_CHECKING:
+    from .ansiblex import AnsiblexService
 
 log = logging.getLogger("evedm.ranking")
 
@@ -190,7 +193,16 @@ class RankingService:
 
         def end(idx: int, link: dict[str, Any]) -> dict[str, Any]:
             return self.g.describe(idx) | {
-                k: link.get(k) for k in ("wh_type", "max_ship_size", "remaining_hours", "expires_at")
+                k: link.get(k)
+                for k in (
+                    "wh_type",
+                    "max_ship_size",
+                    "size",
+                    "in_signature",
+                    "out_signature",
+                    "remaining_hours",
+                    "expires_at",
+                )
             }
 
         return {
@@ -203,7 +215,53 @@ class RankingService:
             "exit": end(plan["exit"], plan["exit_link"]),
             "gates_to_entry": len(plan["to_entry"]) - 1,
             "gates_from_exit": len(plan["from_exit"]) - 1,
+            # what fits through both wormholes: the smaller of the two ends
+            "min_size": min_size(plan["entry_link"].get("size"), plan["exit_link"].get("size")),
         }
+
+    def _ansiblex_row(
+        self, row: dict[str, Any], c: CharacterRow, idx: int, target: int, direct: int | None, svc: AnsiblexService,
+        checks: dict[int, Any],
+    ) -> None:
+        """Route one character over stargates plus the Ansiblex gates it can see; keep it when it is shorter."""
+        links = svc.links_for(c.character_id)
+        view: dict[str, Any] = {
+            "status": svc.status_for(c, checks),
+            "gates": sum(len(v) for v in links.values()),
+            "jumps": None,
+            "direct_jumps": direct,
+            "used": False,
+            "hops": [],
+        }
+        row["ansiblex"] = view
+        found = self.g.route_with_links(idx, target, links, self.avoid) if links else None
+        if found is None:
+            return
+        path, hops = found
+        if not hops:
+            return  # the best route uses no gate: nothing to show
+        view["jumps"] = len(path) - 1
+        view["hops"] = [{"from": self.g.describe(path[k]), "to": self.g.describe(path[k + 1])} for k in hops]
+        if direct is not None and len(path) - 1 >= direct:
+            return  # a tie keeps the plain stargate route
+        sid = self.g.ids
+        legs: list[dict[str, Any]] = []
+        start = 0
+        for k in hops:
+            legs.append({"mode": "gate", "ids": [sid[i] for i in path[start : k + 1]]})
+            legs.append({"mode": "ansiblex", "ids": [sid[path[k]], sid[path[k + 1]]]})
+            start = k + 1
+        legs.append({"mode": "gate", "ids": [sid[i] for i in path[start:]]})
+        view["used"] = True
+        row.update(
+            {
+                "reachable": True,
+                "jumps": len(path) - 1,
+                "route": [sid[i] for i in path],
+                "route_summary": self.g.route_summary(path),
+                "route_legs": legs,
+            }
+        )
 
     async def rank(
         self,
@@ -212,12 +270,14 @@ class RankingService:
         owner_id: int = 0,
         evescout: EveScout | None = None,
         hubs: list[str] | None = None,
+        ansiblex: AnsiblexService | None = None,
     ) -> dict[str, Any]:
         """Rank the enabled characters of ``owner_id`` for ``target``.
 
         refresh: 0 = snapshots only, 1 = stale-while-revalidate, 2 = wait for fresh data.
         evescout: when given, a route through Thera / Turnur replaces the gate route if it is shorter (EVS-04).
         hubs: with ``evescout``, only these hubs (e.g. ``["Thera"]``) may be the mid-system; None allows all.
+        ansiblex: when given, each character is also routed over the Ansiblex gates it can see (UC-16).
         """
         t0 = time.perf_counter()
         all_chars = self.db.list_characters(owner_id)
@@ -243,6 +303,9 @@ class RankingService:
         parent = self.parents(target)
         t_bfs = time.perf_counter()
         snaps = self.db.get_snapshots([c.character_id for c in chars])
+        if ansiblex is not None:
+            await ansiblex.ensure(chars, wait_s=8.0 if not ansiblex.gate_count() else 0.0)
+        ansiblex_checks = ansiblex.checks() if ansiblex is not None else {}
         ship_names = await self._ship_names({s["ship_type_id"] for s in snaps.values() if s["ship_type_id"]})
         now = time.time()
         rows: list[dict[str, Any]] = []
@@ -263,6 +326,7 @@ class RankingService:
                 "recommended": False,
                 "route_legs": None,
                 "wormhole": None,
+                "ansiblex": None,
                 "can_set_route": WAYPOINT_SCOPE in c.scopes or c.demo,
             }
             idx = self.g.index.get(s["solar_system_id"]) if s and s["solar_system_id"] else None
@@ -298,6 +362,8 @@ class RankingService:
                             "route_legs": [{"mode": "gate", "ids": ids}],
                         }
                     )
+                if ansiblex is not None:
+                    self._ansiblex_row(row, c, idx, target, direct, ansiblex, ansiblex_checks)
                 plan = evescout.via(idx, target, self.avoid, hubs) if evescout is not None else None
                 if plan is not None:
                     better = direct is None or plan["jumps"] < direct  # a tie keeps the plain gate route
@@ -350,6 +416,15 @@ class RankingService:
             "rows": rows,
             "excluded": excluded,
             "evescout": (evescout.status() | {"selected": hubs}) if evescout is not None else None,
+            "ansiblex": (
+                {
+                    "gates_known": ansiblex.gate_count(),
+                    "reading": bool(ansiblex.state["running"]),
+                    "error": ansiblex.state["last_error"],
+                }
+                if ansiblex is not None
+                else None
+            ),
             "stats": {
                 "characters": len(rows),
                 "reachable": sum(1 for r in rows if r["reachable"]),

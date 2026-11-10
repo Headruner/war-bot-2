@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from common import mint
-from evedm.config import STRUCTURE_SCOPES, WAYPOINT_SCOPE, Settings, load_settings
+from evedm.config import ANSIBLEX_SCOPE, STRUCTURE_SCOPES, WAYPOINT_SCOPE, Settings, load_settings
 from evedm.esi import EsiError
 from evedm.scout import StructureScout
 from evedm.wars.config import WarsSettings
@@ -331,7 +331,7 @@ def test_discovered_structures_join_the_war_lists(graph):
 
 def test_optional_scopes_setting(monkeypatch, tmp_path):
     s = load_settings(tmp_path / "none.yaml")
-    assert s.eve.optional_scopes == [*STRUCTURE_SCOPES, WAYPOINT_SCOPE]
+    assert s.eve.optional_scopes == [*STRUCTURE_SCOPES, WAYPOINT_SCOPE, ANSIBLEX_SCOPE]
     required = len(s.eve.required_scopes)
     assert s.eve.requested_scopes[:required] == s.eve.required_scopes
     assert s.eve.requested_scopes[required:] == s.eve.optional_scopes

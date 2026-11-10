@@ -16,7 +16,7 @@ import sys
 import zipfile
 from array import array
 from collections import deque
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
@@ -322,6 +322,45 @@ class GateGraph:
                     parent[nxt] = node
                     queue.append(nxt)
         return parent
+
+    def route_with_links(
+        self, origin: int, target: int, links: Mapping[int, Iterable[int]], avoid: Iterable[int] = ()
+    ) -> tuple[list[int], list[int]] | None:
+        """Shortest route over stargates plus extra one-jump links (Ansiblex gates), as (path, link_hops).
+
+        ``links`` maps a system index to the systems a link leads to from there (one-way). ``link_hops`` holds the
+        positions k where the step path[k] -> path[k+1] is a link rather than a stargate. Gates are tried before
+        links, so on an equal length the plain stargate route wins. Avoided systems are never transit nodes but stay
+        valid origins and destinations, as in :meth:`bfs`. None when the target cannot be reached.
+        """
+        if origin == target:
+            return [origin], []
+        blocked = set(avoid)
+        parent = {origin: origin}
+        linked: set[int] = set()
+        queue = deque([origin])
+        off, nb = self.adj_off, self.adj_nb
+        while queue and target not in parent:
+            node = queue.popleft()
+            if node in blocked and node != origin:
+                continue
+            for k in range(off[node], off[node + 1]):
+                nxt = nb[k]
+                if nxt not in parent:
+                    parent[nxt] = node
+                    queue.append(nxt)
+            for nxt in links.get(node, ()):
+                if nxt not in parent:
+                    parent[nxt] = node
+                    linked.add(nxt)
+                    queue.append(nxt)
+        if target not in parent:
+            return None
+        path = [target]
+        while path[-1] != origin:
+            path.append(parent[path[-1]])
+        path.reverse()
+        return path, [k for k in range(len(path) - 1) if path[k + 1] in linked]
 
     def nearest(self, sources: Iterable[int], avoid: Iterable[int] = ()) -> tuple[array, array]:
         """Multi-source BFS: jumps from the nearest source to every system and which source that is.

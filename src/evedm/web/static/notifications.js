@@ -15,6 +15,7 @@ async function api(url, opts = {}) {
 }
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const HUB_CLASS = { Thera: "thera", Turnur: "turnur" };  // violet and orange (see app.css)
 const GROUP_CLASS = { asset_safety: "state-ending", structure_attack: "state-fighting", tower: "state-fighting" };
 
 const pollS = Number($(".page").dataset.pollS || 60);
@@ -32,7 +33,7 @@ function eveTime(iso) {
   if (!iso) return "";
   const d = new Date(iso);
   const utc = d.toISOString().slice(0, 16).replace("T", " ");
-  return `EVE Time: ${utc} · Local ${d.toLocaleString()}`;
+  return `EVE Time: ${utc}`;
 }
 
 async function load() {
@@ -42,10 +43,14 @@ async function load() {
     const params = new URLSearchParams({ hours: String(state.hours) });
     if (state.types) params.set("types", state.types.join(","));
     const data = await api(`/api/notifications?${params}`);
+    state.version = data.version;
+    // redraw only what changed: an unchanged answer leaves the list, the scroll position and open filters alone
+    const groupsKey = JSON.stringify([data.groups, data.defaults]);
+    const itemsKey = JSON.stringify(data.items);
     state.groups = data.groups;
     state.defaults = data.defaults;
-    renderFilters();
-    renderList(data);
+    if (groupsKey !== state.groupsKey) { state.groupsKey = groupsKey; renderFilters(); }
+    if (itemsKey !== state.itemsKey) { state.itemsKey = itemsKey; renderList(data); }
     const c = data.characters;
     const errors = c.errors.length ? ` · ${c.errors.length} character(s) could not be read` : "";
     $("#ntf-status").textContent =
@@ -63,6 +68,24 @@ function renderList(data) {
   list.innerHTML = "";
   $("#ntf-empty").hidden = data.items.length > 0;
   data.items.forEach((n) => list.append(card(n)));
+}
+
+/* The closer of Thera and Turnur: gates to the nearest system with a wormhole to it, then the wormhole. */
+function hubLabel(h) {
+  const label = el("span", `badge hub-label ${HUB_CLASS[h.hub] || ""}`,
+    `${h.hub} · ${h.jumps} jump${h.jumps === 1 ? "" : "s"}`);
+  const via = h.gates === 0 ? `a wormhole to ${h.hub} in this system`
+    : `${h.gates} gate${h.gates === 1 ? "" : "s"} to ${h.entry.name}, which has a wormhole to ${h.hub}`;
+  label.title = `Closest hub: ${via}`;
+  return label;
+}
+
+/* How a character would travel: stargates only, or through Thera / Turnur when that is shorter. */
+function routeBadge(route) {
+  const kind = route && route !== "gates" ? route : null;
+  const badge = el("span", `badge route-type ${kind ? HUB_CLASS[kind] || "" : "gates"}`, kind || "gates");
+  badge.title = kind ? `Shortest route goes through ${kind} (EVE-Scout wormholes)` : "Shortest route by stargates";
+  return badge;
 }
 
 function card(n) {
@@ -83,6 +106,7 @@ function card(n) {
       el("span", "small", `· ${n.system.region}`));
     const route = window.findRoute(n.system.name, n.system.space);
     if (route) where.append(route);
+    if (n.hub) where.append(hubLabel(n.hub));
   } else {
     where.append(el("span", "small", "not named in this notification"));
   }
@@ -101,7 +125,8 @@ function card(n) {
       n.closest.forEach((c) => {
         const item = el("li");
         item.append(el("b", null, c.name),
-          document.createTextNode(` · ${c.jumps} jump${c.jumps === 1 ? "" : "s"} from ${c.system} `));
+          document.createTextNode(` · ${c.jumps} jump${c.jumps === 1 ? "" : "s"} from ${c.system} `),
+          routeBadge(c.route));
         item.append(c.online ? el("span", "badge online", "Online") : el("span", "small", "offline"));
         ul.append(item);
       });
@@ -162,6 +187,7 @@ function renderFilters() {
 function setTypes(types) {
   state.types = types;
   Prefs.set("notifications", { types });
+  state.groupsKey = null;
   renderFilters();
   load();
 }
@@ -181,5 +207,22 @@ $("#ntf-hours").addEventListener("change", (ev) => {
 });
 $("#ntf-refresh").addEventListener("click", () => load());
 
-load();
-setInterval(() => { if (document.visibilityState === "visible") load(); }, Math.max(30, pollS) * 1000);
+/* Pushed from the server: this request stays open until a new notification is stored, then the list is
+   reloaded at once. The timer below stays as the fallback (and keeps the distances current). */
+async function follow() {
+  for (;;) {
+    if (document.visibilityState !== "visible" || state.version == null) {
+      await new Promise((r) => setTimeout(r, 2000));
+      continue;
+    }
+    try {
+      const resp = await api(`/api/notifications/wait?since=${state.version}`);
+      if (resp.changed) { state.version = resp.version; await load(); }
+    } catch (_) {
+      await new Promise((r) => setTimeout(r, 10000));  // server restarting or offline: try again shortly
+    }
+  }
+}
+
+load().then(follow);
+setInterval(() => { if (document.visibilityState === "visible") load(); }, Math.min(Math.max(15, pollS), 30) * 1000);

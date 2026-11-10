@@ -82,6 +82,7 @@ def settings(tmp_path: Path) -> Settings:
     s.eve.sso_base = FAKE
     s.eve.esi_base = FAKE
     s.eve.callback_url = "http://testserver/sso/callback"
+    s.notifications.min_structures = 0  # the structure gate has its own tests
     return s
 
 

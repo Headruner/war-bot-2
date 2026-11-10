@@ -55,6 +55,14 @@ TYPES = {
     29990: ("Loki", 963),
     24702: ("Hurricane", 419),
     670: ("Capsule", 29),
+    641: ("Megathron", 27),
+    28710: ("Golem", 900),
+    22428: ("Redeemer", 898),
+    23757: ("Archon", 547),
+    19720: ("Revelation", 485),
+    3514: ("Revenant", 659),
+    28352: ("Rorqual", 883),
+    20185: ("Charon", 513),
 }
 GROUPS = {
     1657: ("Citadel", 65),
@@ -66,6 +74,14 @@ GROUPS = {
     963: ("Strategic Cruiser", 6),
     419: ("Combat Battlecruiser", 6),
     29: ("Capsule", 6),
+    27: ("Battleship", 6),
+    900: ("Marauder", 6),
+    898: ("Black Ops", 6),
+    547: ("Carrier", 6),
+    485: ("Dreadnought", 6),
+    659: ("Supercarrier", 6),
+    883: ("Capital Industrial Ship", 6),
+    513: ("Freighter", 6),
 }
 SYSTEMS = [30000142, 30000144, 30002187, 30002659, 30002510, 30001161, 30004759, 30000163, 30002053]
 

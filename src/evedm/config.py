@@ -75,6 +75,8 @@ DEFAULT_NOTIFICATION_GROUPS = ["asset_safety", "structure_attack", "structure_st
 STRUCTURE_SCOPES = ["esi-universe.read_structures.v1", "esi-assets.read_assets.v1"]
 # Lets the app set an online character's autopilot destination (Alerts and Ranking pages: "Set destination").
 WAYPOINT_SCOPE = "esi-ui.write_waypoint.v1"
+# Lets the Ranking page's Ansiblex mode find the jump gates a character may see (character structure search).
+ANSIBLEX_SCOPE = "esi-search.search_structures.v1"
 
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
@@ -89,7 +91,7 @@ class EveSettings:
     client_secret: str = ""
     callback_url: str = "http://localhost:8080/sso/callback"
     required_scopes: list[str] = field(default_factory=lambda: list(DEFAULT_SCOPES))
-    optional_scopes: list[str] = field(default_factory=lambda: [*STRUCTURE_SCOPES, WAYPOINT_SCOPE])
+    optional_scopes: list[str] = field(default_factory=lambda: [*STRUCTURE_SCOPES, WAYPOINT_SCOPE, ANSIBLEX_SCOPE])
 
     @property
     def requested_scopes(self) -> list[str]:
@@ -158,6 +160,10 @@ class AlertSettings:
     retention_days: float = 7.0
     max_per_poll: int = 300  # killmail files read per poll at most (zKillboard allows 15 requests/s)
     contact: str = ""  # added to the User-Agent sent to zKillboard
+    # Only kills that matter are kept: a battleship or capital hull (T2 variants included) on either side, or a single
+    # killmail worth at least ``min_value_isk``. Destroyed structures are always kept. false = keep every kill.
+    big_kills_only: bool = True
+    min_value_isk: float = 500_000_000.0
     discord: AlertDiscordSettings = field(default_factory=AlertDiscordSettings)
 
 
@@ -170,6 +176,16 @@ class EveScoutSettings:
     refresh_s: float = 900.0  # the list is read again when older than this (on demand, never in a loop)
     timeout_s: float = 8.0
     hubs: list[str] = field(default_factory=lambda: ["Thera", "Turnur"])
+
+
+@dataclass
+class AnsiblexSettings:
+    """Ansiblex jump gates for the Ranking page (UC-16): the gates each character may see, read through ESI."""
+
+    enabled: bool = True
+    refresh_hours: float = 6.0  # a character's visible gates are searched again after this long
+    gate_refresh_hours: float = 168.0  # a gate's name and system are read again after this long
+    concurrency: int = 3
 
 
 @dataclass
@@ -186,6 +202,18 @@ class AccessSettings:
 
 
 @dataclass
+class NotificationDiscordSettings:
+    """Notifications posted to Discord. Without a webhook of its own the wars webhook is used
+    (``EVEDM_WARS_DISCORD_WEBHOOK``); with neither, nothing is posted."""
+
+    enabled: bool = True
+    webhook_url: str = ""  # secret: EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK; empty = the wars webhook
+    mention_role_id: str = ""  # pinged on "structure attacked" notifications only
+    groups: list[str] = field(default_factory=list)  # which groups are posted; empty = notifications.groups
+    max_age_min: float = 60.0  # older notifications are never posted (the history ESI returns on a first read)
+
+
+@dataclass
 class NotificationSettings:
     """Character notifications from ESI: asset safety and structure attacks (UC-13).
 
@@ -199,6 +227,18 @@ class NotificationSettings:
     retention_days: float = 30.0
     concurrency: int = 4
     groups: list[str] = field(default_factory=lambda: list(DEFAULT_NOTIFICATION_GROUPS))
+    # A character is read only when it has assets in at least this many player structures (NPC stations do not
+    # count): small characters add ESI load without ever receiving a structure notification. 0 = read everyone.
+    min_structures: int = 10
+    min_interval_s: float = 30.0  # never ask one character more often than this, whatever ESI's Expires says
+    retry_s: float = 60.0  # a character whose read failed (ESI 5xx, error limit, network) is retried after this
+    # Spread the reads of the characters over ESI's cache window: several characters of one corporation get the
+    # same structure notification, each with its own 600 s cache, so with their reads evenly apart the first copy
+    # arrives after 600 s / characters at worst instead of 600 s. A read is moved later by at most this many
+    # seconds per round until the reads are apart. 0 = off.
+    stagger_s: float = 60.0
+    wait_s: float = 20.0  # how long the page's "anything new?" request is held open (long poll)
+    discord: NotificationDiscordSettings = field(default_factory=NotificationDiscordSettings)
 
     def default_types(self) -> list[str]:
         return [t for g in self.groups for t in NOTIFICATION_GROUPS.get(g, [])]
@@ -221,6 +261,7 @@ class Settings:
     notifications: NotificationSettings = field(default_factory=NotificationSettings)
     access: AccessSettings = field(default_factory=AccessSettings)
     evescout: EveScoutSettings = field(default_factory=EveScoutSettings)
+    ansiblex: AnsiblexSettings = field(default_factory=AnsiblexSettings)
 
     @property
     def db_path(self) -> Path:
@@ -251,6 +292,7 @@ class Settings:
             "notifications": self.notifications.enabled,
             "access_alliances": self.access.alliance_ids,
             "evescout": self.evescout.enabled,
+            "ansiblex": self.ansiblex.enabled,
         }
 
     def validate_for_serve(self) -> None:
@@ -274,6 +316,8 @@ class Settings:
             raise ConfigError("alerts.poll_s must be at least 6 (zKillboard's rule)")
         if a.grid_km <= 0 or a.retention_days <= 0 or not 1 <= a.max_per_poll <= 2000:
             raise ConfigError("alerts.grid_km and alerts.retention_days > 0, alerts.max_per_poll 1..2000")
+        if a.min_value_isk < 0:
+            raise ConfigError("alerts.min_value_isk must be 0 or more")
         bad = [k for k in a.discord.kinds if k not in ("destroyed", "combat", "firing")]
         if bad:
             raise ConfigError(f"alerts.discord.kinds: unknown {bad}; use destroyed, combat, firing")
@@ -285,6 +329,15 @@ class Settings:
                 raise ConfigError("notifications.poll_s must be at least 30 (ESI caches notifications 600 s)")
             if n.retention_days <= 0 or n.character_interval_s < 60:
                 raise ConfigError("notifications.retention_days > 0 and character_interval_s >= 60")
+            if n.min_structures < 0 or n.min_interval_s < 1 or n.retry_s < 5:
+                raise ConfigError("notifications.min_structures >= 0, min_interval_s >= 1 and retry_s >= 5")
+            unknown_d = [g for g in n.discord.groups if g not in NOTIFICATION_GROUPS]
+            if unknown_d or n.discord.max_age_min <= 0:
+                raise ConfigError(
+                    f"notifications.discord.groups: unknown {unknown_d}; max_age_min must be above 0"
+                )
+            if n.stagger_s < 0 or not 1 <= n.wait_s <= 60:
+                raise ConfigError("notifications.stagger_s >= 0 and wait_s between 1 and 60")
             unknown = [g for g in n.groups if g not in NOTIFICATION_GROUPS]
             if unknown:
                 raise ConfigError(
@@ -328,8 +381,10 @@ def _apply(obj: Any, data: dict[str, Any]) -> None:
             AlertSettings,
             AlertDiscordSettings,
             NotificationSettings,
+            NotificationDiscordSettings,
             AccessSettings,
             EveScoutSettings,
+            AnsiblexSettings,
         )
         if isinstance(current, nested) and isinstance(value, dict):
             _apply(current, value)
@@ -382,6 +437,13 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
     "EVEDM_EVESCOUT_ENABLED": ("evescout", "enabled"),
     "EVEDM_EVESCOUT_URL": ("evescout", "url"),
     "EVEDM_EVESCOUT_REFRESH_S": ("evescout", "refresh_s"),
+    "EVEDM_ANSIBLEX_ENABLED": ("ansiblex", "enabled"),
+    "EVEDM_ALERTS_MIN_VALUE_ISK": ("alerts", "min_value_isk"),
+    "EVEDM_ALERTS_BIG_KILLS_ONLY": ("alerts", "big_kills_only"),
+    "EVEDM_NOTIFICATIONS_MIN_STRUCTURES": ("notifications", "min_structures"),
+    "EVEDM_NOTIFICATIONS_DISCORD_ENABLED": ("notifications", "discord", "enabled"),
+    "EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK": ("notifications", "discord", "webhook_url"),
+    "EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID": ("notifications", "discord", "mention_role_id"),
     "EVEDM_ACCESS_ALLIANCES": ("access", "alliance_ids"),
     "EVEDM_ACCESS_AFFILIATION_HOURS": ("access", "affiliation_hours"),
     "EVEDM_NOTIFICATIONS_POLL_S": ("notifications", "poll_s"),

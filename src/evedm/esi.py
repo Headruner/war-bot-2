@@ -36,9 +36,17 @@ def _expires(resp: httpx.Response, default_s: float = 5.0) -> float:
     value = resp.headers.get("Expires")
     if value:
         try:
-            return parsedate_to_datetime(value).timestamp()
+            expires = parsedate_to_datetime(value).timestamp()
         except (TypeError, ValueError):
-            pass
+            expires = None
+        if expires is not None:
+            # measure the lifetime against the server's own Date, not our clock: a host clock that runs behind
+            # (a VM after sleep) would otherwise keep the copy too long, one that runs ahead would ask too early
+            try:
+                served = parsedate_to_datetime(resp.headers["Date"]).timestamp()
+            except (KeyError, TypeError, ValueError):
+                return expires
+            return time.time() + max(0.0, expires - served)
     cc = resp.headers.get("Cache-Control", "")
     for part in cc.split(","):
         part = part.strip()
@@ -100,6 +108,11 @@ class EsiClient:
         except ValueError:
             if resp.status_code == 420:
                 self._blocked_until = time.time() + 61.0
+
+    def cached_expiry(self, path: str) -> float | None:
+        """When the cached copy of ``path`` stops being fresh (epoch seconds), or None when it is not cached."""
+        entry = self._cache.get(path)
+        return entry.expires if entry is not None else None
 
     async def get(self, path: str, token: str | None = None) -> Any:
         """GET with Expires/ETag caching; identical concurrent requests share one HTTP call."""

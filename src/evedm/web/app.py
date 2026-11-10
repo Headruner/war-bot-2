@@ -23,6 +23,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from .. import __version__
 from ..access import AllianceGate
 from ..alerts import AlertService, seed_demo_alerts
+from ..ansiblex import AnsiblexService, seed_demo_gates
 from ..bundle import BundleRejected, export_bundle, import_bundle, report
 from ..characters import REAUTH, CharacterService
 from ..config import WAYPOINT_SCOPE, ConfigError, Settings
@@ -84,6 +85,7 @@ class Services:
     alerts: AlertService | None = None
     gate: AllianceGate | None = None  # who may see the Notifications and Structures tabs (D16)
     evescout: EveScout | None = None  # Thera / Turnur wormholes for the Ranking filter (UC-15)
+    ansiblex: AnsiblexService | None = None  # Ansiblex jump gates per character for the Ranking filter (UC-16)
 
 
 class RequestCounter:
@@ -134,6 +136,10 @@ def build_services(settings: Settings) -> Services:
         svc.evescout = EveScout(
             settings.evescout, graph, http, user_agent=settings.eve.user_agent, demo=settings.demo
         )
+    if settings.ansiblex.enabled:
+        svc.ansiblex = AnsiblexService(settings.ansiblex, db, graph, chars, esi, demo=settings.demo)
+        if settings.demo:
+            seed_demo_gates(db, graph)
     svc.gate = AllianceGate(settings.access, db, esi, demo=settings.demo)  # type: ignore[arg-type]
     svc.roster = RosterService(db, graph, svc.resolver, ranking, settings.instance_label)
     if settings.demo:
@@ -203,6 +209,26 @@ def build_alerts(settings: Settings, ws: WarsSettings, svc: Services) -> AlertSe
     return alerts
 
 
+def attach_notification_discord(settings: Settings, ws: WarsSettings, svc: Services) -> None:
+    """Post notifications to Discord: through their own webhook, else through the wars webhook."""
+    ns = svc.notifications
+    d = settings.notifications.discord
+    if ns is None or not d.enabled or settings.demo:
+        return
+    from ..wars.discord import DiscordNotifier
+    from ..wars.service import public_base
+
+    url = d.webhook_url or ws.discord.webhook_url
+    if not url:
+        log.info("notifications are not posted to Discord: no webhook (EVEDM_WARS_DISCORD_WEBHOOK)")
+        return
+    base = public_base(settings, ws)
+    ns.notifier = DiscordNotifier(url, ws.discord.min_seconds_between_posts, dry_run=ws.discord.dry_run)
+    ns.page_url = f"{base}/notifications" if base else None
+    ns.evescout = svc.evescout
+    log.info("notifications are posted to Discord (%s webhook)", "their own" if d.webhook_url else "the wars")
+
+
 def create_app(settings: Settings, wars_settings: WarsSettings | None = None) -> FastAPI:
     settings.validate_for_serve()
     ws = wars_settings if wars_settings is not None else load_wars_settings()
@@ -231,6 +257,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                 svc.scout.on_change.append(structures.set_discovered)  # private finds join the war lists
                 structures.set_discovered(svc.scout.index())
         svc.alerts = build_alerts(settings, ws, svc)
+        attach_notification_discord(settings, ws, svc)
         svc.launch.start(
             {
                 "universe": svc.graph.build,
@@ -364,6 +391,8 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             "alerts_enabled": svc.alerts is not None,
             "evescout_enabled": svc.evescout is not None,
             "evescout_hubs": list(svc.evescout.s.hubs) if svc.evescout is not None else [],
+            "ansiblex_enabled": svc.ansiblex is not None,
+            "min_structures": settings.notifications.min_structures,
             "notifications_enabled": svc.notifications is not None and member,
         }
         return templates.TemplateResponse(request, name, base | ctx)
@@ -577,6 +606,11 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         idx = svc.graph.index.get(int(target)) if target.isdigit() else svc.graph.find(target)
         if idx is None:
             raise HTTPException(status_code=404, detail=f"unknown solar system: {target}")
+        use_gates = hub.strip().lower() == "ansiblex"  # the Ansiblex filter (UC-16): its own radio button
+        if use_gates:
+            if svc.ansiblex is None:
+                raise HTTPException(status_code=422, detail="the Ansiblex filter is disabled (ansiblex.enabled)")
+            hub = ""
         scout = svc.evescout if (thera or hub) else None  # the Thera / Turnur filter (UC-15)
         hubs: list[str] | None = None  # None = any configured hub (the old thera=1)
         if scout is not None and hub:
@@ -586,7 +620,14 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             hubs = [name]  # one radio button = one mid-system
         if scout is not None:
             await scout.ensure_fresh()
-        result = await svc.ranking.rank(idx, refresh=max(0, min(2, refresh)), owner_id=uid, evescout=scout, hubs=hubs)
+        result = await svc.ranking.rank(
+            idx,
+            refresh=max(0, min(2, refresh)),
+            owner_id=uid,
+            evescout=scout,
+            hubs=hubs,
+            ansiblex=svc.ansiblex if use_gates else None,
+        )
         return JSONResponse(result)
 
     @app.get("/api/evescout")
@@ -615,6 +656,10 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             if not isinstance(body["enabled"], bool):
                 raise HTTPException(status_code=400, detail="enabled must be true or false")
             svc.db.set_enabled(character_id, body["enabled"], uid)
+        if "notify" in body:
+            if not isinstance(body["notify"], bool):
+                raise HTTPException(status_code=400, detail="notify must be true or false")
+            svc.db.set_notify(character_id, body["notify"], uid)
         if "tags" in body:
             tags = body["tags"] if isinstance(body["tags"], list) else str(body["tags"]).split(",")
             svc.db.set_tags(character_id, [str(t) for t in tags][:20], uid)
@@ -640,6 +685,14 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         await require_member(request, uid)  # the alliance gate (D16)
         return ns
 
+    @app.get("/api/notifications/wait")
+    async def wait_for_notifications(request: Request, since: int = -1) -> JSONResponse:
+        """Long poll: answers as soon as a notification newer than version ``since`` is stored (or after
+        ``notifications.wait_s``), so the page shows it at once instead of on its next timer."""
+        ns = await notifications_of(request, owner(request))
+        version = await ns.wait_changed(since)
+        return JSONResponse({"version": version, "changed": version != since})
+
     @app.get("/api/notifications")
     async def list_notifications(
         request: Request, hours: float = 168, types: str = "", limit: int = 100, refresh: int = 1
@@ -659,28 +712,43 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         if refresh and live:
             await svc.ranking.refresh_states(live, 1, uid)  # last known locations of the caller's characters
         static_origins = svc.roster.origins(uid) if svc.roster is not None else []
+        if svc.evescout is not None:
+            # Thera / Turnur labels and route types: a stale list is used as it is and re-read in the background
+            await svc.evescout.ensure_fresh_soon()
+        snaps = svc.db.get_snapshots([c.character_id for c in live])
+        per_system: dict[int, tuple[Any, Any, Any]] = {}  # many notifications name the same system: work once
+
+        def distances(idx: int) -> tuple[Any, Any, Any]:
+            if idx not in per_system:
+                per_system[idx] = (
+                    closest_characters(svc, uid, idx, hubs=True, chars=live, snaps=snaps),
+                    # the closer of Thera and Turnur (gates to the nearest listed system, plus the wormhole)
+                    svc.evescout.nearest(idx, svc.ranking.avoid) if svc.evescout is not None else None,
+                    RosterService.closest(static_origins, svc.ranking.parents(idx)) if static_origins else [],
+                )
+            return per_system[idx]
+
         items = []
         for r in rows:
             item = ns.describe(r, names)
             item["main"] = mains.get(sources.get(r["character_id"], -1))
             idx = item.pop("system_index")
-            item["closest"] = closest_characters(svc, uid, idx) if idx is not None else []
-            item["closest_static"] = (
-                RosterService.closest(static_origins, svc.ranking.parents(idx))
-                if idx is not None and static_origins
-                else []
+            item["closest"], item["hub"], item["closest_static"] = (
+                distances(idx) if idx is not None else ([], None, [])
             )
             items.append(item)
         checks = svc.db.notification_checks()
         return JSONResponse(
             {
                 "items": items,
+                "version": ns.version,
                 "groups": ns.catalogue(svc.db.notification_types(ids)),
                 "defaults": ns.default_types(),
                 "poll_s": ns.s.poll_s,
                 "characters": {
                     "linked": svc.db.registered_character_count(settings.demo),
-                    "reading": len(ids),
+                    "reading": len(ids) if settings.demo else len(ns.eligible()),
+                    "min_structures": ns.s.min_structures,
                     "errors": [
                         {"name": names.get(cid, str(cid)), "error": checks[cid]["error"]}
                         for cid in ids
@@ -866,10 +934,25 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         return JSONResponse(result)
 
     # ------------------------------------------------------------------ alerts + destinations
-    def closest_characters(svc: Services, uid: int, target: int, n: int = 3) -> list[dict[str, Any]]:
-        """The main's characters nearest to ``target`` by stargate jumps (last known locations)."""
-        chars = [c for c in svc.db.list_characters(uid) if c.enabled and c.status != REAUTH]
-        snaps = svc.db.get_snapshots([c.character_id for c in chars])
+    def closest_characters(
+        svc: Services,
+        uid: int,
+        target: int,
+        n: int = 3,
+        *,
+        hubs: bool = False,
+        chars: list[Any] | None = None,
+        snaps: dict[int, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """The main's characters nearest to ``target`` (last known locations).
+
+        By stargate jumps; with ``hubs`` a route through Thera or Turnur counts too when it is shorter, and each
+        entry says which kind of route it is (``route``: gates, Thera or Turnur).
+        """
+        if chars is None:  # a caller that asks for many targets passes both in, read once
+            chars = [c for c in svc.db.list_characters(uid) if c.enabled and c.status != REAUTH]
+        if snaps is None:
+            snaps = svc.db.get_snapshots([c.character_id for c in chars])
         parent = svc.ranking._parents(target)  # cached BFS from the target, as the ranking uses
         out = []
         for c in chars:
@@ -878,13 +961,19 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             if idx is None:
                 continue
             path = svc.graph.route(parent, idx)
-            if path is None:
+            jumps = None if path is None else len(path) - 1
+            route = "gates"
+            plan = svc.evescout.via(idx, target, svc.ranking.avoid) if hubs and svc.evescout is not None else None
+            if plan is not None and (jumps is None or plan["jumps"] < jumps):  # a tie keeps the gates
+                jumps, route = plan["jumps"], plan["hub"]
+            if jumps is None:
                 continue
             out.append(
                 {
                     "character_id": c.character_id,
                     "name": c.name,
-                    "jumps": len(path) - 1,
+                    "jumps": jumps,
+                    "route": route,
                     "system": svc.graph.names[idx],
                     "online": None if snap["online"] is None else bool(snap["online"]),
                     "can_set_route": WAYPOINT_SCOPE in c.scopes or c.demo,
@@ -895,7 +984,13 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
 
     @app.get("/api/alerts")
     async def list_alerts(
-        request: Request, hours: float = 24, kinds: str = "", space: str = "", core_only: int = 0, refresh: int = 1
+        request: Request,
+        hours: float = 24,
+        kinds: str = "",
+        space: str = "",
+        core_only: int = 0,
+        capitals: int = 0,
+        refresh: int = 1,
     ) -> JSONResponse:
         """Structure alerts grouped by structure, newest first, each with the caller's closest characters."""
         uid = owner(request)
@@ -903,7 +998,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         if svc.alerts is None:
             raise HTTPException(status_code=404, detail="structure alerts are disabled (alerts.enabled)")
         wanted = [k for k in kinds.split(",") if k in ("destroyed", "combat", "firing")]
-        rows = svc.alerts.recent(max(0.1, min(hours, 24 * 7)), wanted or None, limit=500)
+        rows = svc.alerts.recent(max(0.1, min(hours, 24 * 7)), wanted or None, limit=500, capitals_only=bool(capitals))
         chars = [c for c in svc.db.list_characters(uid) if c.enabled and c.status != REAUTH]
         if refresh and chars:
             await svc.ranking.refresh_states(chars, 1, uid)
@@ -933,6 +1028,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                     "latest_at": a["created_at"],
                     "counts": {"destroyed": 0, "combat": 0, "firing": 0},
                     "core_drop": False,
+                    "capitals": False,
                     "alerts": [],
                     "closest": closest_characters(svc, uid, idx),
                     # ALR-11: static roster characters, jumps only, never in place of a live character
@@ -943,6 +1039,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                 }
             g["counts"][a["kind"]] += 1
             g["core_drop"] = g["core_drop"] or a["core_drop"]
+            g["capitals"] = g["capitals"] or a["capitals"]
             if len(g["alerts"]) < 6:
                 g["alerts"].append(a)
         out = [g for g in groups.values() if not core_only or g["core_drop"]]

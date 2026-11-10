@@ -11,14 +11,15 @@
   <button type="submit" class="btn primary">Rank</button>
   <button type="button" id="paste-btn" class="btn">Paste text</button>
   <button type="button" id="refresh-btn" class="btn icon" title="Refresh locations" aria-label="Refresh">&#8635;</button>
-  {% if evescout_enabled %}
-  <fieldset class="hub-toggle" id="hub-toggle" role="radiogroup" aria-label="Route through a wormhole hub (EVE-Scout)"
-            title="Route through the chosen hub's EVE-Scout wormholes when that is shorter than the gates">
+  {% if evescout_enabled or ansiblex_enabled %}
+  <fieldset class="hub-toggle" id="hub-toggle" role="radiogroup" aria-label="Route over stargates, through Thera or Turnur, or over Ansiblex gates"
+            title="Gates only, or add the chosen hub's EVE-Scout wormholes, or each character's own Ansiblex jump gates, when that is shorter">
     <label><input type="radio" name="hub" value="" checked> Gates only</label>
-    {% for h in evescout_hubs %}
+    {% if evescout_enabled %}{% for h in evescout_hubs %}
     <label><input type="radio" name="hub" value="{{ h | lower }}"> {{ h }}</label>
-    {% endfor %}
-    <span class="small">(EVE-Scout)</span>
+    {% endfor %}{% endif %}
+    {% if ansiblex_enabled %}<label title="Adds the Ansiblex jump gates each character may use (read through ESI)"><input type="radio" name="hub" value="ansiblex"> Ansiblex</label>{% endif %}
+    {% if evescout_enabled %}<span class="small">(EVE-Scout)</span>{% endif %}
   </fieldset>
   {% endif %}
 </form>
@@ -31,22 +32,24 @@
     </div>
     <div id="thera-info" class="small thera-info" hidden></div>
     <div id="recent" class="chips"></div>
-    <div class="tabs" role="tablist">
-      <button type="button" class="tab active" data-tab="live" role="tab" aria-selected="true">Characters</button>
-      <button type="button" class="tab" data-tab="roster" role="tab" aria-selected="false">Roster<span
-        id="roster-count" class="count"></span></button>
+    <div class="tabs-bar">
+      <div class="tabs" role="tablist">
+        <button type="button" class="tab active" data-tab="live" role="tab" aria-selected="true">Characters</button>
+        <button type="button" class="tab" data-tab="roster" role="tab" aria-selected="false">Roster<span
+          id="roster-count" class="count"></span></button>
+      </div>
+      <label class="small auto-refresh">Auto-refresh
+        <select id="auto-refresh" aria-label="Auto-refresh interval">
+          <option value="0">off</option><option value="15">15 s</option><option value="30">30 s</option>
+          <option value="60">1 min</option><option value="120">2 min</option>
+        </select>
+      </label>
     </div>
     <div id="live-pane">
       <ol id="rows" class="rows"></ol>
       <div id="excluded" class="excluded"></div>
       <div class="status-line">
         <div id="status" class="status"></div>
-        <label class="small auto-refresh">Auto-refresh
-          <select id="auto-refresh" aria-label="Auto-refresh interval">
-            <option value="0">off</option><option value="15">15 s</option><option value="30">30 s</option>
-            <option value="60">1 min</option><option value="120">2 min</option>
-          </select>
-        </label>
       </div>
     </div>
     <div id="roster-pane" hidden>
@@ -64,6 +67,7 @@
     <div class="legend">
       <span><i class="dot high"></i>High</span><span><i class="dot low"></i>Low</span><span><i class="dot null"></i>Null</span>
       <span id="legend-wh" hidden><i class="wh-line"></i>Wormhole</span>
+      <span id="legend-ax" hidden><i class="ax-line"></i>Ansiblex</span>
       <span><i class="mk origin"></i>Selected character</span><span><i class="mk target"></i>Target</span>
     </div>
     <div class="map-tools">

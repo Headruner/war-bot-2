@@ -42,6 +42,39 @@ class DiscordNotifier:
         if wait > 0:
             await asyncio.sleep(wait)
 
+    async def edit(self, message_id: str, payload: dict) -> dict | None:
+        """Replace a message this webhook posted earlier. None when the message no longer exists."""
+        if self.dry_run or message_id == "dry_run":
+            titles = [e.get("title") for e in payload.get("embeds", [])]
+            log.info("DRY RUN: would edit message %s: %s", message_id, titles)
+            return {"id": message_id}
+        if not self.webhook_url:
+            raise WebhookInvalid("webhook_url is not configured")
+        url = f"{self.webhook_url.split('?')[0].rstrip('/')}/messages/{message_id}"
+        for _ in range(MAX_RATE_LIMIT_RETRIES):
+            await self._throttle()
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
+                    response = await client.patch(url, json=payload)
+            except httpx.HTTPError as e:
+                raise NotifyError(f"Discord request failed: {e!r}") from e
+            self.last_post_time = time.monotonic()
+            if response.status_code == 429:
+                try:
+                    retry_after = float(response.json().get("retry_after", 1))
+                except ValueError:
+                    retry_after = 1.0
+                await asyncio.sleep(min(retry_after, 60))
+                continue
+            if response.status_code == 404:
+                return None  # the message was deleted in Discord
+            if response.status_code in (401, 403):
+                raise WebhookInvalid(f"Discord rejected the webhook ({response.status_code}): {response.text[:200]}")
+            if response.status_code >= 400:
+                raise NotifyError(f"Discord error {response.status_code}: {response.text[:500]}")
+            return response.json() if response.content else {}
+        raise NotifyError("Discord rate limit: giving up for this cycle")
+
     async def send(self, payload: dict) -> dict:
         """Post a message and return Discord's message object."""
         if self.dry_run:

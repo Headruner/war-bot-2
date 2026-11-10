@@ -17,7 +17,7 @@ web -> evs : ensure_fresh()
 alt list older than refresh_s (900 s = 15 min)
   evs -> ext : GET /v2/public/signatures
   alt answered
-    ext --> evs : signatures (hub, in_system, remaining_hours, type, size)
+    ext --> evs : signatures (hub, in_system, remaining_hours, type, max_ship_size, in_signature, out_signature)
     evs -> ext : GET ...?system_name=<hub> only for a configured hub missing from the answer
     evs -> evs : keep Thera / Turnur rows, drop J-space and unknown systems (End Of Life rows are kept),\none row per system, order by security (high first), then name
   else error / timeout
@@ -34,7 +34,7 @@ loop the chosen hub (thera=1: every hub) with a list
   note right: entry = exit: the plain gate route is shorter, hub skipped
 end
 rs -> rs : fewest jumps over the chosen hubs; used only when STRICTLY shorter than the direct gate route
-rs --> web : rows with jumps, route, route_legs [gate, wormhole, gate], wormhole{hub, entry, exit, direct_jumps, used}
+rs --> web : rows with jumps, route, route_legs [gate, wormhole, gate], wormhole{hub, entry, exit, direct_jumps, used,\nin / out signature and size of entry and exit, min_size}
 web --> ui : JSON + evescout status
-ui -> ui : "via Thera" badge, note in the route bar, dashed purple wormhole leg between two gold gate legs on the map
+ui -> ui : "via Thera" badge, note in the route bar, dashed purple wormhole leg between two gold gate legs on the map;\nroute bar: InSig / OutSig beside entry and exit, ship-size icon (smaller of the two) in the hub hop
 @enduml
