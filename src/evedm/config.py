@@ -138,6 +138,10 @@ class StructureScoutSettings:
     no_access_refresh_hours: float = 336.0  # ask again about a structure that refused (403) this rarely: errors count
     max_asset_pages: int = 1_000_000  # 1000 assets per page: effectively no limit, ESI's X-Pages ends the read
     concurrency: int = 4
+    # public datasets that fill in name, owner and system of structures nobody here may read (shown as "historical")
+    everef_enabled: bool = True
+    everef_url: str = "https://data.everef.net/structures/structures-latest.v2.json"  # EVE Ref scrape, JSON by ID
+    everef_max_mb: int = 300  # the download is refused above this size
 
 
 @dataclass

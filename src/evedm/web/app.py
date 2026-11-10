@@ -37,7 +37,7 @@ from ..notifications import NotificationService
 from ..ranking import DemoProvider, LiveProvider, RankingService
 from ..resolver import TargetResolver
 from ..roster import RosterRejected, RosterService
-from ..scout import StructureScout, seed_demo_structures
+from ..scout import ResolveError, StructureScout, seed_demo_structures
 from ..selfcheck import check
 from ..sso import AuthService, SsoError
 from ..universe import GateGraph
@@ -931,6 +931,19 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             offset=max(0, offset),
         )
         result["wars_known"] = svc.wars is not None and svc.wars.census is not None
+        return JSONResponse(result)
+
+    @app.post("/api/structures/resolve")
+    async def resolve_structures(request: Request, limit: int = 200) -> JSONResponse:
+        """Read the unresolved structures one by one with the signed-in main's own token (members only)."""
+        uid = owner(request)
+        require_csrf(request)
+        scout = await scout_of(request)
+        try:
+            result = await scout.resolve_with_main(uid, limit=max(1, min(limit, 500)))
+        except ResolveError as exc:
+            status = {"busy": 409, "demo": 409}.get(exc.code, 422)
+            return JSONResponse({"error": exc.code, "detail": exc.message}, status_code=status)
         return JSONResponse(result)
 
     # ------------------------------------------------------------------ alerts + destinations

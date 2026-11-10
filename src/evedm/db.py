@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 11  # v10: index on character_notifications(created_at); v11: Discord posts of notifications
+SCHEMA_VERSION = 13  # v12: historical structure directory entries; v13: their source (Adam4EVE, EVE Ref)
 log = logging.getLogger("evedm.db")
 
 SCHEMA = """
@@ -83,6 +83,11 @@ CREATE TABLE IF NOT EXISTS known_structures (
     last_seen       REAL NOT NULL,
     checked_at      REAL NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS public_structure_history (
+    structure_id INTEGER PRIMARY KEY,
+    name TEXT, owner_id INTEGER, owner_name TEXT, system_id INTEGER, type_id INTEGER, type_name TEXT,
+    observed TEXT, source TEXT
+);
 -- which characters have assets in a structure (used only to pick a token that may read it; never shown)
 CREATE TABLE IF NOT EXISTS structure_sightings (
     structure_id INTEGER NOT NULL,
@@ -127,7 +132,7 @@ CREATE TABLE IF NOT EXISTS ansiblex_gates (
     name            TEXT,
     owner_id        INTEGER,
     solar_system_id INTEGER,
-    dest_system_id  INTEGER,                      -- parsed from the "A » B - name" convention
+    dest_system_id  INTEGER,                      -- parsed from the "A В» B - name" convention
     checked_at      REAL NOT NULL DEFAULT 0,
     status          TEXT NOT NULL DEFAULT 'ok'    -- ok | not_gate | no_access
 );
@@ -449,6 +454,7 @@ class Database:
                     "known_structures",
                     {"pos_x": "REAL", "pos_y": "REAL", "pos_z": "REAL", "destroyed_at": "REAL"},
                 )
+                self._add_columns("public_structure_history", {"source": "TEXT"})  # v12 -> v13
                 self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             except BaseException:
                 self._conn.execute("ROLLBACK")

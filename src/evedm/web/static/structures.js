@@ -43,7 +43,7 @@ function fillSelect(sel, facets, keep, label = (x) => x) {
 function row(r) {
   const tr = el("tr");
   const jumps = el("td", "num jumps");
-  jumps.append(el("b", null, r.jumps == null ? "—" : String(r.jumps)));
+  jumps.append(el("b", null, r.jumps == null ? "вЂ”" : String(r.jumps)));
   if (r.nearest && r.nearest.characters.length) jumps.append(el("div", "small", r.nearest.characters[0]));
   else if (r.system.space === "wormhole") jumps.append(el("div", "small", "no gates"));
   const sys = el("td");
@@ -56,11 +56,15 @@ function row(r) {
     a.append(secChip(r.system.security), document.createTextNode(` ${r.system.name}`));
     sys.append(a);
   }
-  sys.append(el("div", "small", `${r.system.region} · ${SPACE[r.system.space] || r.system.space}`));
+  sys.append(el("div", "small", `${r.system.region} В· ${SPACE[r.system.space] || r.system.space}`));
   const st = el("td");
   const prefix = `${r.system.name} - `;
   st.append(el("div", null, r.name.startsWith(prefix) ? r.name.slice(prefix.length) : r.name), el("div", "small", r.type));
-  st.append(el("div", "small", `ID ${r.structure_id} · ${STATUS[r.status] || r.status}`));
+  st.append(el("div", "small", `ID ${r.structure_id} В· ${STATUS[r.status] || r.status}`));
+  if (r.historical_source) {
+    const date = r.historical_date ? " · last seen " + r.historical_date : "";
+    st.append(el("div", "small", "Historical details: " + r.historical_source + date));
+  }
   const owner = el("td");
   const line = el("div");
   line.append(extLink(r.owner, r.owner_zkill));
@@ -91,7 +95,7 @@ async function load(append = false) {
   Prefs.set("structures", f);
   const qs = new URLSearchParams({ q: f.q, space: f.space, region: f.region, type: f.type, at_war: f.war ? 1 : 0,
     sort: f.sort, limit: PAGE, offset });
-  $("#s-info").textContent = "Loading…";
+  $("#s-info").textContent = "LoadingвЂ¦";
   const d = await api(`/api/structures?${qs}`);
   fillSelect($("#s-region"), d.facets.regions, f.region);
   fillSelect($("#s-type"), d.facets.types, f.type);
@@ -105,7 +109,7 @@ async function load(append = false) {
   if (d.scout.last_run) parts.push(`scouted ${ago(d.scout.last_run.at)}`);
   else if (d.scout.running) parts.push("first scout run in progress");
   if (!d.characters) parts.push("add characters to see jumps");
-  $("#s-info").textContent = parts.join(" · ");
+  $("#s-info").textContent = parts.join(" В· ");
 }
 
 $("#s-q").value = prefs.q || "";
@@ -121,5 +125,27 @@ let typing = null;
 $("#s-q").addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => load(), 300); });
 ["#s-space", "#s-region", "#s-type", "#s-war", "#s-sort"].forEach((id) => $(id).addEventListener("change", () => load()));
 $("#s-reload").addEventListener("click", () => load());
+$("#s-resolve").addEventListener("click", async () => {
+  const btn = $("#s-resolve"), info = $("#s-resolve-info");
+  btn.disabled = true;
+  info.textContent = "Reading unknown structures one by one with your main character…";
+  try {
+    const resp = await fetch("/api/structures/resolve", { method: "POST", credentials: "same-origin", headers: { "X-EVEDM": "1" } });
+    if (resp.status === 401) { location.href = "/login"; return; }
+    const d = await resp.json();
+    if (!resp.ok) { info.textContent = d.detail || d.error || resp.statusText; return; }
+    const why = { error_limit: `ESI error limit reached, try again in ${d.retry_after_s || 60} s`,
+      esi_error: "ESI answered with an error, try again later", reauth: "your main character must sign in again" }[d.stopped];
+    info.textContent = `${d.targets} unknown: ${d.resolved} resolved, ${d.no_access} refused by ESI (no docking access), ` +
+      `${d.gone} gone, ${d.remaining} left.` + (why ? ` Stopped: ${why}.` : "");
+    const h = d.history || {}, filled = (h["EVE Ref"] || 0) + (h.Adam4EVE || 0);
+    if (filled) info.textContent += ` Public datasets matched ${filled} (EVE Ref ${h["EVE Ref"] || 0}, Adam4EVE ${h.Adam4EVE || 0}).`;
+    if (d.resolved || d.gone || filled) load();
+  } catch (err) {
+    info.textContent = "Could not resolve: " + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
 $("#s-more").addEventListener("click", () => load(true));
 load();

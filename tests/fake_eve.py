@@ -403,6 +403,11 @@ def create_fake_app(
         body = items[(page - 1) * size : page * size]
         return Response(json.dumps(body), media_type="application/json", headers={"X-Pages": str(pages)})
 
+    @app.get("/universe/structures/")
+    async def public_structures(request: Request) -> Response:
+        count("structure_list")
+        return esi_json(request, [sid for sid, v in st.structures.items() if v.get("acl") is None], 3600)
+
     @app.get("/universe/structures/{sid}")
     async def structure(request: Request, sid: int) -> Response:
         count("structure")

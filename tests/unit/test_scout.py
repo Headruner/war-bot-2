@@ -1,14 +1,17 @@
 """Structure scout: player-owned structures found through every registered character's assets, shared by all mains."""
 
+import json
 import time
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from common import mint
+from evedm.characters import REAUTH
 from evedm.config import ANSIBLEX_SCOPE, STRUCTURE_SCOPES, WAYPOINT_SCOPE, Settings, load_settings
 from evedm.esi import EsiError
-from evedm.scout import StructureScout
+from evedm.scout import ResolveError, StructureScout
 from evedm.wars.config import WarsSettings
 from evedm.wars.structures import Structure, StructureIndex
 from evedm.web.app import create_app
@@ -438,3 +441,187 @@ def test_bad_values_in_the_main_config_are_reported(monkeypatch, tmp_path, capsy
     monkeypatch.setenv("EVEDM_DATA_DIR", str(tmp_path))
     assert main(["--demo", "serve"]) == 2
     assert "invalid setting" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------- one by one with the signed-in main
+def seed_unresolved(db, ids: dict[int, str]) -> None:
+    now = time.time()
+    with db.tx() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO known_structures(structure_id, status, first_seen, last_seen, checked_at) "
+            "VALUES(?,?,?,?,0)",
+            [(sid, status, now, now) for sid, status in ids.items()],
+        )
+
+
+async def test_main_resolves_unresolved_structures_one_by_one(settings, services, world, monkeypatch):
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])  # the main: may read structures, no assets
+    db = services["db"]
+    seed_unresolved(db, {S_HIGH: "no_access", S_PRIVATE: "no_access", S_WH: "new", S_GONE: "new"})
+    scout = scout_for(settings, services)
+    asked: list[str] = []
+    real = scout.esi.get
+
+    async def spy(path, token=None):
+        asked.append(path)
+        return await real(path, token)
+
+    monkeypatch.setattr(scout.esi, "get", spy)
+    result = await scout.resolve_with_main(C)
+    assert result["targets"] == 4 and result["public_first"] == 1 and result["stopped"] is None
+    assert (result["resolved"], result["no_access"], result["gone"], result["remaining"]) == (2, 1, 1, 0)
+    # the public list is read once without a token, and the public structure is asked before the others
+    assert asked[0] == "/universe/structures/" and asked[1] == f"/universe/structures/{S_WH}"
+    status = {r[0]: r[1] for r in db.query("SELECT structure_id, status FROM known_structures")}
+    assert status == {S_HIGH: "no_access", S_PRIVATE: "ok", S_WH: "ok", S_GONE: "gone"}
+    rows = {r["structure_id"]: r for r in scout.structures()}
+    assert rows[S_PRIVATE]["name"] == "Secret" and rows[S_WH]["name"] == "J-Home" and rows[S_WH]["owner_id"] == CORP
+    assert {r["structure_id"] for r in scout.unresolved()} == {S_HIGH}  # still refused: stays listed by ID only
+
+
+async def test_a_limited_run_resumes_with_the_rows_not_yet_tried(settings, services, world):
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
+    db = services["db"]
+    seed_unresolved(db, {S_HIGH: "new", S_NULL: "new", S_PRIVATE: "new"})
+    scout = scout_for(settings, services)
+    first = await scout.resolve_with_main(C, limit=1)
+    assert first["targets"] == 3 and first["remaining"] == 2
+    second = await scout.resolve_with_main(C, limit=10)
+    assert second["targets"] == 3  # the one still refused is asked again, after the two never tried
+    assert (second["resolved"], second["no_access"]) == (1, 2)
+    done = {r[0]: r[1] for r in db.query("SELECT structure_id, status FROM known_structures")}
+    assert done[S_PRIVATE] == "ok" and done[S_HIGH] == done[S_NULL] == "no_access"
+
+
+async def test_resolver_needs_the_main_with_the_structure_scope(settings, services, world):
+    scout = scout_for(settings, services)
+    with pytest.raises(ResolveError) as exc:
+        await scout.resolve_with_main(C)
+    assert exc.value.code == "no_character"
+    await link(services, C, C, scopes=ALL_SCOPES)  # no read_structures scope
+    with pytest.raises(ResolveError) as exc:
+        await scout.resolve_with_main(C)
+    assert exc.value.code == "no_scope"
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
+    services["db"].set_status(C, REAUTH, C)
+    with pytest.raises(ResolveError) as exc:
+        await scout.resolve_with_main(C)
+    assert exc.value.code == "reauth"
+
+
+async def test_resolver_stops_when_esi_is_error_limited(settings, services, world, monkeypatch):
+    await link(services, C, C, scopes=[STRUCTURE_SCOPES[0]])
+    seed_unresolved(services["db"], {S_HIGH: "new", S_PRIVATE: "new"})
+    scout = scout_for(settings, services)
+    monkeypatch.setattr(scout.esi, "blocked_for", lambda reserve=5: 42.0)
+    result = await scout.resolve_with_main(C)
+    assert result["stopped"] == "error_limit" and result["retry_after_s"] == 42
+    assert result["resolved"] == 0 and result["remaining"] == 2
+    assert {r[0] for r in services["db"].query("SELECT status FROM known_structures")} == {"new"}  # nothing marked
+
+
+def test_resolve_endpoint_in_demo_is_refused(tmp_path):
+    with demo(tmp_path) as c:
+        assert c.post("/api/structures/resolve").status_code == 403  # the CSRF header is required
+        reply = c.post("/api/structures/resolve", headers={"X-EVEDM": "1"})
+        assert reply.status_code in (409, 422) and reply.json()["error"] in ("demo", "no_character")
+
+
+# ------------------------------------------------------------------------------------ public datasets
+ADAM_CSV = "structureID;name;ownerID;ownerName;solarSystemID;typeID;typeName;lastSeen\n" + (
+    f"{S_PRIVATE};Adam Name;{CORP};Adam Corp;{JITA};35825;Raitaru;2026-10-01 10:00:00\n"
+    f"{S_HIGH};Adam High;{CORP};Adam Corp;{JITA};35832;Astrahus;2026-10-02 10:00:00\n"
+)
+EVEREF = {
+    str(S_PRIVATE): {
+        "structure_id": S_PRIVATE, "name": "Ref Name", "owner_id": CORP, "solar_system_id": DQ1, "type_id": 35834,
+        "is_gettable_structure": True, "last_structure_get": "2026-11-09T04:00:00Z",
+        "first_seen": "2025-01-01T00:00:00Z",
+    },
+    str(S_NULL): {"structure_id": S_NULL, "is_gettable_structure": False, "first_seen": "1970-01-01T00:00:00Z"},
+    "999": {"name": "Not wanted", "owner_id": 1, "solar_system_id": JITA, "type_id": 35832},
+}
+
+
+def dataset_client(calls: list[str], everef=EVEREF, status: int = 200, original=None) -> httpx.AsyncClient:
+    """Serves the two public datasets; every other host (the fake ESI) goes to the client that was there before."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "data.everef.net":
+            calls.append(request.url.host)
+            return httpx.Response(status, content=json.dumps(everef).encode())
+        if request.url.host == "static.adam4eve.eu":
+            calls.append(request.url.host)
+            return httpx.Response(200, content=ADAM_CSV.encode())
+        passed = await original.request(request.method, request.url, headers=request.headers)
+        return httpx.Response(passed.status_code, headers=passed.headers, content=passed.content)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def history(db) -> dict[int, dict]:
+    return {r["structure_id"]: dict(r) for r in db.query("SELECT * FROM public_structure_history")}
+
+
+async def test_eve_ref_outranks_adam4eve_and_skips_empty_records(settings, services, world):
+    db = services["db"]
+    seed_unresolved(db, {S_PRIVATE: "no_access", S_HIGH: "no_access", S_NULL: "no_access"})
+    scout = scout_for(settings, services)
+    calls: list[str] = []
+    scout.esi.http = dataset_client(calls)
+    found = await scout._refresh_directory()
+    assert found == {"EVE Ref": 1, "Adam4EVE": 2}  # S_NULL has no details in the scrape; id 999 is not wanted
+    rows = history(db)
+    assert set(rows) == {S_PRIVATE, S_HIGH}
+    assert rows[S_PRIVATE]["source"] == "EVE Ref" and rows[S_PRIVATE]["name"] == "Ref Name"
+    assert rows[S_PRIVATE]["system_id"] == DQ1 and rows[S_PRIVATE]["observed"] == "2026-11-09T04:00:00Z"
+    assert rows[S_HIGH]["source"] == "Adam4EVE" and rows[S_HIGH]["name"] == "Adam High"
+    # a later Adam4EVE run never overwrites the EVE Ref entry
+    scout._directory_due = 0.0
+    await scout._refresh_directory()
+    assert history(db)[S_PRIVATE]["name"] == "Ref Name"
+    # the listing says where the details come from
+    by_id = {r["structure_id"]: r for r in scout.listing({}, [])["rows"]}
+    assert by_id[S_PRIVATE]["historical_source"] == "EVE Ref" and by_id[S_PRIVATE]["name"] == "Ref Name"
+    assert by_id[S_HIGH]["historical_source"] == "Adam4EVE"
+    # both datasets are asked once a day, not on every run
+    calls.clear()
+    await scout._refresh_directory()
+    assert calls == []
+
+
+async def test_eve_ref_failures_are_retried_later_and_can_be_switched_off(settings, services, world):
+    db = services["db"]
+    seed_unresolved(db, {S_PRIVATE: "no_access"})
+    scout = scout_for(settings, services)
+    calls: list[str] = []
+    scout.esi.http = dataset_client(calls, status=503)
+    assert (await scout._refresh_directory())["EVE Ref"] == 0
+    assert scout._everef_due > time.monotonic()  # retried in an hour
+    assert history(db)[S_PRIVATE]["source"] == "Adam4EVE"  # the other source still filled the gap
+    settings.structures.everef_enabled = False
+    scout._everef_due = 0.0
+    calls.clear()
+    await scout._refresh_directory(force=True)
+    assert "data.everef.net" not in calls
+
+
+async def test_eve_ref_download_size_is_capped(settings, services, world):
+    seed_unresolved(services["db"], {S_PRIVATE: "no_access"})
+    settings.structures.everef_max_mb = 1
+    big = {str(i): {"name": "x" * 100} for i in range(20000)}  # more than 1 MB of JSON
+    scout = scout_for(settings, services)
+    scout.esi.http = dataset_client([], everef=big)
+    found = await scout._refresh_directory()
+    assert found["EVE Ref"] == 0 and scout._everef_due > time.monotonic()
+
+
+async def test_resolver_also_matches_the_public_datasets(settings, services, world):
+    await link(services, B, B, scopes=[STRUCTURE_SCOPES[0]])  # B may not dock at S_PRIVATE: 403
+    seed_unresolved(services["db"], {S_PRIVATE: "no_access"})
+    scout = scout_for(settings, services)
+    scout.esi.http = dataset_client([], original=scout.esi.http)
+    first = await scout.resolve_with_main(B)
+    assert first["no_access"] == 1 and first["history"] == {"EVE Ref": 1, "Adam4EVE": 1}
+    again = await scout.resolve_with_main(B)  # forced downloads are limited to one per 10 minutes
+    assert again["history"] == {"EVE Ref": 0, "Adam4EVE": 0}
