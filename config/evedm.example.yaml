@@ -50,10 +50,11 @@ structures:                                 # structure scout: player-owned stru
   everef_max_mb: 300                        # refuse a larger download
   index_file: ""                            # local flat list (scripts/build_structure_index.py); "" = data/structure-index.jsonl
   dock_search_enabled: true                 # also find structures a character may dock at (ESI character search), without assets there
-  dock_search_hours: 24                     # search again for each character this often
-  dock_search_term: " - "                   # every Upwell structure is named "<System> - <Name>" (verify with: evedm structures search-probe)
-  dock_search_cap: 500                      # a result this long counts as cut off and triggers the per-system fallback
-  dock_search_max_terms: 40                 # fallback searches per character and run
+  dock_search_hours: 24                     # after its first full pass a character is searched this often (before: every run)
+  dock_search_prefix_len: 3                 # ESI matches the START of a name: prefixes of system names, 3 characters or more
+  dock_search_cap: 500                      # a result this long counts as cut off: the prefix is split into full system names
+  dock_search_max_terms: 200                # searches per character and due run; a cursor goes on at the next one
+  dock_search_punctuated: prefix            # "full": systems whose prefix has punctuation (H-P...) are searched by full name
 
 access:                                     # who sees the members-only tabs: Notifications and Structures
   alliance_ids: [99010320]                  # only a main in one of these alliances (BB); [] = every signed-in main

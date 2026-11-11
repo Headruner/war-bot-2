@@ -409,7 +409,7 @@ def create_fake_app(
 
     @app.get("/characters/{cid}/search/")
     async def character_search(request: Request, cid: int, search: str = "", categories: str = "") -> Response:
-        """Structures whose name contains the term and that the character may dock at (acl None = anyone)."""
+        """Structures whose name (or a word of it) starts with the term and that the character may dock at."""
         count("search")
         if (err := esi_auth(request, cid, "esi-search.search_structures.v1")) is not None:
             return err
@@ -418,10 +418,17 @@ def create_fake_app(
             return JSONResponse({"error": "forced"}, status_code=st.search_fail[cid])
         if len(search) < 3:
             return JSONResponse({"error": "search string too short"}, status_code=400)
+        needle = search.lower()
+        if not any(ch.isalnum() for ch in needle):  # live ESI: punctuation-only terms match nothing
+            return esi_json(request, {}, 0)
+
+        def matches(name: str) -> bool:  # live ESI: the START of the name or of a word in it, not the middle
+            return any(w.startswith(needle) for w in [name.lower(), *name.lower().split()])
+
         hits = sorted(
             sid
             for sid, v in st.structures.items()
-            if search.lower() in str(v.get("name", "")).lower() and (v.get("acl") is None or cid in v["acl"])
+            if matches(str(v.get("name", ""))) and (v.get("acl") is None or cid in v["acl"])
         )[: st.search_cap]
         return esi_json(request, {"structure": hits} if hits else {}, 0)
 

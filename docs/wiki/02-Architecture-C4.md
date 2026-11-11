@@ -76,13 +76,15 @@ Key mechanisms:
   per (structure, character) in `structure_refusals` and not repeated for 14 days, and the job waits out ESI's
   error window instead of stopping (`GET /api/structures/resolve` is its state, `.../resolve/stop` cancels it).
   **Dock search** (`StructureScout._dock_search`, shared request `esi.search_structure_ids`, also used by
-  Ansiblex): per character with the search and structures scopes, ESI's character search (term `" - "`) returns the
-  structures it may dock at; they go to `structure_access` (new IDs also to `known_structures`), per-character state
-  to `scout_dock_search` (`capped`, fallback `cursor`). A complete result replaces the set, a capped one only adds and
-  continues with "<System> - " terms (home region, then the structures' systems and regions); rows expire after 30
-  days. Characters with an access row are asked first when a structure is read, the orphan purge spares such rows,
-  and the shared list shows counts only (`dock_by`). The Wars structure lists and the alert matcher use all
-  resolved structures, the notification gate and the Characters count stay on assets.
+  Ansiblex): live ESI matches the start of a name, so each character with the search and structures scopes is
+  searched with the 3-character prefixes of all system names (`dock_prefixes`, home region first), 200 terms per due
+  run from a cursor; a term at the cap is split into full system names. Hits go to `structure_access` (with the
+  `term` that found them; new IDs also to `known_structures`), per-character state to `scout_dock_search` (`cursor`,
+  `passes`, `pass_started_at`, `capped`). A term below the cap drops what it no longer returns, rows age out after
+  `max(30 days, 2 x a pass)`. Characters with an access row are asked first when a structure is read, the orphan purge
+  spares such rows, and the shared list shows counts only (`dock_by`). The Wars structure lists and the alert matcher
+  use all resolved structures, the notification gate and the Characters count stay on assets. `search-probe
+  --self-test` checks the prefix match on known structures.
   Structures nobody may read get historical details in `public_structure_history`, by source rank: EVE Ref
   (daily download), the local index (`structure_index.py` reads `data/structure-index.jsonl`, built offline by
   `scripts/build_structure_index.py`; read on every scout run, no network), Adam4EVE (daily). Live ESI data always

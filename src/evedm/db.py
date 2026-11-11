@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 16  # v13: history source; v14: structure_refusals; v15: scout_characters.filter_v; v16: dock search
+SCHEMA_VERSION = 17  # v14: structure_refusals; v15: scout filter_v; v16: dock search; v17: search term and passes
 log = logging.getLogger("evedm.db")
 
 SCHEMA = """
@@ -107,16 +107,19 @@ CREATE TABLE IF NOT EXISTS structure_access (
     structure_id INTEGER NOT NULL,
     character_id INTEGER NOT NULL,
     seen_at      REAL NOT NULL,
+    term         TEXT,                        -- the search term that returned it (NULL: stored before v17)
     PRIMARY KEY (structure_id, character_id)
 );
--- per character: the last dock search (found = IDs of the last search, capped = result hit the cap, cursor = fallback)
+-- per character: the dock search through the system-name prefixes (a pass = the whole list once)
 CREATE TABLE IF NOT EXISTS scout_dock_search (
-    character_id INTEGER PRIMARY KEY,
-    checked_at   REAL NOT NULL,
-    found        INTEGER NOT NULL DEFAULT 0,
-    capped       INTEGER NOT NULL DEFAULT 0,
-    cursor       INTEGER NOT NULL DEFAULT 0,
-    error        TEXT
+    character_id    INTEGER PRIMARY KEY,
+    checked_at      REAL NOT NULL,            -- last run (0 = retry at the next scout run)
+    found           INTEGER NOT NULL DEFAULT 0,   -- structure IDs returned by the last run
+    capped          INTEGER NOT NULL DEFAULT 0,   -- terms of this pass still at the cap after splitting into full names
+    cursor          INTEGER NOT NULL DEFAULT 0,   -- next term of the character's list
+    error           TEXT,
+    passes          INTEGER NOT NULL DEFAULT 0,   -- complete passes (0: the first one is still running)
+    pass_started_at REAL
 );
 CREATE TABLE IF NOT EXISTS scout_characters (
     character_id INTEGER PRIMARY KEY,
@@ -487,6 +490,13 @@ class Database:
                 )
                 self._add_columns("public_structure_history", {"source": "TEXT"})  # v12 -> v13
                 self._add_columns("scout_characters", {"filter_v": "INTEGER NOT NULL DEFAULT 1"})  # v14 -> v15
+                self._add_columns("structure_access", {"term": "TEXT"})  # v16 -> v17
+                self._add_columns(
+                    "scout_dock_search",
+                    {"passes": "INTEGER NOT NULL DEFAULT 0", "pass_started_at": "REAL"},
+                )
+                if version == 16:  # the v16 cursor and capped flag meant something else: start the first pass at once
+                    self._conn.execute("UPDATE scout_dock_search SET cursor=0, capped=0, checked_at=0")
                 self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             except BaseException:
                 self._conn.execute("ROLLBACK")

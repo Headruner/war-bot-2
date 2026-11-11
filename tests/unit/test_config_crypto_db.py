@@ -135,7 +135,7 @@ def test_an_old_database_gets_the_asset_filter_column_in_place(tmp_path):
     con.commit()
     con.close()
     d = Database(path)
-    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 16
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 17
     row = d.query("SELECT checked_at, structures, filter_v FROM scout_characters WHERE character_id=7")[0]
     assert tuple(row) == (5.0, 3, 1)  # the row is kept and counts as read with the first filter: read again at once
     d.close()
@@ -157,12 +157,43 @@ def test_an_old_database_gets_the_dock_search_tables_in_place(tmp_path):
     con.commit()
     con.close()
     d = Database(path)
-    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 16
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 17
     assert d.query("SELECT COUNT(*) FROM structure_access")[0][0] == 0
     assert d.query("SELECT COUNT(*) FROM scout_dock_search")[0][0] == 0
     cols = [r[1] for r in d.query("PRAGMA table_info(scout_dock_search)")]
-    assert cols == ["character_id", "checked_at", "found", "capped", "cursor", "error"]
+    assert cols == ["character_id", "checked_at", "found", "capped", "cursor", "error", "passes", "pass_started_at"]
+    assert [r[1] for r in d.query("PRAGMA table_info(structure_access)")][-1] == "term"
     assert d.query("SELECT COUNT(*) FROM known_structures")[0][0] == 1  # existing rows are kept
+    d.close()
+
+
+def test_an_old_database_gets_the_search_term_and_pass_columns_in_place(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "v16.sqlite3"
+    d = Database(path)
+    d.close()
+    con = sqlite3.connect(path)  # a v16 database: the " - " search, no term, no passes
+    con.execute("ALTER TABLE structure_access DROP COLUMN term")
+    con.execute("ALTER TABLE scout_dock_search DROP COLUMN passes")
+    con.execute("ALTER TABLE scout_dock_search DROP COLUMN pass_started_at")
+    con.execute("INSERT INTO structure_access(structure_id, character_id, seen_at) VALUES(1000000000001, 7, 5.0)")
+    con.execute(
+        "INSERT INTO scout_dock_search(character_id, checked_at, found, capped, cursor, error) "
+        "VALUES(7, 99.0, 3, 1, 40, 'old')"
+    )
+    con.execute("PRAGMA user_version=16")
+    con.commit()
+    con.close()
+    d = Database(path)
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 17
+    row = d.query("SELECT structure_id, character_id, seen_at, term FROM structure_access")[0]
+    assert tuple(row) == (1000000000001, 7, 5.0, None)  # existing rows get no term
+    state = d.query(
+        "SELECT checked_at, found, capped, cursor, error, passes, pass_started_at FROM scout_dock_search"
+    )[0]
+    # the old cursor and capped flag meant something else: the first pass starts at once
+    assert tuple(state) == (0.0, 3, 0, 0, "old", 0, None)
     d.close()
 
 

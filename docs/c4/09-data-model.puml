@@ -171,14 +171,17 @@ entity structure_access {
   * character_id : INTEGER <<PK>>
   --
   seen_at : REAL (ESI character search: the character may dock there; picks the token first; shown as a count only)
+  term : TEXT (the system-name prefix or full name that returned it; NULL before v17)
 }
 entity scout_dock_search {
   * character_id : INTEGER <<PK>>
   --
-  checked_at : REAL (0 = retry next run)
-  found : INTEGER (hits of the main term)
-  capped : INTEGER (result reached dock_search_cap)
-  cursor : INTEGER (next fallback "<System> - " term)
+  checked_at : REAL (last run; 0 = due at the next scout run)
+  found : INTEGER (IDs returned by the last run)
+  capped : INTEGER (terms of this pass still at the cap after the split into full names)
+  cursor : INTEGER (next term of the character's prefix list)
+  passes : INTEGER (complete passes; 0 = the first one is still running)
+  pass_started_at : REAL
   error : TEXT
 }
 entity structure_refusals {

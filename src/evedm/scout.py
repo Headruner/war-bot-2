@@ -132,6 +132,23 @@ class ResolveJob:
         return out
 
 
+@dataclass(frozen=True)
+class DockTerm:
+    """One search term: a system-name prefix (``full`` False) or a full system name, and the systems it stands for."""
+
+    term: str
+    systems: tuple[int, ...]  # graph indexes
+    full: bool = False
+
+
+def dock_prefixes(graph: GateGraph, length: int) -> dict[str, list[int]]:
+    """The distinct, case-insensitive prefixes of ``length`` characters of all system names -> system indexes."""
+    groups: dict[str, list[int]] = {}
+    for i, name in enumerate(graph.names):
+        groups.setdefault(name[:length].lower(), []).append(i)
+    return groups
+
+
 @dataclass
 class _Pool:
     """What the choice of a character needs, read once per pass."""
@@ -185,7 +202,8 @@ class StructureScout:
         self._job: ResolveJob | None = None
         self._own_hits: set[int] = set()  # stored IDs that turned out to be a character's own items: purged next
         self._job_task: asyncio.Task[None] | None = None
-        self._by_region: dict[int, list[int]] | None = None  # region id -> system indexes (fallback terms)
+        self._by_region: dict[int, list[int]] | None = None  # region id -> system indexes (search order)
+        self._units: tuple[Any, list[DockTerm], dict[int, int]] | None = None  # search terms (dock_units)
         self._sleep: Callable[[float, asyncio.Event], Awaitable[None]] = self._cancellable_sleep  # tests replace it
 
     # -- which characters can contribute ---------------------------------------------------------
@@ -232,8 +250,9 @@ class StructureScout:
             "purged_own_items": 0,
             "purged_orphans": 0,
             "dock_searched": 0,
-            "dock_capped": 0,
+            "dock_terms": 0,
             "dock_terms_capped": 0,
+            "dock_passes": 0,
             "dock_errors": 0,
             "dock_found": 0,
         }
@@ -336,9 +355,71 @@ class StructureScout:
         return self.state["last_run"]
 
     # -- structures a character may dock at: ESI's character search -----------------------------------
+    # Live ESI matches the START of a structure name (and of a word in it), needs 3+ characters and finds nothing for
+    # punctuation-only terms. Every name starts with its system name, so the prefixes of all system names cover it.
     def dock_searchers(self) -> list[tuple[int, int, list[str]]]:
         """Characters holding both the search scope and the structures scope (one link per character)."""
         return [c for c in self.contributors(SEARCH_STRUCTURES) if READ_STRUCTURES in c[2]]
+
+    def dock_units(self) -> tuple[list[DockTerm], dict[int, int]]:
+        """Every search term once, and which term stands for each system (cached; settings and universe are fixed)."""
+        key = (self.s.dock_search_prefix_len, self.s.dock_search_punctuated)
+        if self._units is None or self._units[0] != key:
+            groups = dock_prefixes(self.g, key[0])
+            units: list[DockTerm] = []
+            unit_of: dict[int, int] = {}
+            for prefix, systems in groups.items():
+                if key[1] == "full" and not prefix.isalnum():  # punctuation in the prefix: one full name per system
+                    parts = [(self.g.names[i], (i,), True) for i in systems]
+                else:
+                    parts = [(self.g.names[systems[0]][: key[0]], tuple(systems), False)]
+                for term, members, full in parts:
+                    for i in members:
+                        unit_of[i] = len(units)
+                    units.append(DockTerm(term, members, full))
+            self._units = (key, units, unit_of)
+        return self._units[1], self._units[2]
+
+    def dock_terms(self, character_id: int) -> list[DockTerm]:
+        """The terms in the order they are searched for one character, each once.
+
+        Systems of the last known region first, then the regions where it sights or may dock at structures (most
+        structures first), then the rest of k-space by region, then J-space.
+        """
+        units, unit_of = self.dock_units()
+        g = self.g
+        order: list[int] = []
+        done: set[int] = set()
+
+        def add(systems: Any) -> None:
+            for i in systems:
+                u = unit_of[i]
+                if u not in done:
+                    done.add(u)
+                    order.append(u)
+
+        by_region = self._region_systems()
+        snap = self.db.query("SELECT solar_system_id FROM snapshots WHERE character_id=?", (character_id,))
+        home = g.index.get(snap[0][0]) if snap and snap[0][0] else None
+        if home is not None:
+            add(by_region.get(g.region_of[home], ()))
+        rows = self.db.query(
+            "SELECT solar_system_id, COUNT(*) FROM known_structures WHERE solar_system_id IS NOT NULL AND "
+            "(structure_id IN (SELECT structure_id FROM structure_sightings WHERE character_id=?1) "
+            "OR structure_id IN (SELECT structure_id FROM structure_access WHERE character_id=?1)) "
+            "GROUP BY solar_system_id",
+            (character_id,),
+        )
+        regions: Counter[int] = Counter()
+        for sid, n in rows:
+            if sid in g.index:
+                regions[g.region_of[g.index[sid]]] += n
+        for region, _ in sorted(regions.items(), key=lambda kv: (-kv[1], kv[0])):
+            add(by_region.get(region, ()))
+        known_space = (i for i in range(len(g.names)) if g.ids[i] < WSPACE_MIN_ID)
+        add(sorted(known_space, key=lambda i: (g.region_of[i], i)))
+        add(i for i in range(len(g.names)) if g.ids[i] >= WSPACE_MIN_ID)
+        return [units[u] for u in order]
 
     def _region_systems(self) -> dict[int, list[int]]:
         if self._by_region is None:
@@ -348,41 +429,30 @@ class StructureScout:
             self._by_region = by
         return self._by_region
 
-    def dock_terms(self, character_id: int) -> list[str]:
-        """The fallback terms "<System> - " in the order they are tried for one character.
-
-        The character's last known system and the systems of its region first, then the systems of the structures it
-        sights or may dock at, then the regions of those. Each system once.
-        """
-        by_region = self._region_systems()
-        order: list[int] = []
-        snap = self.db.query("SELECT solar_system_id FROM snapshots WHERE character_id=?", (character_id,))
-        home = self.g.index.get(snap[0][0]) if snap and snap[0][0] else None
-        if home is not None:
-            order.append(home)
-            order.extend(by_region.get(self.g.region_of[home], ()))
-        rows = self.db.query(
-            "SELECT DISTINCT solar_system_id FROM known_structures WHERE solar_system_id IS NOT NULL AND "
-            "(structure_id IN (SELECT structure_id FROM structure_sightings WHERE character_id=?1) "
-            "OR structure_id IN (SELECT structure_id FROM structure_access WHERE character_id=?1)) "
-            "ORDER BY solar_system_id",
-            (character_id,),
-        )
-        systems = [self.g.index[r[0]] for r in rows if r[0] in self.g.index]
-        order.extend(systems)
-        for region in dict.fromkeys(self.g.region_of[i] for i in systems):
-            order.extend(by_region.get(region, ()))
-        return [f"{self.g.names[i]} - " for i in dict.fromkeys(order)]
+    def dock_pass_seconds(self) -> float:
+        """How long one pass is expected to take once the first one is done: one due run per interval."""
+        runs = -(-len(self.dock_units()[0]) // max(1, self.s.dock_search_max_terms))
+        return runs * max(self.s.dock_search_hours * 3600.0, self.s.interval_min * 60.0)
 
     async def _dock_search(self, stats: dict[str, int]) -> None:
-        """One search per due character (see ``_dock_one``); runs inside the scout step, before the purge."""
+        """One run per due character (see ``_dock_one``); inside the scout step, before the purge.
+
+        Due: its first pass is not complete (every scout run goes on, so the first full pass does not take weeks), or
+        the last run is more than ``dock_search_hours`` ago. A 401/403 waits the whole interval.
+        """
         if not self.s.dock_search_enabled:
             return
         searchers = self.dock_searchers()
         state = {r["character_id"]: r for r in self.db.query("SELECT * FROM scout_dock_search")}
         now = time.time()
         wait = self.s.dock_search_hours * 3600
-        due = [c for c in searchers if c[0] not in state or now - state[c[0]]["checked_at"] > wait]
+        due = [
+            c
+            for c in searchers
+            if c[0] not in state
+            or now - state[c[0]]["checked_at"] > wait
+            or (state[c[0]]["passes"] == 0 and state[c[0]]["error"] is None)
+        ]
         sem = asyncio.Semaphore(self.s.concurrency)
 
         async def one(item: tuple[int, int, list[str]]) -> None:
@@ -392,106 +462,159 @@ class StructureScout:
         await asyncio.gather(*(one(c) for c in due))
 
     async def _dock_one(self, item: tuple[int, int, list[str]], prev: Any, stats: dict[str, int]) -> None:
-        """Search one character's dockable structures with the configured term.
+        """Search the next ``dock_search_max_terms`` terms of one character, from its cursor.
 
-        A result shorter than the cap is complete: it replaces the character's set. A result of cap or more may be cut
-        off: it only adds, and ``dock_search_max_terms`` more searches with "<System> - " continue at the persisted
-        cursor. A passing ESI trouble (420, 429, 5xx, network, error window low) keeps the interval unused; 401/403
-        or a token that is not accepted records the error and waits the full interval.
+        A term that returns ``dock_search_cap`` structures or more is split: each full system name behind the prefix is
+        searched instead (those count against the budget); a full name still at the cap keeps what came back and is
+        counted as capped. A term that answers below the cap is complete: the character's rows recorded under it that
+        were not returned are dropped (access lost). Reaching the end of the list completes a pass and the cursor wraps.
+        A passing ESI trouble (420, 429, 5xx, network, error window low) keeps what was done and leaves the character
+        due at the next run; 401/403 or a token that is not accepted records the error and waits the whole interval.
         """
         cid, owner, _ = item
-        started = time.time()
         cap = self.s.dock_search_cap
-        found: set[int] = set()
-        searched = False  # the search with the main term answered
-        count = 0
-        capped = False
+        terms = self.dock_terms(cid)
+        now0 = time.time()
         cursor = int(prev["cursor"]) if prev else 0
+        if cursor >= len(terms):
+            cursor = 0
+        passes = int(prev["passes"]) if prev else 0
+        started = (prev["pass_started_at"] if prev else None) or now0
+        before = int(prev["capped"]) if prev and cursor else 0
+        capped = before  # a pass (cursor 0) starts counting from zero
+        budget = self.s.dock_search_max_terms
+        results: list[tuple[str, set[int], bool]] = []  # (term, IDs >= 1e12, complete)
+        searched = 0
         error: str | None = None
         passing = False
+        i = cursor
 
         def blocked() -> bool:
             return self.esi.blocked_for(reserve=SCOUT_ERROR_RESERVE) > 0
+
+        async def search(term: str) -> list[int]:
+            nonlocal searched, budget
+            raw = await search_structure_ids(self.esi, cid, token, term, cache=False)
+            searched += 1
+            budget -= 1
+            return raw
 
         try:
             if blocked():
                 return  # nothing recorded: the character is searched again next run
             token = await self.chars.access_token(cid, owner)
-            raw = await search_structure_ids(self.esi, cid, token, self.s.dock_search_term)
-            searched = True
-            count = len(raw)
-            capped = count >= cap
-            found |= {i for i in raw if i >= STRUCTURE_MIN_ID}
-            if capped:
-                terms = self.dock_terms(cid)
-                n = min(self.s.dock_search_max_terms, len(terms))
-                start = cursor % len(terms) if terms else 0
-                done = 0
-                try:
-                    for k in range(n):
-                        if blocked():
-                            passing = True
-                            error = "paused: ESI error window low, continues next run"
-                            break
-                        raw = await search_structure_ids(self.esi, cid, token, terms[(start + k) % len(terms)])
-                        done += 1
-                        if len(raw) >= cap:
-                            stats["dock_terms_capped"] += 1
-                        found |= {i for i in raw if i >= STRUCTURE_MIN_ID}
-                finally:
-                    cursor = (start + done) % len(terms) if terms else 0
+            while i < len(terms) and budget > 0:
+                if blocked():
+                    passing, error = True, "paused: ESI error window low, continues next run"
+                    break
+                unit = terms[i]
+                raw = await search(unit.term)
+                ids = {x for x in raw if x >= STRUCTURE_MIN_ID}
+                if len(raw) < cap:
+                    results.append((unit.term, ids, True))
+                    i += 1
+                    continue
+                results.append((unit.term, ids, False))  # at the cap: may be cut off, only adds
+                if unit.full:
+                    capped += 1
+                    stats["dock_terms_capped"] += 1
+                    i += 1
+                    continue
+                names = [self.g.names[s] for s in unit.systems]
+                if len(names) > budget and i != cursor:
+                    break  # the split does not fit into this run: the prefix is searched again at the next one
+                paused = False
+                for name in names:
+                    if budget <= 0:
+                        break  # a split larger than a whole run: what fits is searched
+                    if blocked():
+                        passing, error, paused = True, "paused: ESI error window low, continues next run", True
+                        break
+                    raw = await search(name)
+                    full_ids = {x for x in raw if x >= STRUCTURE_MIN_ID}
+                    if len(raw) >= cap:
+                        capped += 1
+                        stats["dock_terms_capped"] += 1
+                    results.append((name, full_ids, len(raw) < cap))
+                if paused:
+                    break
+                i += 1
         except (EsiError, SsoError) as exc:
             passing = isinstance(exc, EsiError) and (exc.status in (0, 420, 429) or exc.status >= 500)
             error = redact(str(exc))[:200]
         now = time.time()
-        complete = searched and not capped and error is None
+        wrapped = i >= len(terms) and error is None and searched > 0
+        found: set[int] = set().union(*(r[1] for r in results)) if results else set()
+        if searched and cursor == 0:
+            started = now  # the first term of a pass was searched in this run
+        if wrapped:
+            passes += 1
+            started = now  # the next pass starts here
         with self.db.tx() as c:
-            if found:
-                c.executemany(
-                    "INSERT INTO structure_access(structure_id, character_id, seen_at) VALUES(?,?,?) "
-                    "ON CONFLICT(structure_id, character_id) DO UPDATE SET seen_at=excluded.seen_at",
-                    [(sid, cid, now) for sid in found],
-                )
-                c.executemany(
-                    "INSERT INTO known_structures(structure_id, first_seen, last_seen) VALUES(?,?,?) "
-                    "ON CONFLICT(structure_id) DO UPDATE SET last_seen=excluded.last_seen",
-                    [(sid, now, now) for sid in found],
-                )
-            if complete:  # the whole list came back: structures no longer in it are dropped
-                c.execute("DELETE FROM structure_access WHERE character_id=? AND seen_at < ?", (cid, started))
-            if searched:
-                c.execute(
-                    "INSERT INTO scout_dock_search(character_id, checked_at, found, capped, cursor, error) "
-                    "VALUES(?,?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET "
-                    "checked_at=CASE WHEN ? THEN checked_at ELSE excluded.checked_at END, found=excluded.found, "
-                    "capped=excluded.capped, cursor=excluded.cursor, error=excluded.error",
-                    (cid, 0.0 if passing else now, count, int(capped), cursor, error, int(passing)),
-                )
-            else:  # the search itself failed: what was stored before stays
-                c.execute(
-                    "INSERT INTO scout_dock_search(character_id, checked_at, error) VALUES(?,?,?) "
-                    "ON CONFLICT(character_id) DO UPDATE SET "
-                    "checked_at=CASE WHEN ? THEN checked_at ELSE excluded.checked_at END, error=excluded.error",
-                    (cid, 0.0 if passing else now, error, int(passing)),
-                )
+            for term, ids, _ in results:
+                if ids:
+                    c.executemany(
+                        "INSERT INTO structure_access(structure_id, character_id, seen_at, term) VALUES(?,?,?,?) "
+                        "ON CONFLICT(structure_id, character_id) DO UPDATE SET seen_at=excluded.seen_at, "
+                        "term=excluded.term",
+                        [(sid, cid, now, term) for sid in ids],
+                    )
+                    c.executemany(
+                        "INSERT INTO known_structures(structure_id, first_seen, last_seen) VALUES(?,?,?) "
+                        "ON CONFLICT(structure_id) DO UPDATE SET last_seen=excluded.last_seen",
+                        [(sid, now, now) for sid in ids],
+                    )
+            for term, _, complete in results:
+                if complete:  # answered below the cap: what this term used to return and no longer does is gone
+                    c.execute(
+                        "DELETE FROM structure_access WHERE character_id=? AND term=? AND seen_at < ?",
+                        (cid, term, now),
+                    )
+            new_cursor = 0 if wrapped else i
+            c.execute(
+                "INSERT INTO scout_dock_search(character_id, checked_at, found, capped, cursor, error, passes, "
+                "pass_started_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET "
+                "checked_at=excluded.checked_at, found=excluded.found, capped=excluded.capped, "
+                "cursor=excluded.cursor, error=excluded.error, passes=excluded.passes, "
+                "pass_started_at=excluded.pass_started_at",
+                (
+                    cid,
+                    0.0 if passing else now,
+                    len(found) if searched else (int(prev["found"]) if prev else 0),
+                    capped if searched else (int(prev["capped"]) if prev else 0),
+                    new_cursor if searched else cursor,
+                    error,
+                    passes,
+                    started,
+                ),
+            )
         if searched:
             stats["dock_searched"] += 1
+            stats["dock_terms"] += searched
             stats["dock_found"] += len(found)
-            stats["dock_capped"] += int(capped)
+            stats["dock_passes"] += int(wrapped)
         if error:
             stats["dock_errors"] += 1
             log.warning("structure scout: dock search for character %s: %s", cid, error)
         log.info(
-            "structure scout: character %s may dock at %s structures (result %s, cap %s%s)",
-            cid, len(found), count, cap, ", capped" if capped else "",
+            "structure scout: character %s dock search: %s searches, %s structures, cursor %s/%s%s",
+            cid,
+            searched,
+            len(found),
+            0 if wrapped else i,
+            len(terms),
+            ", pass complete" if wrapped else "",
         )
 
     def _prune_access(self) -> None:
-        """Dock-search rows of characters that no longer exist, and rows nobody refreshed for 30 days."""
+        """Dock-search rows of characters that no longer exist, and rows nobody refreshed for long enough.
+
+        Long enough: 30 days, or twice the expected length of a pass when that is longer.
+        """
         gone = "character_id NOT IN (SELECT character_id FROM characters)"
         self.db.execute(f"DELETE FROM structure_access WHERE {gone}")  # noqa: S608
         self.db.execute(f"DELETE FROM scout_dock_search WHERE {gone}")  # noqa: S608
-        keep = max(ACCESS_KEEP_DAYS * 86400.0, 2 * self.s.dock_search_hours * 3600)
+        keep = max(ACCESS_KEEP_DAYS * 86400.0, 2 * self.dock_pass_seconds())
         self.db.execute("DELETE FROM structure_access WHERE seen_at < ?", (time.time() - keep,))
 
     def _stored_among(self, item_ids: set[int]) -> set[int]:
@@ -966,28 +1089,42 @@ class StructureScout:
         }
 
     def _dock_stats(self, unknown: str) -> dict[str, Any]:
-        """The ``dock_search`` block of ``stats()``: what the character search found, from the database alone."""
+        """The ``dock_search`` block of ``stats()``: what the character search did and found, from the database."""
         q = self.db.query
         have = {r[0] for r in q("SELECT name FROM sqlite_master WHERE type='table'")}
+        eligible = len(self.dock_searchers())
         out: dict[str, Any] = {
             "enabled": self.s.dock_search_enabled,
-            "term": self.s.dock_search_term,
+            "prefix_len": self.s.dock_search_prefix_len,
+            "punctuated": self.s.dock_search_punctuated,
             "cap": self.s.dock_search_cap,
-            "eligible_characters": len(self.dock_searchers()),  # both scopes
+            "max_terms": self.s.dock_search_max_terms,
+            "terms": None,  # distinct search terms (needs the universe: not known to the read-only CLI)
+            "eligible_characters": eligible,  # both scopes
             "characters_searched": 0,
-            "capped": 0,
+            "first_pass_incomplete": eligible,  # eligible characters that have not finished one pass yet
+            "passes": 0,  # complete passes, all characters
+            "capped": 0,  # characters with a term still at the cap after splitting into full names
+            "capped_terms": 0,
             "with_errors": 0,
             "access_rows": 0,
             "dockable": 0,
             "dockable_without_assets": 0,
             "dockable_unresolved": 0,
         }
-        if "scout_dock_search" in have:
+        if self.g is not None:
+            out["terms"] = len(self.dock_units()[0])
+        columns = {r[1] for r in q("PRAGMA table_info(scout_dock_search)")} if "scout_dock_search" in have else set()
+        if "passes" in columns:  # a database not migrated yet (the read-only CLI) has none
             row = q(
-                "SELECT COALESCE(SUM(checked_at > 0), 0), COALESCE(SUM(capped), 0), "
-                "COALESCE(SUM(error IS NOT NULL), 0) FROM scout_dock_search"
+                "SELECT COALESCE(SUM(checked_at > 0 OR cursor > 0 OR passes > 0), 0), COALESCE(SUM(passes), 0), "
+                "COALESCE(SUM(capped > 0), 0), COALESCE(SUM(capped), 0), COALESCE(SUM(error IS NOT NULL), 0) "
+                "FROM scout_dock_search"
             )[0]
-            out["characters_searched"], out["capped"], out["with_errors"] = row[0], row[1], row[2]
+            keys = ("characters_searched", "passes", "capped", "capped_terms", "with_errors")
+            out.update(zip(keys, row, strict=True))
+            done = {r[0] for r in q("SELECT character_id FROM scout_dock_search WHERE passes > 0")}
+            out["first_pass_incomplete"] = sum(1 for cid, _, _ in self.dock_searchers() if cid not in done)
         if "structure_access" in have:
             out["access_rows"] = q("SELECT COUNT(*) FROM structure_access")[0][0]
             out["dockable"] = q("SELECT COUNT(DISTINCT structure_id) FROM structure_access")[0][0]

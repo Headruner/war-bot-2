@@ -9,6 +9,7 @@ import os
 import sys
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 from . import __version__
 from .config import ConfigError, Settings, load_settings
@@ -293,21 +294,38 @@ def cmd_structures(args: argparse.Namespace) -> int:
         print(json.dumps(report, indent=2))
         return 0
     if args.action == "search-probe":
-        from .probe import default_search_terms, search_probe
+        from .probe import default_search_terms, search_probe, self_test
 
-        if not args.character:
-            print("evedm: search-probe needs --character ID", file=sys.stderr)
+        if not args.character and not args.self_test:
+            print("evedm: search-probe needs --character ID (or --self-test)", file=sys.stderr)
             return 2
         svc = _services(s)
         scout = svc.scout or StructureScout(s, svc.db, svc.graph, svc.chars, svc.esi)  # type: ignore[arg-type]
         owners = {cid: own for cid, own, _ in scout.dock_searchers()}
-        wanted = list(dict.fromkeys(args.character))
+        if args.self_test and not args.character:  # the characters with the most sightings that can be searched
+            sql = "SELECT character_id, COUNT(*) FROM structure_sightings GROUP BY character_id"
+            seen = {r[0]: r[1] for r in svc.db.query(sql)}
+            wanted = sorted(owners, key=lambda c: (-seen.get(c, 0), c))[: max(0, args.characters)]
+        else:
+            wanted = list(dict.fromkeys(args.character))
         missing = [c for c in wanted if c not in owners]
         for c in missing:
             print(f"evedm: character {c} is not registered with both search scopes", file=sys.stderr)
+        sc = s.structures
 
-        async def run_search() -> list[dict]:
+        async def run_search() -> Any:
             try:
+                if args.self_test:
+                    return await self_test(
+                        svc.db,
+                        svc.graph,
+                        svc.chars,  # type: ignore[arg-type]
+                        svc.esi,  # type: ignore[arg-type]
+                        [(c, owners[c]) for c in wanted if c in owners],
+                        limit=args.limit,
+                        cap=sc.dock_search_cap,
+                        ansiblex_owners=owners,
+                    )
                 return [
                     await search_probe(
                         svc.db,
@@ -315,8 +333,8 @@ def cmd_structures(args: argparse.Namespace) -> int:
                         svc.esi,  # type: ignore[arg-type]
                         c,
                         owners[c],
-                        args.term or default_search_terms(svc.db, svc.graph, c, s.structures.dock_search_term),
-                        cap=s.structures.dock_search_cap,
+                        args.term or default_search_terms(svc.db, svc.graph, c, sc.dock_search_prefix_len),
+                        cap=sc.dock_search_cap,
                     )
                     for c in wanted
                     if c in owners
@@ -328,7 +346,9 @@ def cmd_structures(args: argparse.Namespace) -> int:
             reports = asyncio.run(run_search())
         finally:
             svc.db.close()
-        print(json.dumps(reports[0] if len(reports) == 1 and len(wanted) == 1 else reports, indent=2))
+        if not args.self_test and len(reports) == 1 and len(wanted) == 1:
+            reports = reports[0]
+        print(json.dumps(reports, indent=2))
         return 2 if missing else 0
     db = Database(s.db_path, read_only=True)  # no migration, no write: safe next to a running server
     try:
@@ -439,8 +459,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     sp.add_argument("--max-pages", type=int, default=50, help="probe: asset pages read per character")
     sp.add_argument("--samples", type=int, default=5, help="probe: example location IDs per type, flag and status")
+    sp.add_argument("--self-test", action="store_true", help="search-probe: find known structures by system name")
+    sp.add_argument("--limit", type=int, default=12, help="search-probe --self-test: structures per character")
     sp.add_argument(
-        "--term", action="append", help="search-probe: a search term (repeatable; default: configured, ' » ', system)"
+        "--term", action="append", help="search-probe: a search term (repeatable; default: ' » ', prefix, system)"
     )
     sp.set_defaults(fn=cmd_structures)
 

@@ -500,10 +500,10 @@ def watch(scout: StructureScout, monkeypatch) -> list[tuple[int, int]]:
         current.append(character_id)
         return await real_token(character_id, owner_id)
 
-    async def get(path, tok=None):
+    async def get(path, tok=None, **kw):
         if path.startswith("/universe/structures/") and path != "/universe/structures/":
             sent.append((int(path.rsplit("/", 1)[1]), current[-1]))
-        return await real_get(path, tok)
+        return await real_get(path, tok, **kw)
 
     monkeypatch.setattr(scout.chars, "access_token", token)
     monkeypatch.setattr(scout.esi, "get", get)
@@ -520,10 +520,10 @@ def esi_window(scout: StructureScout, monkeypatch, sent: list, after: int, secon
     def blocked_for(reserve=5):
         return max(0.0, clock["until"] - clock["now"])
 
-    async def guarded(path, token=None):
+    async def guarded(path, token=None, **kw):
         assert blocked_for() == 0, "sent to ESI while the error window was low"
         try:
-            return await real_get(path, token)
+            return await real_get(path, token, **kw)
         finally:
             if len(sent) == after and clock["until"] == 0.0:
                 clock["until"] = clock["now"] + seconds
@@ -1497,19 +1497,37 @@ def test_probe_counts_the_candidates_the_scout_would_take(db):
 
 
 # ------------------------------------------------------------------------------------ dock search (character search)
+# Live ESI matches the START of a structure name (or of a word in it), needs 3+ characters and finds nothing for
+# punctuation-only terms (tests/fake_eve.py emulates that). The scout searches the prefixes of all system names.
+from evedm.scout import DockTerm, dock_prefixes  # noqa: E402
+
 DOCK = ALL + [ANSIBLEX_SCOPE]  # both the structures scopes and esi-search.search_structures.v1
-D1, D2, D3 = (1_095_000_000_000 + n for n in range(1, 4))
+D1, D2, D3, E1, E2 = (1_095_000_000_000 + n for n in range(1, 6))
+REAL_TERMS = StructureScout.dock_terms  # the real order of terms; the fixture replaces it with a short list
+
+
+def term_list(graph, *pairs: tuple[str, tuple[int, ...]]) -> list[DockTerm]:
+    return [DockTerm(term, tuple(graph.index[s] for s in systems)) for term, systems in pairs]
+
+
+def use_terms(monkeypatch, graph, *pairs: tuple[str, tuple[int, ...]]) -> list[DockTerm]:
+    terms = term_list(graph, *pairs)
+    monkeypatch.setattr(StructureScout, "dock_terms", lambda self, cid: list(terms))
+    return terms
 
 
 @pytest.fixture
-def dock_world(world):
-    """A may dock at S_HIGH, D1 and D2; B at S_NULL and D2; C at D2 only (S_WH, S_PRIVATE: no " - " in the name)."""
+def dock_world(world, graph, monkeypatch):
+    """Five terms (Jit, Per, 1DQ, Del, The): one pass is one run. A may dock at S_HIGH, D1 and D2; B at S_NULL, D2."""
     world.structures.update(
         {
             D1: {"name": "Perimeter - Dock Only", "owner_id": CORP, "solar_system_id": 30000144, "type_id": 35832,
                  "acl": [A]},
             D2: {"name": "Jita - Open House", "owner_id": CORP, "solar_system_id": JITA, "type_id": 35825, "acl": None},
         }
+    )
+    use_terms(
+        monkeypatch, graph, ("Jit", (JITA,)), ("Per", (30000144,)), ("1DQ", (DQ1,)), ("Del", (DQ1,)), ("The", (THERA,))
     )
     return world
 
@@ -1527,6 +1545,11 @@ def docks(db) -> dict[int, set[int]]:
     return out
 
 
+def terms_of(db, character_id: int) -> dict[int, str | None]:
+    sql = "SELECT structure_id, term FROM structure_access WHERE character_id=?"
+    return {r[0]: r[1] for r in db.query(sql, (character_id,))}
+
+
 def dock_state(db, character_id: int):
     rows = db.query("SELECT * FROM scout_dock_search WHERE character_id=?", (character_id,))
     return dict(rows[0]) if rows else None
@@ -1536,18 +1559,84 @@ def due_again(db) -> None:
     db.execute("UPDATE scout_dock_search SET checked_at=1 WHERE checked_at > 1")
 
 
-def fail_search(scout, monkeypatch, exc: Exception) -> None:
+def searched(world) -> list[str]:
+    return [t for _, t in world.search_log]
+
+
+def fail_search(scout, monkeypatch, exc: Exception):
+    """Every search fails with ``exc``; returns the function that puts the real client back."""
     real = scout.esi.get
 
-    async def get(path, token=None):
+    async def get(path, token=None, **kw):
         if "/search/" in path:
             raise exc
-        return await real(path, token)
+        return await real(path, token, **kw)
 
     monkeypatch.setattr(scout.esi, "get", get)
+    return lambda: monkeypatch.setattr(scout.esi, "get", real)
 
 
-async def test_the_dock_search_stores_access_rows_and_creates_known_rows(settings, services, dock_world):
+def test_prefixes_are_distinct_and_case_insensitive_and_remember_their_systems(graph):
+    groups = dock_prefixes(graph, 3)
+    assert all(key == key.lower() and len(key) <= 3 for key in groups)
+    members = [i for systems in groups.values() for i in systems]
+    assert sorted(members) == list(range(len(graph.names)))  # every system under exactly one prefix
+    assert all(graph.names[i][:3].lower() == key for key, systems in groups.items() for i in systems)
+    assert "jit" in groups and graph.index[JITA] in groups["jit"]
+    assert len(groups) < len(graph.names) and len(dock_prefixes(graph, 4)) > len(groups)
+
+
+async def test_the_search_terms_are_prefixes_or_full_names_for_punctuated_ones(settings, services, graph):
+    scout = scout_for(settings, services)
+    units, unit_of = scout.dock_units()
+    groups = dock_prefixes(graph, 3)
+    assert len(units) == len(groups) and set(unit_of) == set(range(len(graph.names)))
+    assert all(not u.full and len(u.term) <= 3 for u in units)
+    key = next(k for k in groups if "-" in k)  # a prefix with punctuation, as in H-PA29
+    assert [u.term for u in units if u.systems == tuple(groups[key])] == [graph.names[groups[key][0]][:3]]
+    settings.structures.dock_search_punctuated = "full"
+    full, full_of = scout_for(settings, services).dock_units()
+    assert all(full[full_of[i]].full and full[full_of[i]].term == graph.names[i] for i in groups[key])
+    plain = [k for k in groups if k.isalnum()]
+    assert len(full) == len(plain) + sum(len(v) for k, v in groups.items() if not k.isalnum())
+    assert {u.systems[0] for u in full if u.full} == {i for k, v in groups.items() if not k.isalnum() for i in v}
+
+
+async def test_terms_go_home_region_first_then_the_structure_regions_then_k_space_then_j_space(
+    settings, services, graph
+):
+    await link(services, A, A, DOCK)
+    scout = scout_for(settings, services)
+    db = services["db"]
+    db.save_snapshot(A, solar_system_id=JITA)  # last known system: The Forge
+    now = time.time()
+    with db.tx() as conn:  # a sighted structure in Delve
+        conn.execute(
+            "INSERT INTO known_structures(structure_id, solar_system_id, status, first_seen, last_seen) "
+            "VALUES(?,?,'ok',?,?)",
+            (S_NULL, DQ1, now, now),
+        )
+    sight(db, A, S_NULL)
+    terms = REAL_TERMS(scout, A)
+    assert len(set(terms)) == len(terms) == len(scout.dock_units()[0])  # each term once, all of them
+    region = lambda t: {graph.region_of[i] for i in t.systems}  # noqa: E731
+    forge, delve = graph.region_of[graph.index[JITA]], graph.region_of[graph.index[DQ1]]
+    in_forge = [t for t in terms if forge in region(t)]
+    assert in_forge and terms[: len(in_forge)] == in_forge  # the last known region first
+    rest = terms[len(in_forge) :]
+    in_delve = [t for t in rest if delve in region(t)]
+    assert rest[: len(in_delve)] == in_delve  # then the regions where it sights structures
+    after = rest[len(in_delve) :]
+    j_only = [t for t in after if all(graph.ids[i] >= 31000000 for i in t.systems)]
+    assert after[len(after) - len(j_only) :] == j_only and j_only  # J-space last
+    k_space = after[: len(after) - len(j_only)]
+    lowest = [min(graph.region_of[i] for i in t.systems) for t in k_space]
+    assert lowest == sorted(lowest)  # the rest of k-space by region
+
+
+async def test_the_dock_search_stores_access_rows_with_their_term_and_creates_known_rows(
+    settings, services, dock_world
+):
     dock_world.structures[60_003_760] = {"name": "Jita - Station", "acl": None}  # below 1e12: never a structure here
     await link(services, A, A, DOCK)
     scout = scout_for(settings, services)
@@ -1555,14 +1644,15 @@ async def test_the_dock_search_stores_access_rows_and_creates_known_rows(setting
     await scout._dock_search(stats)
     db = services["db"]
     assert docks(db) == {A: {S_HIGH, D1, D2}}
+    assert terms_of(db, A) == {S_HIGH: "Jit", D2: "Jit", D1: "Per"}  # recorded under the term that found them
     assert statuses(db) == {S_HIGH: "new", D1: "new", D2: "new"}  # new rows, exactly like sightings
+    assert searched(dock_world) == ["Jit", "Per", "1DQ", "Del", "The"]
     state = dock_state(db, A)
-    assert (state["found"], state["capped"], state["cursor"], state["error"]) == (4, 0, 0, None)
-    assert state["checked_at"] > 0  # the raw result had 4 hits, one of them no structure ID
-    assert stats["dock_searched"] == 1 and stats["dock_found"] == 3 and stats["dock_capped"] == 0
-    assert dock_world.search_log == [(A, " - ")]
-    await scout._dock_search(stats)  # not due for 24 hours
-    assert dock_world.search_log == [(A, " - ")]
+    assert (state["found"], state["capped"], state["cursor"], state["passes"], state["error"]) == (3, 0, 0, 1, None)
+    assert state["checked_at"] > 0 and state["pass_started_at"] > 0
+    assert (stats["dock_searched"], stats["dock_terms"], stats["dock_passes"], stats["dock_found"]) == (1, 5, 1, 3)
+    await scout._dock_search(stats)  # the first pass is done: now the 24 hour interval counts
+    assert len(dock_world.search_log) == 5
 
 
 async def test_the_dock_search_needs_both_scopes_and_can_be_switched_off(settings, services, dock_world):
@@ -1580,136 +1670,140 @@ async def test_the_dock_search_needs_both_scopes_and_can_be_switched_off(setting
     assert dock_world.search_log == []
 
 
-async def test_a_complete_result_replaces_the_set_and_a_capped_one_only_adds(settings, services, dock_world):
+async def test_the_first_pass_goes_on_at_every_run_and_then_follows_the_interval(settings, services, dock_world):
     await link(services, A, A, DOCK)
+    settings.structures.dock_search_max_terms = 2
     scout = scout_for(settings, services)
     db = services["db"]
+    expected = [["Jit", "Per"], ["1DQ", "Del"], ["The"]]
+    for step, terms in enumerate(expected):  # not due by the interval, but the first pass is not complete
+        dock_world.search_log.clear()
+        await scout._dock_search(fresh_stats())
+        assert searched(dock_world) == terms
+        state = dock_state(db, A)
+        assert state["passes"] == (1 if step == 2 else 0) and state["cursor"] == (0 if step == 2 else 2 * (step + 1))
+    first_pass_started = dock_state(db, A)["pass_started_at"]
+    dock_world.search_log.clear()
     await scout._dock_search(fresh_stats())
-    assert docks(db)[A] == {S_HIGH, D1, D2}
-    dock_world.structures[D1]["acl"] = []  # A may no longer dock at D1
+    assert dock_world.search_log == []  # complete: wait for dock_search_hours
     due_again(db)
     await scout._dock_search(fresh_stats())
-    assert docks(db)[A] == {S_HIGH, D2}  # complete (2 < 500): what is gone is dropped
-    assert dock_state(db, A)["capped"] == 0
-    # a result of cap or more may be cut off: it adds and refreshes, it never drops
-    settings.structures.dock_search_cap = 2
-    dock_world.structures[D1]["acl"] = [A]
-    dock_world.structures[D2]["acl"] = []  # D2 is no longer returned ...
+    assert searched(dock_world) == ["Jit", "Per"]  # one budget per due run from now on
+    assert dock_state(db, A)["cursor"] == 2 and dock_state(db, A)["passes"] == 1
+    assert dock_state(db, A)["pass_started_at"] >= first_pass_started
+    dock_world.search_log.clear()
+    await scout._dock_search(fresh_stats())
+    assert dock_world.search_log == []
     due_again(db)
+    await scout._dock_search(fresh_stats())
+    assert searched(dock_world) == ["1DQ", "Del"] and dock_state(db, A)["cursor"] == 4
+
+
+async def test_a_term_at_the_cap_is_split_into_full_system_names(settings, services, dock_world, monkeypatch, graph):
+    for n, sid in enumerate((E1, E2), 1):  # four Jita structures A may dock at; "Jita" and "Jit" both reach the cap
+        name = f"Jita - Extra {n}"
+        dock_world.structures[sid] = {"name": name, "owner_id": CORP, "solar_system_id": JITA, "acl": None}
+    use_terms(monkeypatch, graph, ("Jit", (JITA, 30000144)))  # a prefix standing for two systems
+    await link(services, A, A, DOCK)
+    settings.structures.dock_search_cap = 3
+    scout = scout_for(settings, services)
     stats = fresh_stats()
     await scout._dock_search(stats)
-    assert docks(db)[A] == {S_HIGH, D1, D2}  # ... but D2 stays, D1 is added
-    state = dock_state(db, A)
-    assert state["capped"] == 1 and state["found"] == 2 and stats["dock_capped"] == 1
-
-
-def forge_and_delve(g) -> tuple[list[str], list[str]]:
-    def region_names(system_id: int) -> list[str]:
-        r = g.region_of[g.index[system_id]]
-        return [g.names[i] for i in range(len(g.names)) if g.region_of[i] == r]
-
-    return region_names(JITA), region_names(DQ1)
-
-
-async def test_the_fallback_terms_go_home_region_first_then_the_structures_and_their_regions(
-    settings, services, dock_world
-):
-    await link(services, A, A, DOCK)
-    scout = scout_for(settings, services)
+    assert searched(dock_world) == ["Jit", "Jita", "Perimeter"]  # the prefix, then each system name behind it
     db = services["db"]
-    forge, delve = forge_and_delve(scout.g)
-    db.save_snapshot(A, solar_system_id=JITA)  # last known system
-    assert scout.dock_terms(A) == [f"{n} - " for n in ["Jita", *[n for n in forge if n != "Jita"]]]
-    now = time.time()
-    with db.tx() as conn:  # a sighted structure in Delve, a dockable one in Jita (already in the first block)
-        for sid, system in ((S_NULL, DQ1), (D2, JITA)):
-            conn.execute(
-                "INSERT INTO known_structures(structure_id, solar_system_id, status, first_seen, last_seen) "
-                "VALUES(?,?,'ok',?,?)",
-                (sid, system, now, now),
-            )
-        conn.execute("INSERT INTO structure_access VALUES(?,?,?)", (D2, A, now))
-    sight(db, A, S_NULL)
-    terms = scout.dock_terms(A)
-    expected = ["Jita", *[n for n in forge if n != "Jita"], "1DQ1-A", *[n for n in delve if n != "1DQ1-A"]]
-    assert terms == [f"{n} - " for n in expected]
-    assert len(set(terms)) == len(terms)  # each system once
+    assert docks(db)[A] == {S_HIGH, D2, E1, E2, D1}
+    assert terms_of(db, A)[D1] == "Perimeter" and terms_of(db, A)[E1] == "Jita"
+    state = dock_state(db, A)
+    assert state["capped"] == 1 and stats["dock_terms_capped"] == 1  # "Jita" is still at the cap: kept, counted
+    assert state["passes"] == 1 and stats["dock_terms"] == 3 and scout.stats()["dock_search"]["capped"] == 1
 
 
-async def test_a_capped_result_searches_the_fallback_terms_bounded_and_resumes_at_the_cursor(
-    settings, services, dock_world
+async def test_a_split_counts_against_the_budget_and_waits_for_a_run_it_fits_into(
+    settings, services, dock_world, monkeypatch, graph
 ):
+    use_terms(monkeypatch, graph, ("Per", (30000144,)), ("Jit", (JITA, 30000144)))
     await link(services, A, A, DOCK)
-    settings.structures.dock_search_cap = 1  # every non-empty result counts as cut off
+    settings.structures.dock_search_cap = 1  # every non-empty answer is cut off
     settings.structures.dock_search_max_terms = 3
     scout = scout_for(settings, services)
     db = services["db"]
-    db.save_snapshot(A, solar_system_id=JITA)
-    terms = scout.dock_terms(A)
-    stats = fresh_stats()
-    await scout._dock_search(stats)
-    assert [t for _, t in dock_world.search_log] == [" - ", *terms[:3]]  # the term, then at most 3 systems
-    assert dock_state(db, A)["cursor"] == 3 and stats["dock_capped"] == 1
-    assert terms[0] == "Jita - " and docks(db)[A] >= {S_HIGH, D1, D2}  # "Jita - " finds the Jita structures
-    dock_world.search_log.clear()
+    await scout._dock_search(fresh_stats())
+    assert searched(dock_world) == ["Per", "Perimeter", "Jit"]  # "Per" is at the cap itself: split into its one name
+    dock_world.search_log.clear()  # budget used up inside the split of the first term: the cursor is at "Jit"
+    state = dock_state(db, A)
+    assert state["cursor"] == 1 and state["passes"] == 0
+    await scout._dock_search(fresh_stats())  # not complete: the next scout run goes on
+    assert searched(dock_world) == ["Jit", "Jita", "Perimeter"] and dock_state(db, A)["passes"] == 1
+
+
+async def test_a_term_that_answers_below_the_cap_drops_what_it_no_longer_returns(settings, services, dock_world):
+    await link(services, A, A, DOCK)
+    scout = scout_for(settings, services)
+    db = services["db"]
+    await scout._dock_search(fresh_stats())
+    with db.tx() as conn:  # stored before terms were recorded: only age removes it
+        conn.execute(
+            "INSERT INTO structure_access(structure_id, character_id, seen_at) VALUES(?,?,?)", (T1, A, time.time())
+        )
+    dock_world.structures[D1]["acl"] = []  # A lost D1 (found by "Per") and S_HIGH (found by "Jit")
+    dock_world.structures[S_HIGH]["acl"] = [C]
     due_again(db)
     await scout._dock_search(fresh_stats())
-    assert [t for _, t in dock_world.search_log] == [" - ", *terms[3:6]]  # a later run goes on where this one stopped
-    assert dock_state(db, A)["cursor"] == 6
+    assert docks(db)[A] == {D2, T1}  # both gone, the open one stays, the row without a term stays
+    assert terms_of(db, A) == {D2: "Jit", T1: None}
 
 
-async def test_the_fallback_cursor_cycles_through_all_terms(settings, services, dock_world, monkeypatch):
+async def test_a_capped_term_only_adds_and_keeps_what_it_did_not_return(
+    settings, services, dock_world, monkeypatch, graph
+):
+    use_terms(monkeypatch, graph, ("Jit", (JITA,)))
     await link(services, A, A, DOCK)
-    settings.structures.dock_search_cap = 1
-    settings.structures.dock_search_max_terms = 2
     scout = scout_for(settings, services)
-    monkeypatch.setattr(scout, "dock_terms", lambda cid: ["Aaa - ", "Bbb - ", "Ccc - "])
     db = services["db"]
-    seen: list[str] = []
-    for expected_cursor in (2, 1, 0):
-        dock_world.search_log.clear()
-        await scout._dock_search(fresh_stats())
-        seen += [t for _, t in dock_world.search_log if t != " - "]
-        assert dock_state(db, A)["cursor"] == expected_cursor
-        due_again(db)
-    assert seen == ["Aaa - ", "Bbb - ", "Ccc - ", "Aaa - ", "Bbb - ", "Ccc - "]  # wraps around, eventually everything
-    settings.structures.dock_search_max_terms = 0  # no fallback at all
-    dock_world.search_log.clear()
     await scout._dock_search(fresh_stats())
-    assert [t for _, t in dock_world.search_log] == [" - "]
+    assert docks(db)[A] == {S_HIGH, D2}
+    dock_world.structures[S_HIGH]["acl"] = [C]  # A lost S_HIGH ...
+    settings.structures.dock_search_cap = 1  # ... but "Jit" now answers at the cap (one structure left): cut off?
+    due_again(db)
+    await scout._dock_search(fresh_stats())
+    assert docks(db)[A] == {S_HIGH, D2}  # a result that may be cut off never proves a loss
+    assert dock_state(db, A)["capped"] == 1
 
 
-async def test_a_passing_error_keeps_the_interval_and_a_refusal_waits_the_whole_of_it(
+async def test_a_passing_error_keeps_the_run_due_and_a_refusal_waits_the_whole_interval(
     settings, services, dock_world, monkeypatch
 ):
     await link(services, A, A, DOCK)
     scout = scout_for(settings, services)
     db = services["db"]
-    await scout._dock_search(fresh_stats())
-    due_again(db)
     passing_errors = (EsiError(503, "boom"), EsiError(429, "slow"), EsiError(420, "error limited"), EsiError(0, "net"))
-    for passing in passing_errors:
-        fail_search(scout, monkeypatch, passing)
+    for n, exc in enumerate(passing_errors):  # during the first pass, then after it
+        restore = fail_search(scout, monkeypatch, exc)
         stats = fresh_stats()
         await scout._dock_search(stats)
         state = dock_state(db, A)
-        assert state["checked_at"] == 1 and state["error"] and stats["dock_errors"] == 1  # still due next run
-        assert docks(db)[A] == {S_HIGH, D1, D2}  # what was stored stays
-        monkeypatch.undo()
-    stats = fresh_stats()
-    await scout._dock_search(stats)  # ESI is back: searched again at once
-    state = dock_state(db, A)
-    assert state["checked_at"] > 1 and state["error"] is None and stats["dock_searched"] == 1
-    # 403: the error is recorded and the character waits the full interval
-    due_again(db)
-    fail_search(scout, monkeypatch, EsiError(403, "token not valid for scope"))
+        assert state["checked_at"] == 0.0 and state["error"] and stats["dock_errors"] == 1  # due at the next run
+        assert state["cursor"] == 0 and state["passes"] == 0
+        restore()
+        if n == 1:
+            dock_world.search_log.clear()
+            await scout._dock_search(fresh_stats())  # ESI is back: goes on at once
+            assert dock_state(db, A)["passes"] == 1 and dock_state(db, A)["error"] is None
+            due_again(db)
+            db.execute("UPDATE scout_dock_search SET passes=0, cursor=0")  # and again from the start
+    # 403: the error is recorded and the character waits the full interval, even in its first pass
+    db.execute("DELETE FROM scout_dock_search")
+    restore = fail_search(scout, monkeypatch, EsiError(403, "token not valid for scope"))
     await scout._dock_search(fresh_stats())
     state = dock_state(db, A)
-    assert "scope" in state["error"] and state["checked_at"] > time.time() - 60
-    monkeypatch.undo()
+    assert "scope" in state["error"] and state["checked_at"] > time.time() - 60 and state["passes"] == 0
+    restore()
     dock_world.search_log.clear()
     await scout._dock_search(fresh_stats())
-    assert dock_world.search_log == [] and docks(db)[A] == {S_HIGH, D1, D2}
+    assert dock_world.search_log == []  # not due: the interval has not passed
+    due_again(db)
+    await scout._dock_search(fresh_stats())
+    assert searched(dock_world) == ["Jit", "Per", "1DQ", "Del", "The"] and dock_state(db, A)["error"] is None
     # a token SSO does not accept counts the same
     due_again(db)
     fail_search(scout, monkeypatch, SsoError("refresh token revoked"))
@@ -1717,54 +1811,56 @@ async def test_a_passing_error_keeps_the_interval_and_a_refusal_waits_the_whole_
     assert dock_state(db, A)["checked_at"] > time.time() - 60 and "revoked" in dock_state(db, A)["error"]
 
 
-async def test_a_first_search_that_fails_for_a_passing_reason_is_retried_next_run(
-    settings, services, dock_world, monkeypatch
-):
-    await link(services, A, A, DOCK)
-    scout = scout_for(settings, services)
-    db = services["db"]
-    fail_search(scout, monkeypatch, EsiError(502, "bad gateway"))
-    await scout._dock_search(fresh_stats())
-    assert dock_state(db, A)["checked_at"] == 0.0 and docks(db) == {}
-    monkeypatch.undo()
-    await scout._dock_search(fresh_stats())
-    assert docks(db) == {A: {S_HIGH, D1, D2}}
-
-
-async def test_the_dock_search_respects_the_error_window_and_pauses_the_fallback(
+async def test_the_dock_search_respects_the_error_window_and_pauses_in_the_middle(
     settings, services, dock_world, monkeypatch
 ):
     await link(services, A, A, DOCK)
     scout = scout_for(settings, services)
     db = services["db"]
     reserves: list[int] = []
+    real_blocked = scout.esi.blocked_for
     monkeypatch.setattr(scout.esi, "blocked_for", lambda reserve=5: reserves.append(reserve) or 30.0)
     await scout._dock_search(fresh_stats())
     assert dock_world.search_log == [] and dock_state(db, A) is None  # nothing sent, nothing recorded
     from evedm.scout import SCOUT_ERROR_RESERVE
 
     assert reserves == [SCOUT_ERROR_RESERVE]
-    # the window closes in the middle of the fallback: what was found is kept, the cursor says where it stopped
-    settings.structures.dock_search_cap = 1
-    settings.structures.dock_search_max_terms = 5
-    monkeypatch.setattr(scout, "dock_terms", lambda cid: ["Jita - ", "Perimeter - ", "Amarr - ", "Rens - "])
     calls = {"n": 0}
 
     def closing(reserve=5):
         if reserve != SCOUT_ERROR_RESERVE:  # the client's own check
             return 0.0
         calls["n"] += 1
-        return 0.0 if calls["n"] <= 3 else 30.0  # before the term, before "Jita - ", before "Perimeter - "
+        return 0.0 if calls["n"] <= 3 else 30.0  # before the run, before "Jit", before "Per"
 
     monkeypatch.setattr(scout.esi, "blocked_for", closing)
     stats = fresh_stats()
     await scout._dock_search(stats)
-    assert [t for _, t in dock_world.search_log] == [" - ", "Jita - ", "Perimeter - "]
+    assert searched(dock_world) == ["Jit", "Per"]
     state = dock_state(db, A)
-    assert state["cursor"] == 2 and "paused" in state["error"] and state["checked_at"] == 0.0  # retried next run
+    assert state["cursor"] == 2 and "paused" in state["error"] and state["checked_at"] == 0.0  # goes on next run
     assert docks(db)[A] == {S_HIGH, D1, D2} and stats["dock_errors"] == 1
+    monkeypatch.setattr(scout.esi, "blocked_for", real_blocked)
+    dock_world.search_log.clear()
+    await scout._dock_search(fresh_stats())
+    assert searched(dock_world) == ["1DQ", "Del", "The"] and dock_state(db, A)["passes"] == 1
 
 
+async def test_the_punctuated_setting_searches_the_full_system_name(settings, services, graph, monkeypatch, world):
+    target = next(i for i in range(len(graph.names)) if "-" in graph.names[i][:3] and graph.ids[i] < 31000000)
+    name = graph.names[target]
+    world.structures[D1] = {"name": f"{name} - Keep", "owner_id": CORP, "solar_system_id": JITA, "acl": [A]}
+    await link(services, A, A, DOCK)
+    for mode, expected in (("prefix", name[:3]), ("full", name)):
+        settings.structures.dock_search_punctuated = mode
+        scout = scout_for(settings, services)
+        mine = [u for u in scout.dock_units()[0] if target in u.systems]
+        monkeypatch.setattr(StructureScout, "dock_terms", lambda self, cid, mine=mine: list(mine))
+        world.search_log.clear()
+        services["db"].execute("DELETE FROM scout_dock_search")
+        await scout._dock_search(fresh_stats())
+        assert searched(world) == [expected]
+        assert D1 in docks(services["db"])[A]
 async def test_characters_that_may_dock_are_asked_first_and_resolve_without_a_403(
     settings, services, dock_world, monkeypatch
 ):
@@ -1799,28 +1895,11 @@ async def test_the_orphan_purge_spares_structures_somebody_may_dock_at(settings,
                 "VALUES(?,?,?,?,?)",
                 (sid, "no_access", now, now, now),
             )
-        conn.execute("INSERT INTO structure_access VALUES(?,?,?)", (T1, A, now))
+        conn.execute("INSERT INTO structure_access(structure_id, character_id, seen_at) VALUES(?,?,?)", (T1, A, now))
     stats = await scout.run()
     assert stats["purged_orphans"] == 1
     left = statuses(db)
     assert T1 in left and T2 not in left  # no sighting, but A may dock there
-
-
-async def test_dock_search_rows_of_unregistered_characters_and_old_rows_are_pruned(settings, services, world):
-    await link(services, A, A, ALL)
-    scout = scout_for(settings, services)
-    db = services["db"]
-    now = time.time()
-    with db.tx() as conn:
-        conn.executemany(
-            "INSERT INTO structure_access VALUES(?,?,?)",
-            [(T1, A, now), (T2, A, now - 31 * 86400), (T1, 777, now), (T3, 777, now)],
-        )
-        conn.execute("INSERT INTO scout_dock_search(character_id, checked_at) VALUES(777, ?)", (now,))
-        conn.execute("INSERT INTO scout_dock_search(character_id, checked_at) VALUES(?, ?)", (A, now))
-    await scout.run()  # prunes as part of the step
-    assert docks(db) == {A: {T1}}  # character 777 is not registered, T2 was not refreshed for 30 days
-    assert [r[0] for r in db.query("SELECT character_id FROM scout_dock_search")] == [A]
 
 
 async def test_the_listing_source_filter_defaults_to_assets_and_shows_counts_only(settings, services, dock_world):
@@ -1868,8 +1947,10 @@ def test_the_structures_api_takes_the_source_filter(tmp_path):
                 "last_seen,checked_at) VALUES(?,?,?,?,?,'ok',?,?,?)",
                 (sid, "Jita - Open House", 1, 30000142, 35832, now, now, now),
             )
-            conn.execute("INSERT INTO structure_access VALUES(?,?,?)", (sid, 5, now))
-            conn.execute("INSERT INTO structure_access VALUES(?,?,?)", (sid, 6, now))
+            for cid in (5, 6):
+                conn.execute(
+                    "INSERT INTO structure_access(structure_id, character_id, seen_at) VALUES(?,?,?)", (sid, cid, now)
+                )
         svc.scout.version += 1
         assert get()["matched"] == 7  # the default view is unchanged
         dock = get(source="dock")
@@ -1879,15 +1960,47 @@ def test_the_structures_api_takes_the_source_filter(tmp_path):
         assert 'id="s-source"' in c.get("/structures").text and "s-source" in c.get("/static/structures.js").text
 
 
-async def test_stats_have_a_dock_search_block(settings, services, dock_world):
+async def test_dock_search_rows_of_unregistered_characters_and_old_rows_are_pruned(settings, services, world):
+    await link(services, A, A, ALL)
+    scout = scout_for(settings, services)
+    db = services["db"]
+    now = time.time()
+    sql = "INSERT INTO structure_access(structure_id, character_id, seen_at) VALUES(?,?,?)"
+    day = 86400
+    # with the defaults one pass takes 21 due runs of 24 hours: rows are kept for twice that, 42 days
+    assert scout.dock_pass_seconds() == -(-len(scout.dock_units()[0]) // 200) * day  # about 21 runs of 24 hours
+    keep = max(30 * day, 2 * scout.dock_pass_seconds())
+    with db.tx() as conn:
+        conn.executemany(
+            sql,
+            [(T1, A, now), (T2, A, now - keep - day), (T3, A, now - keep + day), (T1, 777, now), (T3, 777, now)],
+        )
+        conn.execute("INSERT INTO scout_dock_search(character_id, checked_at) VALUES(777, ?)", (now,))
+        conn.execute("INSERT INTO scout_dock_search(character_id, checked_at) VALUES(?, ?)", (A, now))
+    await scout.run()  # prunes as part of the step
+    assert docks(db) == {A: {T1, T3}}  # 777 is not registered, T2 was not refreshed for longer than the limit
+    assert [r[0] for r in db.query("SELECT character_id FROM scout_dock_search")] == [A]
+    # a short pass (one run covers all terms) leaves the plain 30 days
+    settings.structures.dock_search_max_terms = 10_000
+    assert scout.dock_pass_seconds() == 86400
+    with db.tx() as conn:
+        conn.executemany(sql, [(T4, A, now - 29 * day), (T5, A, now - 31 * day)])
+    scout._prune_access()
+    assert docks(db) == {A: {T1, T4}}  # T3 (41 days) and T5 (31 days) are gone, T4 (29 days) stays
+
+
+async def test_stats_have_a_dock_search_block(settings, services, dock_world, graph):
     await link(services, A, A, DOCK)
     scout = scout_for(settings, services)
     empty = scout.stats()["dock_search"]
     assert empty["characters_searched"] == 0 and empty["access_rows"] == 0 and empty["eligible_characters"] == 1
-    assert empty["term"] == " - " and empty["cap"] == 500 and empty["enabled"] is True
+    assert empty["first_pass_incomplete"] == 1 and empty["passes"] == 0
+    assert empty["prefix_len"] == 3 and empty["cap"] == 500 and empty["max_terms"] == 200 and empty["enabled"] is True
+    assert empty["punctuated"] == "prefix" and empty["terms"] == len(dock_prefixes(graph, 3))
     await scout._dock_search(fresh_stats())
     block = scout.stats()["dock_search"]
     assert block["characters_searched"] == 1 and block["capped"] == 0 and block["with_errors"] == 0
+    assert block["passes"] == 1 and block["first_pass_incomplete"] == 0 and block["capped_terms"] == 0
     assert block["access_rows"] == 3 and block["dockable"] == 3 and block["dockable_unresolved"] == 3
     await scout.run()  # reads them; S_HIGH has assets of A
     block = scout.stats()["dock_search"]
@@ -1895,17 +2008,29 @@ async def test_stats_have_a_dock_search_block(settings, services, dock_world):
     services["db"].execute("DROP TABLE structure_access")  # a database that was not migrated yet (read-only CLI)
     services["db"].execute("DROP TABLE scout_dock_search")
     old = scout.stats()["dock_search"]
-    assert old["access_rows"] == 0 and old["characters_searched"] == 0
+    assert old["access_rows"] == 0 and old["characters_searched"] == 0 and old["first_pass_incomplete"] == 1
 
 
-async def test_search_structure_ids_is_the_one_request_for_the_character_search(services, dock_world):
+async def test_search_structure_ids_is_the_one_request_and_can_skip_the_cache(services, dock_world):
     tokens = await mint(services["http"], A, scopes=DOCK)
     from evedm.esi import search_structure_ids
 
     esi = services["esi"]
-    assert await search_structure_ids(esi, A, tokens["access_token"], " - ") == sorted([S_HIGH, D1, D2])
-    assert await search_structure_ids(esi, A, tokens["access_token"], " » ") == []  # ESI answers {}: no match
-    assert dock_world.search_log == [(A, " - "), (A, " » ")]
+    token = tokens["access_token"]
+    assert await search_structure_ids(esi, A, token, "Jit") == sorted([S_HIGH, D2])  # the start of the name
+    assert await search_structure_ids(esi, A, token, "ita") == []  # not the middle
+    assert await search_structure_ids(esi, A, token, " - ") == []  # punctuation only: nothing, as on live ESI
+    assert await search_structure_ids(esi, A, token, " » ") == []
+    assert searched(dock_world) == ["Jit", "ita", " - ", " » "]
+    calls = dock_world.calls["search"]
+    await search_structure_ids(esi, A, token, "Jit", cache=False)
+    await search_structure_ids(esi, A, token, "Jit", cache=False)
+    assert dock_world.calls["search"] == calls + 2  # always sent
+    path = f"/characters/{A}/search/?categories=structure&search=Per&strict=false"
+    await search_structure_ids(esi, A, token, "Per", cache=False)
+    assert esi.cached_expiry(path) is None  # and never stored
+    await search_structure_ids(esi, A, token, "Per")
+    assert esi.cached_expiry(path) is not None
 
     class Stub:
         paths: list[str] = []
@@ -1914,24 +2039,22 @@ async def test_search_structure_ids_is_the_one_request_for_the_character_search(
             self.paths.append(path)
 
     stub = Stub()
-    assert await search_structure_ids(stub, 5, "t", " - ") == []
-    assert stub.paths == ["/characters/5/search/?categories=structure&search=%20-%20&strict=false"]
+    assert await search_structure_ids(stub, 5, "t", " » ") == []  # Ansiblex' stub has no cache argument
+    assert stub.paths == ["/characters/5/search/?categories=structure&search=%20%C2%BB%20&strict=false"]
 
 
 def test_the_dock_search_settings_are_checked():
     s = Settings()
     s.secret_key, s.demo = "k", True
-    assert (s.structures.dock_search_enabled, s.structures.dock_search_hours, s.structures.dock_search_term) == (
-        True,
-        24.0,
-        " - ",
-    )
-    assert (s.structures.dock_search_cap, s.structures.dock_search_max_terms) == (500, 40)
+    sc = s.structures
+    assert (sc.dock_search_enabled, sc.dock_search_hours, sc.dock_search_prefix_len) == (True, 24.0, 3)
+    assert (sc.dock_search_cap, sc.dock_search_max_terms, sc.dock_search_punctuated) == (500, 200, "prefix")
+    assert not hasattr(sc, "dock_search_term")
     s.validate_for_serve()
     from evedm.config import ConfigError
 
-    for field, value in (("dock_search_term", "ab"), ("dock_search_hours", 0), ("dock_search_cap", 0),
-                         ("dock_search_max_terms", -1)):
+    for field, value in (("dock_search_prefix_len", 2), ("dock_search_hours", 0), ("dock_search_cap", 0),
+                         ("dock_search_max_terms", 0), ("dock_search_punctuated", "both")):
         bad = Settings()
         bad.secret_key, bad.demo = "k", True
         setattr(bad.structures, field, value)
@@ -1939,6 +2062,167 @@ def test_the_dock_search_settings_are_checked():
             bad.validate_for_serve()
         bad.structures.dock_search_enabled = False  # not checked while switched off
         bad.validate_for_serve()
+
+
+def test_an_old_config_with_the_removed_term_still_loads_and_says_so(tmp_path, caplog):
+    import logging
+
+    cfg = tmp_path / "evedm.yaml"
+    cfg.write_text(
+        "structures:\n  dock_search_term: ' - '\n  dock_search_prefix_len: 4\n  dock_search_unknown_key: 1\n",
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.INFO, logger="evedm.config"):
+        s = load_settings(cfg)
+    assert s.structures.dock_search_prefix_len == 4 and not hasattr(s.structures, "dock_search_term")
+    notes = [r.getMessage() for r in caplog.records if "dock_search_term" in r.getMessage()]
+    assert len(notes) == 1 and "ignored" in notes[0]
+    assert not [r for r in caplog.records if "dock_search_unknown_key" in r.getMessage()]  # unknown keys stay silent
+
+
+# ------------------------------------------------------------------------------------ self-test and search-probe
+def test_name_shapes_decide_how_a_prefix_is_tested():
+    from evedm.probe import name_shape
+
+    cases = {("Jita", 30000142): "plain", ("H-PA29", 30001): "hyphen_early", ("GE-8JV", 3): "hyphen_early",
+             ("PUIG-F", 3): "hyphen_late", ("Old Man Star", 3): "space", ("1DQ1-A", 3): "digit_start",
+             ("Thera", 31000005): "jspace", ("J123456", 31000100): "jspace", ("Y-2ANO", 3): "hyphen_early",
+             ("Aa1", 3): "other"}
+    for (name, system_id), shape in cases.items():
+        assert name_shape(name, system_id) == shape, name
+
+
+def shape_row(shape: str, prefix3: bool, prefix4: bool, full: bool, *, punctuated=False, capped=False) -> dict:
+    term3 = "H-P" if punctuated else "Per"
+
+    def t(term, hit):
+        return {"term": term, "count": 1, "hit": hit, "capped": capped}
+
+    return {"shape": shape, "terms": {"prefix3": t(term3, prefix3), "prefix4": t(term3 + "x", prefix4),
+                                       "full": t("Perimeter", full)}}
+
+
+def test_the_self_test_recommendation_is_computed_from_the_table():
+    from evedm.probe import summarize_self_test
+
+    ok = summarize_self_test(
+        [shape_row("plain", True, True, True), shape_row("hyphen_early", True, True, True, punctuated=True)]
+    )
+    assert ok["recommendation"].startswith("prefix ok for all shapes") and ok["recommended_settings"] == {}
+    assert ok["totals"]["structures"] == 2 and ok["totals"]["prefix3"] == {"hits": 2, "tries": 2}
+    assert ok["shapes"]["plain"]["full"] == {"hits": 1, "tries": 1}
+    punct = summarize_self_test(
+        [shape_row("plain", True, True, True), shape_row("hyphen_early", False, False, True, punctuated=True)]
+    )
+    assert "punctuated prefixes fail" in punct["recommendation"]
+    assert punct["recommended_settings"] == {"dock_search_punctuated": "full"}
+    assert punct["shapes"]["hyphen_early"]["evidence_against_prefix3"] == 1
+    assert punct["shapes"]["plain"]["evidence_against_prefix3"] == 0
+    four = summarize_self_test([shape_row("plain", False, True, True)])
+    assert four["recommended_settings"] == {"dock_search_prefix_len": 4} and "plain" in four["recommendation"]
+    bad = summarize_self_test([shape_row("plain", False, False, True)])
+    assert "unreliable" in bad["recommendation"] and bad["recommended_settings"] == {}
+    # a miss of the full name too is no evidence against the prefix; neither is a result at the cap
+    unclear = summarize_self_test([shape_row("plain", False, False, False)])
+    assert "inconclusive" in unclear["recommendation"] and unclear["totals"]["evidence_against_prefix3"] == 0
+    capped = summarize_self_test([shape_row("plain", False, False, True, capped=True)])
+    assert capped["recommendation"].startswith("prefix ok") and capped["totals"]["evidence_against_prefix3"] == 0
+    assert "lost docking" in ok["note"] and "no resolved structures" in summarize_self_test([])["recommendation"]
+
+
+def test_search_probe_self_test_finds_known_structures_by_system_name(
+    tmp_path, settings, fake_app, monkeypatch, capsys, graph
+):
+    from common import FAKE
+    from evedm import cli
+    from evedm.characters import CharacterService
+    from evedm.crypto import TokenCipher
+    from evedm.db import Database
+    from evedm.probe import name_shape
+    from evedm.sso import AuthService
+
+    fake = fake_app.state.fake
+    by_shape: dict[str, int] = {}  # one system of each name shape
+    for i, name in enumerate(graph.names):
+        by_shape.setdefault(name_shape(name, graph.ids[i]), i)
+    shapes = ["plain", "hyphen_early", "hyphen_late", "space", "digit_start", "jspace"]
+    assert set(shapes) <= set(by_shape)
+    ids = {}
+    for n, shape in enumerate(shapes, 1):
+        sid, idx = 1_097_000_000_000 + n, by_shape[shape]
+        ids[shape] = sid
+        fake.structures[sid] = {"name": f"{graph.names[idx]} - Keep", "solar_system_id": graph.ids[idx], "acl": [A]}
+    gate = 1_097_000_000_100
+    fake.structures[gate] = {"name": "Jita » Amarr - Gate", "solar_system_id": JITA, "acl": [A]}
+
+    async def seed() -> None:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fake_app), base_url=FAKE) as http:
+            db = Database(settings.db_path, settings.sqlite_journal)
+            auth = AuthService(settings.eve, http)
+            chars = CharacterService(db, TokenCipher(settings.secret_key), auth, settings)
+            tokens = await mint(http, A, scopes=DOCK)
+            chars.store(await auth.refresh(tokens["refresh_token"]), owner_id=A)
+            now = time.time()
+            with db.tx() as conn:
+                for shape, sid in ids.items():
+                    conn.execute(
+                        "INSERT INTO known_structures(structure_id, solar_system_id, status, first_seen, last_seen) "
+                        "VALUES(?,?,'ok',?,?)",
+                        (sid, graph.ids[by_shape[shape]], now, now),
+                    )
+            sight(db, A, *ids.values())
+            db.close()
+
+    asyncio.run(seed())
+
+    def tables() -> dict[str, list]:
+        db = Database(settings.db_path, read_only=True)
+        out = {
+            t: [tuple(r) for r in db.query(f"SELECT * FROM {t} ORDER BY 1, 2")]  # noqa: S608
+            for t in ("known_structures", "structure_sightings", "structure_access", "scout_dock_search",
+                      "ansiblex_access", "ansiblex_gates")
+        }
+        db.close()
+        return out
+
+    before = tables()
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(cli, "_settings", lambda args: settings)
+    fake_client = lambda **kw: real_client(transport=httpx.ASGITransport(app=fake_app), base_url=FAKE)  # noqa: E731
+    monkeypatch.setattr("evedm.web.app.httpx.AsyncClient", fake_client)
+    assert cli.main(["structures", "search-probe", "--self-test"]) == 0  # the characters with the most sightings
+    out = json.loads(capsys.readouterr().out)
+    assert set(out["characters"]) == {str(A)} and out["characters"][str(A)]["picked"] == 6
+    assert set(out["shapes"]) == set(shapes)  # a spread: one structure of every shape
+    for shape in shapes:
+        table = out["shapes"][shape]
+        assert table["structures"] == 1 and table["prefix3"] == {"hits": 1, "tries": 1}, shape
+        assert table["prefix4"] == {"hits": 1, "tries": 1} and table["full"] == {"hits": 1, "tries": 1}
+    assert out["totals"]["full_found"] == 6 and out["totals"]["evidence_against_prefix3"] == 0
+    assert out["recommendation"].startswith("prefix ok for all shapes") and out["recommended_settings"] == {}
+    assert "lost docking" in out["note"] and out["stopped"] is None
+    first = out["characters"][str(A)]["structures"][0]
+    assert first["terms"]["full"]["term"] == first["system"] and first["sighted"] is True
+    # Ansiblex: no character has stored gates yet
+    assert out["ansiblex"]["characters"] == [] and "no character has stored Ansiblex gates" in out["ansiblex"]["note"]
+    assert tables() == before  # nothing stored
+    # --limit picks a spread of shapes first, --character names the character
+    assert cli.main(["structures", "search-probe", "--self-test", "--character", str(A), "--limit", "3"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    picked = [s["shape"] for s in out["characters"][str(A)]["structures"]]
+    assert len(picked) == 3 and len(set(picked)) == 3 and out["totals"]["structures"] == 3
+    # with a stored gate the live " » " search is counted next to it: ESI finds nothing for it
+    db = Database(settings.db_path, settings.sqlite_journal)
+    db.execute("INSERT INTO ansiblex_access(character_id, structure_id, seen_at) VALUES(?,?,?)", (A, gate, time.time()))
+    db.close()
+    assert cli.main(["structures", "search-probe", "--self-test", "--character", str(A), "--limit", "1"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["ansiblex"]["characters"] == [{"character_id": A, "stored_gates": 1, "search_count": 0, "works": False}]
+    assert "does not seem to work live" in out["ansiblex"]["note"]
+    assert cli.main(["structures", "search-probe", "--self-test", "--character", "7"]) == 2
+    assert "not registered with both search scopes" in capsys.readouterr().err
+    text = json.dumps(out)
+    assert "token" not in text and "Alpha" not in text
 
 
 def test_search_probe_command_runs_the_terms_and_writes_nothing(tmp_path, settings, fake_app, monkeypatch, capsys):
@@ -1987,16 +2271,15 @@ def test_search_probe_command_runs_the_terms_and_writes_nothing(tmp_path, settin
     monkeypatch.setattr(cli, "_settings", lambda args: settings)
     fake_client = lambda **kw: real_client(transport=httpx.ASGITransport(app=fake_app), base_url=FAKE)  # noqa: E731
     monkeypatch.setattr("evedm.web.app.httpx.AsyncClient", fake_client)
-    settings.structures.dock_search_cap = 3
+    settings.structures.dock_search_cap = 2
     assert cli.main(["structures", "search-probe", "--character", str(A)]) == 0
     out = json.loads(capsys.readouterr().out)
     by_term = {t["term"]: t for t in out["terms"]}
-    assert list(by_term) == [" - ", " » ", "Jita - "]  # configured, the Ansiblex term, the last known system
-    assert by_term[" - "]["count"] == 4 and by_term[" - "]["hit_cap"] is True  # the cap is 3 here
-    assert by_term[" - "]["structure_ids"] == 4 and by_term[" - "]["sample"] == sorted(by_term[" - "]["sample"])
-    assert len(by_term[" - "]["sample"]) == 4 and by_term[" » "]["count"] == 1 and by_term[" » "]["hit_cap"] is False
-    assert by_term["Jita - "]["count"] == 2 and by_term["Jita - "]["sample"] == sorted([S_HIGH, D2])
-    assert out["cap"] == 3 and out["stopped"] is None and out["character_id"] == A
+    assert list(by_term) == [" » ", "Jit", "Jita"]  # the Ansiblex term, the prefix and the name of the last system
+    assert by_term[" » "]["count"] == 0  # punctuation only: ESI matches nothing
+    assert by_term["Jit"]["count"] == 3 and by_term["Jit"]["hit_cap"] is True  # the cap is 2 here
+    assert by_term["Jit"]["structure_ids"] == 3 and by_term["Jit"]["sample"] == sorted([S_HIGH, D2, D3])
+    assert by_term["Jita"]["count"] == 3 and out["cap"] == 2 and out["stopped"] is None and out["character_id"] == A
     assert tables() == before  # nothing stored
     assert cli.main(["structures", "search-probe", "--character", str(A), "--term", "Perim", "--term", "zzz"]) == 0
     out = json.loads(capsys.readouterr().out)

@@ -22,7 +22,7 @@ from .characters import CharacterService
 from .db import Database
 from .esi import EsiClient, EsiError, search_structure_ids
 from .scout import STRUCTURE_MIN_ID as HIGH_ID
-from .scout import is_structure_candidate
+from .scout import WSPACE_MIN_ID, is_structure_candidate
 from .sso import SsoError
 
 STATUSES = ("ok", "no_access", "new", "gone", "not_in_db")
@@ -287,13 +287,236 @@ async def search_probe(
     return {"character_id": character_id, "cap": cap, "terms": out, "stopped": stopped}
 
 
-def default_search_terms(db: Database, graph: Any, character_id: int, configured: str) -> list[str]:
-    """The configured term, the Ansiblex term and "<system> - " for the character's last known system."""
+def default_search_terms(db: Database, graph: Any, character_id: int, prefix_len: int = 3) -> list[str]:
+    """The Ansiblex term " » ", and the prefix and the full name of the character's last known system."""
     from .ansiblex import SEARCH_TERM
 
-    terms = [configured, SEARCH_TERM]
+    terms = [SEARCH_TERM]
     rows = db.query("SELECT solar_system_id FROM snapshots WHERE character_id=?", (character_id,))
     idx = graph.index.get(rows[0][0]) if rows and rows[0][0] else None
     if idx is not None:
-        terms.append(f"{graph.names[idx]} - ")
+        terms += [graph.names[idx][:prefix_len], graph.names[idx]]
     return list(dict.fromkeys(terms))
+
+
+# -- self-test: known structures must be found by their own system name ----------------------------------------
+SHAPES = ("plain", "hyphen_early", "hyphen_late", "space", "digit_start", "jspace", "other")
+TERM_KINDS = ("prefix3", "prefix4", "full")
+
+
+def name_shape(name: str, system_id: int) -> str:
+    """The shape of a system name, which decides how ESI's start-of-name match may treat its prefix."""
+    if system_id >= WSPACE_MIN_ID:
+        return "jspace"
+    if " " in name:
+        return "space"
+    if name[:1].isdigit():
+        return "digit_start"
+    if "-" in name[:3]:
+        return "hyphen_early"
+    if "-" in name:
+        return "hyphen_late"
+    return "plain" if name.isalpha() else "other"
+
+
+def pick_known_structures(db: Database, graph: Any, character_id: int, limit: int) -> list[dict[str, Any]]:
+    """Resolved structures the character sights or has access rows for, a spread of system name shapes first."""
+    rows = db.query(
+        "SELECT k.structure_id, k.solar_system_id, "
+        "EXISTS(SELECT 1 FROM structure_sightings s WHERE s.structure_id=k.structure_id "
+        "AND s.character_id=?1) AS sighted, "
+        "EXISTS(SELECT 1 FROM structure_access a WHERE a.structure_id=k.structure_id AND a.character_id=?1) AS docks "
+        "FROM known_structures k WHERE k.status='ok' AND k.solar_system_id IS NOT NULL "
+        "AND (sighted OR docks) ORDER BY docks DESC, k.structure_id",
+        (character_id,),
+    )
+    queues: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        idx = graph.index.get(r["solar_system_id"])
+        if idx is None:
+            continue
+        name = graph.names[idx]
+        queues.setdefault(name_shape(name, r["solar_system_id"]), []).append(
+            {
+                "structure_id": r["structure_id"],
+                "system": name,
+                "shape": name_shape(name, r["solar_system_id"]),
+                "sighted": bool(r["sighted"]),
+                "access_row": bool(r["docks"]),
+            }
+        )
+    for shape, queue in queues.items():  # distinct systems first, the rest behind them
+        first: dict[str, dict[str, Any]] = {}
+        rest: list[dict[str, Any]] = []
+        for item in queue:
+            if item["system"] in first:
+                rest.append(item)
+            else:
+                first[item["system"]] = item
+        queues[shape] = [*first.values(), *rest]
+    picked: list[dict[str, Any]] = []
+    while len(picked) < limit and any(queues.values()):
+        for shape in SHAPES:
+            if queues.get(shape) and len(picked) < limit:
+                picked.append(queues[shape].pop(0))
+    return picked
+
+
+async def self_test(
+    db: Database,
+    graph: Any,
+    chars: CharacterService,
+    esi: EsiClient,
+    characters: list[tuple[int, int]],
+    *,
+    limit: int = 12,
+    cap: int = 500,
+    ansiblex_owners: dict[int, int] | None = None,
+) -> dict[str, Any]:
+    """Search known structures by their 3- and 4-character system prefix and full system name (nothing is stored).
+
+    A structure counts as evidence against the prefix only when the full name finds it and the prefix does not: a
+    miss of the full name can also mean the character lost docking there (assets do not prove access).
+    """
+    per_char: dict[str, Any] = {}
+    stopped: dict[str, Any] | None = None
+    results: list[dict[str, Any]] = []
+    for cid, owner in characters:
+        picked = pick_known_structures(db, graph, cid, limit)
+        entry: dict[str, Any] = {"picked": len(picked), "structures": []}
+        per_char[str(cid)] = entry
+        cache: dict[str, list[int]] = {}
+        token: str | None = None
+        for item in picked:
+            name = item["system"]
+            terms = {"prefix3": name[:3], "prefix4": name[:4], "full": name}
+            row: dict[str, Any] = dict(item) | {"terms": {}}
+            for kind, term in terms.items():
+                wait = esi.blocked_for()
+                if term not in cache and wait > 0:
+                    stopped = {"reason": "blocked", "retry_in_s": round(wait), "before_term": term}
+                    break
+                try:
+                    if term not in cache:
+                        token = token or await chars.access_token(cid, owner)
+                        cache[term] = await search_structure_ids(esi, cid, token, term, cache=False)
+                    ids = cache[term]
+                    row["terms"][kind] = {
+                        "term": term,
+                        "count": len(ids),
+                        "hit": item["structure_id"] in ids,
+                        "capped": len(ids) >= cap,
+                    }
+                except (EsiError, SsoError) as exc:
+                    row["terms"][kind] = {"term": term, "error": str(exc)[:120]}
+                    if isinstance(exc, EsiError) and exc.status in (420, 429):
+                        stopped = {"reason": "blocked", "retry_in_s": round(esi.blocked_for()), "before_term": term}
+                        break
+            entry["structures"].append(row)
+            results.append(row)
+            if stopped is not None:
+                break
+        if stopped is not None:
+            break
+    report = summarize_self_test(results)
+    report["characters"] = per_char
+    report["stopped"] = stopped
+    report["ansiblex"] = await ansiblex_check(db, chars, esi, ansiblex_owners or {})
+    return report
+
+
+def summarize_self_test(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Per shape and in total: hits/tries per term kind; and the recommendation computed from it."""
+
+    def blank() -> dict[str, Any]:
+        t: dict[str, Any] = {"structures": 0, "full_found": 0}
+        t |= {k: {"hits": 0, "tries": 0} for k in TERM_KINDS}
+        t |= {"evidence_against_prefix3": 0, "evidence_against_prefix4": 0}
+        return t
+
+    shapes: dict[str, dict[str, Any]] = {}
+    total = blank()
+    evidence = {"punctuated": 0, "plain": 0, "plain4": 0, "punctuated4": 0}
+    for row in results:
+        t = row["terms"]
+        for table in (shapes.setdefault(row["shape"], blank()), total):
+            table["structures"] += 1
+            for kind in TERM_KINDS:
+                if kind in t and "hit" in t[kind]:
+                    table[kind]["tries"] += 1
+                    table[kind]["hits"] += int(t[kind]["hit"])
+            if t.get("full", {}).get("hit"):
+                table["full_found"] += 1
+                for kind, key in (("prefix3", "evidence_against_prefix3"), ("prefix4", "evidence_against_prefix4")):
+                    if kind in t and "hit" in t[kind] and not t[kind]["hit"] and not t[kind]["capped"]:
+                        table[key] += 1
+        if t.get("full", {}).get("hit"):
+            punct = "prefix3" in t and not t["prefix3"]["term"].isalnum()
+            if "prefix3" in t and "hit" in t["prefix3"] and not t["prefix3"]["hit"] and not t["prefix3"]["capped"]:
+                evidence["punctuated" if punct else "plain"] += 1
+            if "prefix4" in t and "hit" in t["prefix4"] and not t["prefix4"]["hit"] and not t["prefix4"]["capped"]:
+                evidence["punctuated4" if punct else "plain4"] += 1
+    bad_shapes = sorted(k for k, v in shapes.items() if v["evidence_against_prefix3"])
+    if not results:
+        text, settings = "no resolved structures to test: let the scout resolve some first", {}
+    elif not total["full_found"]:
+        text = (
+            "inconclusive: the full system name found none of the known structures (the characters may not be allowed "
+            "to dock there, or the search does not match full names)"
+        )
+        settings = {}
+    elif not evidence["punctuated"] and not evidence["plain"]:
+        text = "prefix ok for all shapes tested: keep dock_search_prefix_len 3 and dock_search_punctuated prefix"
+        settings = {}
+    elif not evidence["plain"]:
+        text = "punctuated prefixes fail: use the full system name for those: set dock_search_punctuated to full"
+        settings = {"dock_search_punctuated": "full"}
+    elif not evidence["plain4"] and not evidence["punctuated4"]:
+        text = f"3-character prefixes fail for shapes {bad_shapes}, 4-character ones work: set dock_search_prefix_len 4"
+        settings = {"dock_search_prefix_len": 4}
+    else:
+        text = f"prefix search is unreliable for shapes {bad_shapes}: full system names would be needed for them"
+        settings = {}
+    return {
+        "shapes": shapes,
+        "totals": total,
+        "recommendation": text,
+        "recommended_settings": settings,
+        "note": (
+            "A miss can also mean the character lost docking there (assets alone do not prove access): only structures "
+            "where the full system name hits but the prefix misses (evidence_against_prefix3/4, not counting results "
+            "at the cap) count as evidence against the prefix."
+        ),
+    }
+
+
+async def ansiblex_check(
+    db: Database, chars: CharacterService, esi: EsiClient, owners: dict[int, int], limit: int = 3
+) -> dict[str, Any]:
+    """Does the Ansiblex search (term " » ") work live? Its count next to the gates stored for up to 3 characters."""
+    from .ansiblex import SEARCH_TERM
+
+    rows = db.query(
+        "SELECT character_id, COUNT(*) FROM ansiblex_access GROUP BY character_id ORDER BY 2 DESC, 1 LIMIT ?", (limit,)
+    )
+    out: dict[str, Any] = {"term": SEARCH_TERM, "characters": []}
+    if not rows:
+        out["note"] = "no character has stored Ansiblex gates: nothing to compare the live search with"
+        return out
+    for cid, stored in rows:
+        item: dict[str, Any] = {"character_id": cid, "stored_gates": stored}
+        if cid not in owners:
+            item["skipped"] = "not registered with both search scopes"
+        else:
+            try:
+                token = await chars.access_token(cid, owners[cid])
+                ids = await search_structure_ids(esi, cid, token, SEARCH_TERM, cache=False)
+                item["search_count"] = len(ids)
+                item["works"] = len(ids) > 0
+            except (EsiError, SsoError) as exc:
+                item["error"] = str(exc)[:120]
+        out["characters"].append(item)
+    tested = [c for c in out["characters"] if "works" in c]
+    if tested and not any(c["works"] for c in tested):
+        out["note"] = 'the " » " search returned nothing although gates are stored: it does not seem to work live'
+    return out

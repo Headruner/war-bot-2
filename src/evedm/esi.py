@@ -115,8 +115,13 @@ class EsiClient:
         entry = self._cache.get(path)
         return entry.expires if entry is not None else None
 
-    async def get(self, path: str, token: str | None = None) -> Any:
-        """GET with Expires/ETag caching; identical concurrent requests share one HTTP call."""
+    async def get(self, path: str, token: str | None = None, *, cache: bool = True) -> Any:
+        """GET with Expires/ETag caching; identical concurrent requests share one HTTP call.
+
+        ``cache=False`` neither reads nor fills the cache (thousands of one-off paths would evict useful entries).
+        """
+        if not cache:
+            return await self._get(path, None, token, store=False)
         key = path
         entry = self._cache.get(key)
         if entry is not None and entry.expires > time.time():
@@ -144,7 +149,7 @@ class EsiClient:
         finally:
             self._inflight.pop(key, None)
 
-    async def _get(self, key: str, entry: _Entry | None, token: str | None) -> Any:
+    async def _get(self, key: str, entry: _Entry | None, token: str | None, store: bool = True) -> Any:
         path = key
         headers = dict(self.headers)
         if token:
@@ -159,10 +164,11 @@ class EsiClient:
             return entry.body
         if resp.status_code == 200:
             body = resp.json()
-            self._cache[key] = _Entry(body, resp.headers.get("ETag"), _expires(resp))
-            self._cache.move_to_end(key)
-            while len(self._cache) > self._cache_size:
-                self._cache.popitem(last=False)
+            if store:
+                self._cache[key] = _Entry(body, resp.headers.get("ETag"), _expires(resp))
+                self._cache.move_to_end(key)
+                while len(self._cache) > self._cache_size:
+                    self._cache.popitem(last=False)
             return body
         self.stats["errors"] += 1
         detail = ""
@@ -303,13 +309,15 @@ class EsiClient:
         return {int(r["id"]): str(r["name"]) for r in rows}
 
 
-async def search_structure_ids(esi: Any, character_id: int, token: str, term: str) -> list[int]:
-    """Structure IDs the character may dock at whose name contains ``term`` (scope ``esi-search.search_structures.v1``).
+async def search_structure_ids(
+    esi: Any, character_id: int, token: str, term: str, *, cache: bool = True
+) -> list[int]:
+    """Structure IDs the character may dock at that match ``term`` (scope ``esi-search.search_structures.v1``).
 
-    ``esi`` is anything with ``get(path, token)``; ESI wants at least three characters in the term. Shared by the
-    Ansiblex reader (term " » ") and the scout's dock search (term " - ").
+    ``esi`` is anything with ``get(path, token)``. Live ESI matches the START of the name (or of a word), needs at
+    least three characters and matches nothing for punctuation-only terms. Shared by the Ansiblex reader (term " » ")
+    and the scout's dock search (system-name prefixes); ``cache=False`` (real clients only) skips the response cache.
     """
-    found = await esi.get(
-        f"/characters/{character_id}/search/?categories=structure&search={quote(term)}&strict=false", token
-    )
+    path = f"/characters/{character_id}/search/?categories=structure&search={quote(term)}&strict=false"
+    found = await (esi.get(path, token) if cache else esi.get(path, token, cache=False))
     return [int(i) for i in (found or {}).get("structure", [])]

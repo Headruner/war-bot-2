@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -9,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+log = logging.getLogger("evedm.config")
 
 # Lets the app read a character's own notifications (Notifications page: asset safety, structure attacks).
 NOTIFICATION_SCOPE = "esi-characters.read_notifications.v1"
@@ -146,10 +149,11 @@ class StructureScoutSettings:
     index_file: str = ""
     # structures a character may dock at, found through ESI's character search (scope esi-search.search_structures.v1)
     dock_search_enabled: bool = True
-    dock_search_hours: float = 24.0  # search again for each character this often
-    dock_search_term: str = " - "  # every Upwell structure is named "<System> - <Name>"; ESI needs 3+ characters
+    dock_search_hours: float = 24.0  # after its first complete pass a character is searched this often
+    dock_search_prefix_len: int = 3  # ESI matches the start of a name: prefixes of this many characters of system names
     dock_search_cap: int = 500  # a result this long is treated as cut off (believed ESI limit, to be verified)
-    dock_search_max_terms: int = 40  # fallback searches ("<System> - ") per character and run, when capped
+    dock_search_max_terms: int = 200  # searches per character and due run; a cursor goes on, the list end ends a pass
+    dock_search_punctuated: str = "prefix"  # "full": systems whose prefix has punctuation are searched by full name
 
 
 @dataclass
@@ -325,12 +329,14 @@ class Settings:
             raise ConfigError("sqlite_journal must be 'delete' or 'wal'")
         sc = self.structures
         if sc.dock_search_enabled:
-            if len(sc.dock_search_term) < 3:
-                raise ConfigError("structures.dock_search_term needs at least 3 characters (ESI's search rule)")
-            if sc.dock_search_hours <= 0 or sc.dock_search_cap < 1 or sc.dock_search_max_terms < 0:
+            if sc.dock_search_prefix_len < 3:
+                raise ConfigError("structures.dock_search_prefix_len must be at least 3 (ESI's search rule)")
+            if sc.dock_search_hours <= 0 or sc.dock_search_cap < 1 or sc.dock_search_max_terms < 1:
                 raise ConfigError(
-                    "structures.dock_search_hours > 0, dock_search_cap >= 1 and dock_search_max_terms >= 0"
+                    "structures.dock_search_hours > 0, dock_search_cap >= 1 and dock_search_max_terms >= 1"
                 )
+            if sc.dock_search_punctuated not in ("prefix", "full"):
+                raise ConfigError("structures.dock_search_punctuated must be 'prefix' or 'full'")
         a = self.alerts
         if a.enabled and a.poll_s < 6:
             raise ConfigError("alerts.poll_s must be at least 6 (zKillboard's rule)")
@@ -389,9 +395,15 @@ def _truthy(value: str | None) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
+REMOVED_KEYS = {(StructureScoutSettings, "dock_search_term"): "ESI matches name prefixes: see dock_search_prefix_len"}
+
+
 def _apply(obj: Any, data: dict[str, Any]) -> None:
     for key, value in data.items():
-        if not hasattr(obj, key):
+        if not hasattr(obj, key):  # unknown keys are skipped without a word, except the ones that were removed
+            if (type(obj), key) in REMOVED_KEYS:
+                why = REMOVED_KEYS[type(obj), key]
+                log.info("setting structures.%s is no longer used and is ignored (%s)", key, why)
             continue
         current = getattr(obj, key)
         nested = (

@@ -193,11 +193,12 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
   listed: *with assets* (the default: structures where a registered character has items), *can dock, no assets* or
   *all*. "Can dock" means ESI's character search (`esi-search.search_structures.v1`, the scope Ansiblex mode already
   asks for) returned the structure for at least one registered character, so that character may dock there even
-  without items; the page shows only how many characters can dock, never which. The search runs once a day per
-  character with the term " - " (every Upwell name is "<System> - <Name>"); a very long result counts as cut off, is
-  completed system by system over the next runs and is never assumed complete. Two things were not verified against
-  live ESI (that " - " matches as a substring and that the result is cut off at 500): check them with
-  `evedm structures search-probe --character ID` (see 06 · Operations) before relying on the list.
+  without items; the page shows only how many characters can dock, never which. ESI's search matches the start of a
+  name, so each character is searched with the first three letters of every system name (its own region first,
+  200 searches per hourly run: the first full pass takes about a day, afterwards one run a day). Prefixes with a
+  hyphen (null-sec names such as H-PA29) are not verified live: `evedm structures search-probe --self-test` checks
+  them on known structures and names the setting to use (`structures.dock_search_punctuated: full`). A result at
+  the cap is split into full system names and never assumed complete (see 06 · Operations).
 - **Resolve unknown** (button on the page) starts a background job that reads every structure still missing a name,
   owner or system: ESI's public list first, then structures with a character that holds assets there (yours first),
   your main last (`esi-universe.read_structures.v1`). A refusal is remembered per structure and character for 14
