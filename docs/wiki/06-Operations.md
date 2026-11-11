@@ -33,6 +33,10 @@
 | Ansiblex mode shows no gates | the character has not granted `esi-search.search_structures.v1` (Add character again) or sees no gate in the structure search; `ansiblex.refresh_hours` (6) controls re-reading |
 | `data directory /app/data is not writable by uid 10001` | Linux host folder owned by another user: `sudo chown -R 10001:10001 data`, or use a named volume |
 
+## Structure scout diagnostics
+
+`docker exec evedm evedm structures stats` prints the resolver's numbers from the database (no network). `docker exec evedm evedm structures probe` reads the asset pages of a few characters (`--characters 5`, `--character ID`, `--max-pages 50`, `--samples 5`) and prints, per `location_type` and `location_flag`, how many distinct location IDs are resolved, refused, new, gone or unknown to the database, and how many are the character's own items, to show which asset locations are really Upwell structures; it only reads ESI asset pages and writes nothing to the structure tables.
+
 ## Local structure index (names for structures nobody here may read)
 
 `scripts/build_structure_index.py` (Python 3.10+, standard library only) builds `data/structure-index.jsonl`, the flat

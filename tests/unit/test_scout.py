@@ -1121,3 +1121,193 @@ async def test_a_missing_or_broken_local_index_changes_nothing(settings, service
     assert (await scout._refresh_directory(force=True))["Local index"] == 0  # unreadable: logged, run goes on
     settings.structures.index_file = str(settings.data_dir / "elsewhere.jsonl")
     assert scout._fetch_local({S_PRIVATE}) == []
+
+
+# --------------------------------------------------------------------------------------- probe (diagnostics)
+P1, P2, P3, P4, P5 = (1_036_000_000_000 + n for n in range(1, 6))  # structure IDs for the probe tests
+SHIP, CARGO = 1_000_000_000_101, 1_000_000_000_102  # a character's own items (ship, container) with big IDs
+
+
+def probe_row(item: int, location: int, ltype: str = "other", flag: str = "Hangar", type_id: int = 587) -> dict:
+    return {"item_id": item, "location_id": location, "location_type": ltype, "location_flag": flag, "type_id": type_id}
+
+
+def probe_db(db) -> None:
+    now = time.time()
+    with db.tx() as conn:
+        conn.executemany(
+            "INSERT INTO known_structures(structure_id, status, first_seen, last_seen, checked_at) VALUES(?,?,?,?,0)",
+            [(P1, "ok", now, now), (P2, "no_access", now, now), (P3, "new", now, now), (P4, "gone", now, now)],
+        )  # P5 is not stored
+    db.save_type_names({28352: "Rorqual", 3294: "Container"})
+
+
+def probe_assets_of_two(db):
+    from evedm.probe import probe_assets
+
+    probe_db(db)
+    a = [
+        probe_row(1_000_000_000_001, 60003760, "station"),  # an NPC station: below 1e12, never counted
+        probe_row(SHIP, P1, type_id=28352),  # the character's ship, in structure P1
+        probe_row(1_000_000_000_103, P1),  # a second row at P1
+        probe_row(1_000_000_000_104, P2),
+        probe_row(1_000_000_000_105, P3, flag="AutoFit"),
+        probe_row(1_000_000_000_106, P4, flag="CorpDeliveries"),
+        probe_row(1_000_000_000_107, P5, flag="OfficeFolder"),
+        probe_row(CARGO, SHIP, "item", "Cargo", 3294),  # inside the ship: a location that is the character's own item
+        probe_row(1_000_000_000_108, SHIP, "item", "DroneBay"),
+        probe_row(1_000_000_000_109, CARGO, "item", "Unlocked"),
+    ]
+    b = [probe_row(2_000_000_000_001, P1), probe_row(2_000_000_000_002, P2), probe_row(2_000_000_000_003, P2)]
+    return probe_assets({A: a, B: b}, db, samples=1)
+
+
+def bucket_of(buckets: list[dict], ltype: str, flag: str) -> dict:
+    return next(b for b in buckets if b["location_type"] == ltype and b["location_flag"] == flag)
+
+
+def test_probe_groups_locations_by_type_and_flag_with_database_status(db):
+    report = probe_assets_of_two(db)
+    mine = report["characters"][str(A)]
+    assert mine["assets"] == 10 and mine["assets_at_1e12_or_more"] == 9  # the station row is left out
+    hangar = bucket_of(mine["buckets"], "other", "Hangar")
+    assert (hangar["rows"], hangar["locations"], hangar["own_item"]) == (2 + 1, 2, 0)
+    assert hangar["db"] == {"ok": 1, "no_access": 1, "new": 0, "gone": 0, "not_in_db": 0}
+    assert {k: len(v) for k, v in hangar["samples"].items()} == {"ok": 1, "no_access": 1}  # samples=1
+    assert bucket_of(mine["buckets"], "other", "AutoFit")["db"]["new"] == 1
+    assert bucket_of(mine["buckets"], "other", "CorpDeliveries")["db"]["gone"] == 1
+    assert bucket_of(mine["buckets"], "other", "OfficeFolder")["db"]["not_in_db"] == 1
+    assert report["characters"][str(B)]["assets_at_1e12_or_more"] == 3
+
+
+def test_probe_counts_locations_that_are_the_characters_own_items(db):
+    mine = probe_assets_of_two(db)["characters"][str(A)]["buckets"]
+    cargo, drone = bucket_of(mine, "item", "Cargo"), bucket_of(mine, "item", "DroneBay")
+    assert (cargo["locations"], cargo["own_item"]) == (1, 1) and cargo["db"]["not_in_db"] == 1
+    assert cargo["own_item_parent_types"] == [{"type_id": 28352, "name": "Rorqual", "count": 1}]
+    assert drone["own_item_parent_types"][0]["name"] == "Rorqual"
+    # a container inside the ship holds an item: its parent type is the container, named from type_names
+    assert bucket_of(mine, "item", "Unlocked")["own_item_parent_types"] == [
+        {"type_id": 3294, "name": "Container", "count": 1}
+    ]
+    assert bucket_of(mine, "other", "Hangar")["own_item_parent_types"] == []
+
+
+def test_probe_total_counts_each_location_once_and_the_verdict_reads_the_other_flags(db):
+    report = probe_assets_of_two(db)
+    total = report["total"]
+    assert total["characters"] == 2 and total["assets"] == 13 and total["assets_at_1e12_or_more"] == 12
+    hangar = bucket_of(total["buckets"], "other", "Hangar")
+    assert (hangar["rows"], hangar["locations"]) == (3 + 3, 2)  # P1 and P2 once, although both characters hold assets
+    assert hangar["db"]["ok"] == 1 and hangar["db"]["no_access"] == 1
+    flags = report["verdict"]["location_type_other_by_flag"]
+    assert set(flags) == {"Hangar", "AutoFit", "CorpDeliveries", "OfficeFolder"}  # only location_type "other"
+    assert flags["Hangar"] == {
+        "distinct_ids": 2,
+        "ok": 1,
+        "no_access": 1,
+        "ok_share": 0.5,
+        "no_access_share": 0.5,
+        "new_gone_or_not_in_db": 0,
+        "own_item": 0,
+        "reading": "mostly_resolved",
+    }
+    assert flags["AutoFit"]["reading"] == "mixed" and flags["AutoFit"]["new_gone_or_not_in_db"] == 1
+
+
+def test_probe_picks_the_characters_with_the_most_sightings_or_the_ones_asked_for(db):
+    from evedm.probe import pick_characters
+
+    sight(db, A, P1)
+    sight(db, B, P1, P2)
+    readers = [(A, A, []), (B, B, []), (C, C, [])]
+    assert pick_characters(db, readers, 2) == ([(B, B), (A, A)], [])  # most sightings first
+    assert pick_characters(db, readers, 1)[0] == [(B, B)]
+    picked, skipped = pick_characters(db, readers, 1, [C, 5, C])
+    assert picked == [(C, C)] and skipped == [{"character_id": 5, "reason": "not registered with the assets scope"}]
+
+
+async def test_probe_stops_cleanly_while_esi_is_error_limited(settings, services, world, fake_app, monkeypatch):
+    from evedm.probe import probe_characters
+
+    await link(services, A, A)
+    await link(services, B, B)
+    esi = services["esi"]
+    monkeypatch.setattr(esi, "blocked_for", lambda reserve=5: 17.0)
+    report = await probe_characters(services["db"], services["chars"], esi, [(A, A), (B, B)])
+    assert report["run"]["stopped"] == {"reason": "blocked", "retry_in_s": 17, "before_character": A}
+    assert fake_app.state.fake.calls.get("assets", 0) == 0  # nothing was sent
+    assert report["total"]["characters"] == 0 and report["verdict"] == {"location_type_other_by_flag": {}}
+
+
+def test_probe_command_reads_asset_pages_and_writes_nothing(tmp_path, settings, fake_app, monkeypatch, capsys):
+    from common import FAKE
+    from evedm import cli
+    from evedm.characters import CharacterService
+    from evedm.crypto import TokenCipher
+    from evedm.db import Database
+    from evedm.sso import AuthService
+
+    fake = fake_app.state.fake
+    fake.asset_page_size = 2  # three pages for A: the probe walks all of them
+    fake.assets[A] = [
+        asset(1, S_HIGH, "other"),
+        asset(2, S_HIGH, "other", "AutoFit"),
+        asset(3, S_WH, "other"),
+        asset(4, 1, flag="Cargo"),
+        asset(5, 60003760, "station"),
+    ]
+    fake.assets[B] = [asset(11, S_NULL, "other")]
+
+    async def seed() -> None:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fake_app), base_url=FAKE) as http:
+            db = Database(settings.db_path, settings.sqlite_journal)
+            auth = AuthService(settings.eve, http)
+            chars = CharacterService(db, TokenCipher(settings.secret_key), auth, settings)
+            for cid in (A, B):
+                tokens = await mint(http, cid, scopes=ALL)
+                chars.store(await auth.refresh(tokens["refresh_token"]), owner_id=cid)
+            now = time.time()
+            with db.tx() as conn:
+                conn.executemany(
+                    "INSERT INTO known_structures(structure_id, status, first_seen, last_seen, checked_at) "
+                    "VALUES(?,?,?,?,0)",
+                    [(S_HIGH, "no_access", now, now), (S_WH, "ok", now, now), (S_NULL, "new", now, now)],
+                )
+            sight(db, A, S_HIGH, S_WH)
+            sight(db, B, S_NULL)
+            db.close()
+
+    asyncio.run(seed())
+
+    def tables() -> dict[str, list]:
+        db = Database(settings.db_path, read_only=True)
+        out = {
+            t: [tuple(r) for r in db.query(f"SELECT * FROM {t} ORDER BY 1, 2")]  # noqa: S608
+            for t in ("known_structures", "structure_sightings", "structure_refusals")
+        }
+        db.close()
+        return out
+
+    before = tables()
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(cli, "_settings", lambda args: settings)
+    fake_client = lambda **kw: real_client(transport=httpx.ASGITransport(app=fake_app), base_url=FAKE)  # noqa: E731
+    monkeypatch.setattr("evedm.web.app.httpx.AsyncClient", fake_client)
+    assert cli.main(["structures", "probe", "--characters", "1", "--samples", "2"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["run"]["characters"] == [A] and out["run"]["stopped"] is None and out["run"]["skipped"] == []
+    assert out["characters"][str(A)]["read"] == {"pages_read": 3, "pages_total": 3, "complete": True, "error": None}
+    assert fake.calls["assets"] == 3 and fake.calls.get("structure", 0) == 0  # asset pages only
+    flags = out["verdict"]["location_type_other_by_flag"]
+    assert flags["Hangar"]["distinct_ids"] == 2 and flags["Hangar"]["ok"] == 1 and flags["Hangar"]["no_access"] == 1
+    assert flags["AutoFit"]["no_access"] == 1 and flags["AutoFit"]["reading"] == "mostly_refused"
+    assert tables() == before  # not one row of the structure tables changed
+    # --character overrides the choice and says which requested ones cannot be read
+    assert cli.main(["structures", "probe", "--character", str(B), "--character", "7", "--max-pages", "1"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["run"]["characters"] == [B] and out["run"]["max_pages"] == 1
+    assert out["run"]["skipped"] == [{"character_id": 7, "reason": "not registered with the assets scope"}]
+    assert tables() == before
+    text = json.dumps(out)
+    assert "token" not in text and "Bravo" not in text  # no tokens, no character names

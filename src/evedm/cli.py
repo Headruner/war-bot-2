@@ -264,12 +264,34 @@ def cmd_wars(args: argparse.Namespace) -> int:
 
 def cmd_structures(args: argparse.Namespace) -> int:
     from .db import Database
-    from .scout import StructureScout
+    from .scout import READ_ASSETS, StructureScout
 
     s = _settings(args)
     if not s.db_path.exists():
         print(f"evedm: no database at {s.db_path}", file=sys.stderr)
         return 2
+    if args.action == "probe":
+        from .probe import pick_characters, probe_characters
+
+        svc = _services(s)  # the same clients the web app uses; only asset pages are read, nothing is stored
+        scout = svc.scout or StructureScout(s, svc.db, svc.graph, svc.chars, svc.esi)  # type: ignore[arg-type]
+        picked, skipped = pick_characters(svc.db, scout.contributors(READ_ASSETS), args.characters, args.character)
+
+        async def run() -> dict:
+            try:
+                return await probe_characters(
+                    svc.db, svc.chars, svc.esi, picked, max_pages=args.max_pages, samples=args.samples  # type: ignore[arg-type]
+                )
+            finally:
+                await svc.http.aclose()
+
+        try:
+            report = asyncio.run(run())
+        finally:
+            svc.db.close()
+        report["run"]["skipped"] = skipped
+        print(json.dumps(report, indent=2))
+        return 0
     db = Database(s.db_path, read_only=True)  # no migration, no write: safe next to a running server
     try:
         # stats() reads the database only; the graph, the character service and the ESI client are not needed
@@ -364,8 +386,14 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--owner", type=int, default=0, help="main character ID whose characters are exported")
     sp.set_defaults(fn=cmd_export)
 
-    sp = sub.add_parser("structures", help="structure scout numbers from the database (no network)")
-    sp.add_argument("action", choices=["stats"])
+    sp = sub.add_parser(
+        "structures", help="structure scout diagnostics: stats (database only) or probe (reads asset pages from ESI)"
+    )
+    sp.add_argument("action", choices=["stats", "probe"])
+    sp.add_argument("--characters", type=int, default=5, help="probe: this many characters with the most sightings")
+    sp.add_argument("--character", type=int, action="append", help="probe: this character ID (repeatable; overrides)")
+    sp.add_argument("--max-pages", type=int, default=50, help="probe: asset pages read per character")
+    sp.add_argument("--samples", type=int, default=5, help="probe: example location IDs per type, flag and status")
     sp.set_defaults(fn=cmd_structures)
 
     sp = sub.add_parser("launches", help="show recorded launches")
