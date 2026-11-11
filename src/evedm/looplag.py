@@ -16,6 +16,8 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from .activity import describe
+
 log = logging.getLogger("evedm.looplag")
 
 INTERVAL_S = 1.0
@@ -34,6 +36,7 @@ class LoopLagMonitor:
         warn_every_s: float = WARN_EVERY_S,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+        what: Callable[[], str | None] = describe,
     ):
         self.interval_s = interval_s
         self.warn_s = warn_s
@@ -41,6 +44,7 @@ class LoopLagMonitor:
         self.warn_every_s = warn_every_s
         self._clock = clock
         self._sleep = sleep
+        self._what = what  # names the open activities of the services (activity.py)
         self._samples: deque[tuple[float, float]] = deque()  # (when, overshoot in seconds)
         self._last_warn = -1e18
         self.warnings = 0
@@ -55,9 +59,10 @@ class LoopLagMonitor:
         if overshoot_s > self.warn_s and now - self._last_warn >= self.warn_every_s:
             self._last_warn = now
             self.warnings += 1
+            culprit = self._what()
             log.warning(
-                "event loop blocked for %.1f s (max %.1f s in the last %.0f min): reads, posts and requests waited",
-                overshoot_s, self.max_s(), self.window_s / 60,
+                "event loop blocked for %.1f s%s (max %.1f s in the last %.0f min): reads, posts and requests waited",
+                overshoot_s, f" during {culprit}" if culprit else "", self.max_s(), self.window_s / 60,
             )
 
     def max_s(self) -> float:

@@ -239,6 +239,8 @@ async def test_the_lag_report_has_percentiles_a_histogram_and_the_split(ns, serv
     store(db, A, 2, 300, now - 2400 + 1)
     store(db, A, 3, 900, now - 1800 + 1)
     store(db, A, 4, 90000, now - 1800 + 2)
+    store(db, A, 5, 5000, now - 1800 + 3)  # matched, but older than two windows: backlog, not in the headline
+    store(db, B, 6, 100, now - 60)  # B has no read in the log: unmatched, not in the headline
     out = ns.lag(24, now)
     assert out["reads"] == {"n": 5, "200": 2, "304": 2, "no_request": 0, "errors": 1}
     assert out["data_age_s"]["p50"] == 30.0 and out["data_age_s"]["max"] == 40.0 and out["data_age_s"]["n"] == 4
@@ -247,7 +249,9 @@ async def test_the_lag_report_has_percentiles_a_histogram_and_the_split(ns, serv
     assert d["n"] == 3 and near(d["p50"], 300, 1.5) and near(d["max"], 900, 1.5) and d["history_ignored"] == 1
     hist = d["histogram"]
     assert hist["0-120"] == 1 and hist["240-360"] == 1 and hist["840-960"] == 1
-    assert sum(hist.values()) == 3 and ">=1800" in hist and len(hist) == 16  # the open last bucket
+    assert sum(hist.values()) == 3 and len(hist) == 10 and list(hist)[-1] == "1080-1200"  # up to two windows
+    assert d["backlog"] == 1 and d["unmatched"] == 1 and d["max_delay_s"] == 1200.0
+    assert out["data_age_s"]["ge_300"] == {"n": 0, "share": 0.0}
     assert d["read_on_time"]["n"] == 2 and d["read_late"]["n"] == 1 and near(d["read_late"]["max"], 900, 1.5)
     assert out["characters"]["registered"] == 2 and out["characters"]["eligible"] == 1
     assert out["characters"]["excluded_by_gate"] == [B] and out["characters"]["min_structures"] == 1
@@ -263,6 +267,10 @@ async def test_the_lag_report_names_the_biggest_component(ns, services):
     assert ns.lag(1, now)["reading"]["dominant"] == "no data"
     for i in range(10):  # reads on time, data fresh: ESI's window
         add_read(db, A, now - 3000 + i * 300, status=304, data_age_s=2.0)
+    few = ns.lag(1, now)["reading"]  # no notification in the headline yet: no conclusion
+    assert few["dominant"] == "too few samples" and "too few samples: 0" in few["text"]
+    for n in range(20):
+        store(db, A, 100 + n, 100 + n, now - 200)  # 20 matched notifications within two windows
     assert ns.lag(1, now)["reading"]["dominant"] == "within the cache window"
     for i in range(3):  # a third of the reads late
         add_read(db, A, now - 100 + i, late_s=200.0)
@@ -286,6 +294,53 @@ async def test_the_lag_report_lists_the_characters_not_read_in_the_last_hour(ns,
     add_read(db, B, now - 60)
     out = ns.lag(24, now)["characters"]
     assert out["not_read_last_hour"] == [A] and out["eligible"] == 2
+
+
+async def test_the_headline_counts_only_matched_notifications_within_two_windows(ns, services):
+    db, now = services["db"], time.time()
+    await add_character(services, A)
+    add_read(db, A, now - 3000)
+    for n in range(25):
+        store(db, A, 200 + n, 50 + n * 10, now - 2000 + n)  # delays 50..290 s: the headline
+    for n in range(5):
+        store(db, A, 300 + n, 14000 + n, now - 1500 + n)  # a character not read for hours: backlog
+    store(db, A, 400, 1199, now - 1400)  # right under two windows: still the headline
+    store(db, A, 401, 1250, now - 1300)  # right over: backlog
+    store(db, A, 410, 200000, now - 1200)  # more than a day: history, nothing else
+    store(db, B, 420, 70, now - 1100)  # a character without a read in the log: unmatched
+    out = ns.lag(2, now)["delivery_delay_s"]
+    assert out["n"] == 26 and out["backlog"] == 6 and out["unmatched"] == 1 and out["history_ignored"] == 1
+    assert out["p50"] < 300 and near(out["max"], 1199, 1.5)  # the 14 000 s backlog does not reach the percentiles
+    assert sum(out["histogram"].values()) == 26 and out["read_on_time"]["n"] == 26 and out["read_late"]["n"] == 0
+    brief = ns.lag_brief(2)
+    assert brief["delay_p50_s"] == out["p50"] and brief["delay_samples"] == 26 and brief["backlog"] == 6
+    assert ns.lag(2, now)["reading"]["dominant"] == "within the cache window"  # 26 samples: enough
+
+
+async def test_a_conclusion_from_reads_still_carries_the_sample_warning(ns, services):
+    db, now = services["db"], time.time()
+    await add_character(services, A)
+    for i in range(5):
+        add_read(db, A, now - 100 + i, status=0, error="ESI 503")
+    r = ns.lag(1, now)["reading"]
+    assert r["dominant"] == "errors" and r["text"].endswith("(delay figures: too few samples: 0)")
+
+
+async def test_reads_with_old_data_are_counted_and_a_recurring_pattern_is_named(ns, services):
+    db, now = services["db"], time.time()
+    await add_character(services, A)
+    for i in range(20):
+        add_read(db, A, now - 3000 + i * 100, status=304, data_age_s=2.0)
+    out = ns.lag(1, now)
+    assert out["data_age_s"]["ge_300"] == {"n": 0, "share": 0.0} and out["reading"]["dominant"] != "ESI data age"
+    add_read(db, A, now - 50, status=200, data_age_s=600.0)  # the one read with data age 600 seen in production
+    out = ns.lag(1, now)
+    assert out["data_age_s"]["ge_300"] == {"n": 1, "share": round(1 / 21, 4)}  # 4.8 %: under 5 %, one is no pattern
+    assert out["reading"]["dominant"] != "ESI data age"
+    add_read(db, A, now - 40, status=200, data_age_s=310.0)  # a second one: 9.5 %, a pattern
+    out = ns.lag(1, now)
+    assert out["data_age_s"]["ge_300"]["n"] == 2 and out["reading"]["dominant"] == "ESI data age"
+    assert "2 of 22 reads" in out["reading"]["text"] and ns.lag_brief(1)["data_age_ge_300"] == 2
 
 
 def test_the_lag_command_prints_json_and_leaves_the_database_alone(tmp_path, capsys):

@@ -55,7 +55,10 @@ Key mechanisms:
   loop sleeps exactly until the earliest due character and a restart keeps the saved `next_check_at`. Each read leaves a
   row in `notification_reads` (`EsiClient.get_with_meta` returns the `ResponseMeta` of the 200 or 304; schema v18) that
   `NotificationService.lag()` / `evedm notifications lag` turn into the delay report, and `LoopLagMonitor`
-  (`looplag.py`) shows in `/api/health` how late the shared event loop wakes up. Each card gets the closer of Thera / Turnur (`EveScout.nearest`) and each closest character its route type.
+  (`looplag.py`) shows in `/api/health` how late the shared event loop wakes up and, with `activity.py` (each service
+  wraps its run in `activity("wars.cycle")`), names the job that held it. The war census builds its heavy results
+  (`_loot_steps`, `corps_at_war`, `wanted_names`) as generators that an async caller drives with a turn of the loop
+  between steps (`_adrain`) and that are warm when a page asks. Each card gets the closer of Thera / Turnur (`EveScout.nearest`) and each closest character its route type.
   Kept fast: a re-read parses only entries not stored yet (`Database.notification_ids`, libyaml loader), any failure
   backs the character off, the purge runs hourly over an index on `created_at` (schema v10), the API measures each
   system once per request and never waits for EVE-Scout once a list exists (`ensure_fresh_soon`), and the page

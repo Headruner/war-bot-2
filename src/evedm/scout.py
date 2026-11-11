@@ -27,6 +27,7 @@ from typing import Any, NamedTuple
 
 import httpx
 
+from .activity import activity
 from .characters import REAUTH, CharacterService
 from .config import ANSIBLEX_SCOPE, STRUCTURE_SCOPES, Settings
 from .crypto import redact
@@ -1173,7 +1174,8 @@ class StructureScout:
     async def _refresh_directory(self, force: bool = False) -> dict[str, int]:
         """Match the public datasets locally (EVE Ref, then Adam4EVE); returns the matches stored per source."""
         async with self._history_lock:  # the hourly step and the job never download at the same time
-            return await self._refresh_directory_locked(force)
+            with activity("scout.datasets"):
+                return await self._refresh_directory_locked(force)
 
     async def _refresh_directory_locked(self, force: bool) -> dict[str, int]:
         found = {"EVE Ref": 0, "Local index": 0, "Adam4EVE": 0}
@@ -1572,7 +1574,8 @@ class StructureScout:
         try:
             while not self._stop.is_set():
                 try:
-                    await self.run()
+                    with activity("scout.run"):
+                        await self.run()
                     self.state["last_error"] = None
                 except Exception as exc:
                     self.state["last_error"] = redact(repr(exc))

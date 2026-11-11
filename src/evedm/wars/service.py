@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .. import __version__
+from ..activity import activity
 from ..config import Settings
 from ..crypto import redact
 from ..db import Database
@@ -355,7 +356,8 @@ class WarService:
         try:
             while not self._stop.is_set():
                 try:
-                    await self.run_cycle()
+                    with activity("wars.cycle"):
+                        await self.run_cycle()
                     self.state["last_error"] = None
                 except WebhookInvalid as e:
                     self.state["last_error"] = redact(f"Discord webhook invalid: {e}")

@@ -21,6 +21,7 @@ from typing import Any
 
 import yaml
 
+from .activity import activity
 from .characters import REAUTH, CharacterService
 from .config import NOTIFICATION_GROUPS, NOTIFICATION_SCOPE, NotificationSettings
 from .crypto import redact
@@ -40,7 +41,10 @@ SHORT_REARMS = 5  # this many short re-arms in a row without anything new: fall 
 LATE_S = 30.0  # a read later than this after its scheduled time is "late" in the lag report
 HISTORY_S = 86400.0  # a notification stored more than this after its timestamp is history (a first read), not lag
 HISTOGRAM_STEP_S = 120
-HISTOGRAM_MAX_S = 1800
+HEADLINE_WINDOWS = 2  # the headline counts delays up to this many cache windows; older ones are backlog
+MIN_SAMPLES = 20  # fewer notifications than this in the headline draw no conclusion
+OLD_DATA_S = 300.0  # a read whose data was this old when ESI sent it
+OLD_DATA_SHARE = 0.05
 MAX_WAITERS = 100  # open "anything new?" requests; more than this are answered at once
 
 GROUP_OF = {t: group for group, types in NOTIFICATION_GROUPS.items() for t in types}
@@ -607,11 +611,9 @@ class NotificationService:
         return {"n": len(vals), "p50": pct(0.5), "p90": pct(0.9), "max": round(vals[-1], 1)}
 
     @staticmethod
-    def _histogram(delays: list[float]) -> dict[str, int]:
-        """Seconds in steps of 120 up to 1800 ("0-120" .. "1680-1800") and the open bucket ">=1800"."""
-        buckets = {
-            f"{lo}-{lo + HISTOGRAM_STEP_S}": 0 for lo in range(0, HISTOGRAM_MAX_S, HISTOGRAM_STEP_S)
-        } | {f">={HISTOGRAM_MAX_S}": 0}
+    def _histogram(delays: list[float], cap_s: float) -> dict[str, int]:
+        """Seconds in steps of 120 up to ``cap_s`` ("0-120" .. "1080-1200"); the headline never holds more."""
+        buckets = {f"{lo}-{lo + HISTOGRAM_STEP_S}": 0 for lo in range(0, int(cap_s), HISTOGRAM_STEP_S)}
         keys = list(buckets)
         for d in delays:
             buckets[keys[min(int(d // HISTOGRAM_STEP_S), len(keys) - 1)]] += 1
@@ -620,7 +622,10 @@ class NotificationService:
     def lag(self, hours: float = 24.0, now: float | None = None) -> dict[str, Any]:
         """What the notifications of the last ``hours`` waited for, from ``notification_reads`` and the stored
         notifications. The delay of a notification is the time from its timestamp (EVE gives it to the minute, so
-        up to a minute of it is rounding) to the moment it was stored; ``reading`` names the biggest component."""
+        up to a minute of it is rounding) to the moment it was stored. The headline counts only notifications matched
+        to a read whose delay is at most two cache windows; older ones are ``backlog`` (a character that was not read
+        for a while), ones with no read in the log ``unmatched`` and ones over a day old ``history_ignored``.
+        ``reading`` names the biggest component."""
         now = time.time() if now is None else now
         since = now - hours * 3600
         reads = self.db.notification_reads(since)
@@ -634,6 +639,10 @@ class NotificationService:
         lifetime = self._stats([r["lifetime_s"] for r in reads])
         late = self._stats([r["late_s"] for r in reads])
         late_share = sum(1 for r in reads if (r["late_s"] or 0.0) >= LATE_S) / len(reads) if reads else 0.0
+        aged = [r["data_age_s"] for r in reads if r["data_age_s"] is not None]
+        old = sum(1 for v in aged if v >= OLD_DATA_S)
+        data_age = {**data_age, "ge_300": {"n": old, "share": round(old / len(aged), 4) if aged else None}}
+        cap = HEADLINE_WINDOWS * window
 
         times: dict[int, list[float]] = {}
         late_of: dict[int, list[float | None]] = {}
@@ -643,7 +652,7 @@ class NotificationService:
         delays: list[float] = []
         on_time: list[float] = []
         late_reads: list[float] = []
-        unmatched = history = 0
+        unmatched = history = backlog = 0
         for row in self.db.notifications_stored_since(since):
             try:
                 stamp = datetime.fromisoformat(str(row["timestamp"]).replace("Z", "+00:00")).timestamp()
@@ -653,20 +662,28 @@ class NotificationService:
             if delay > HISTORY_S:
                 history += 1
                 continue
-            delays.append(delay)
             ts = times.get(row["character_id"], [])
             i = bisect_right(ts, row["created_at"] + 1.0) - 1  # the read that stored it
             if i < 0:
                 unmatched += 1
-            elif (late_of[row["character_id"]][i] or 0.0) < LATE_S:
-                on_time.append(delay)
+            elif delay > cap:
+                backlog += 1
             else:
-                late_reads.append(delay)
+                delays.append(delay)
+                (on_time if (late_of[row["character_id"]][i] or 0.0) < LATE_S else late_reads).append(delay)
 
         pollable = self.pollable()
         eligible = self.eligible()
         recent = {r["character_id"] for r in reads if r["read_at"] >= now - 3600 and not r["error"]}
-        thresholds = {"errors_share": 0.1, "late_s": LATE_S, "data_age_s": 60.0, "window_s": window}
+        thresholds = {
+            "errors_share": 0.1,
+            "late_s": LATE_S,
+            "data_age_s": 60.0,
+            "data_age_300_share": OLD_DATA_SHARE,
+            "window_s": window,
+            "headline_max_delay_s": cap,
+            "min_samples": MIN_SAMPLES,
+        }
         delivery = self._stats(delays)
         if not reads:
             dominant, text = "no data", f"no reads recorded in the last {hours:g} h (is the poller running?)"
@@ -679,15 +696,25 @@ class NotificationService:
                 f"{late_share:.0%} of the reads started {LATE_S:.0f} s or more after their time "
                 f"(p90 {late['p90']} s): blocked event loop, a slow ESI answer or the app was not running"
             )
-        elif (data_age["p50"] or 0.0) >= thresholds["data_age_s"]:
+        elif (data_age["p50"] or 0.0) >= thresholds["data_age_s"] or (
+            aged and old / len(aged) >= OLD_DATA_SHARE
+        ):
             dominant = "ESI data age"
-            text = f"ESI sends data that is already {data_age['p50']} s old (median): its own delay before the cache"
+            text = (
+                f"ESI sends data that is already old: median {data_age['p50']} s, {old} of {len(aged)} reads "
+                f"{OLD_DATA_S:.0f} s or more (its own delay before the cache)"
+            )
+        elif len(delays) < MIN_SAMPLES:
+            dominant = "too few samples"
+            text = f"too few samples: {len(delays)} notifications in the headline, {MIN_SAMPLES} needed"
         else:
             dominant = "within the cache window"
             text = (
                 f"reads are on time and ESI's data is fresh: the delay is ESI's {window:.0f} s cache window "
                 f"(median about {window / 2:.0f} s, worst case about {window:.0f} s)"
             )
+        if reads and dominant not in ("too few samples", "no data") and len(delays) < MIN_SAMPLES:
+            text += f" (delay figures: too few samples: {len(delays)})"
         return {
             "hours": hours,
             "reads": {
@@ -702,9 +729,11 @@ class NotificationService:
             "late_s": late,
             "delivery_delay_s": {
                 **delivery,
-                "histogram": self._histogram(delays),
-                "read_on_time": {**self._stats(on_time), "histogram": self._histogram(on_time)},
-                "read_late": {**self._stats(late_reads), "histogram": self._histogram(late_reads)},
+                "max_delay_s": cap,
+                "histogram": self._histogram(delays, cap),
+                "read_on_time": {**self._stats(on_time), "histogram": self._histogram(on_time, cap)},
+                "read_late": {**self._stats(late_reads), "histogram": self._histogram(late_reads, cap)},
+                "backlog": backlog,
                 "unmatched": unmatched,
                 "history_ignored": history,
             },
@@ -730,6 +759,9 @@ class NotificationService:
             "errors": full["reads"]["errors"],
             "delay_p50_s": full["delivery_delay_s"]["p50"],
             "delay_p90_s": full["delivery_delay_s"]["p90"],
+            "delay_samples": full["delivery_delay_s"]["n"],
+            "backlog": full["delivery_delay_s"]["backlog"],
+            "data_age_ge_300": full["data_age_s"]["ge_300"]["n"],
             "late_p90_s": full["late_s"]["p90"],
             "data_age_p50_s": full["data_age_s"]["p50"],
             "eligible": full["characters"]["eligible"],
@@ -802,7 +834,8 @@ class NotificationService:
         try:
             while not self._stop.is_set():
                 try:
-                    await self.poll_once(post=True)
+                    with activity("notifications.poll"):
+                        await self.poll_once(post=True)
                     self.state["last_error"] = None
                     if self.notifier is not None and self._post_pending and time.time() >= self._post_retry_at:
                         await self.post_discord()

@@ -230,6 +230,25 @@ class NotificationDiscordSettings:
 
 
 @dataclass
+class NotificationZkbSettings:
+    """Asset safety notifications: was a structure of that type killed in that system around the notification?
+
+    ESI says a structure's items were moved to asset safety; zKillboard shows whether it was really destroyed (and
+    not unanchored or abandoned). Killmails appear late, so the check repeats every ``interval_s`` until
+    ``duration_s`` after the notification was received."""
+
+    enabled: bool = True
+    types: list[str] = field(default_factory=lambda: ["StructureItemsMovedToSafety"])  # ESI notification types checked
+    window_s: float = 300.0  # the kill must be within +- this of the notification's own timestamp
+    interval_s: float = 60.0  # between two checks
+    duration_s: float = 300.0  # checks go on until this long after the notification was received
+    api_enabled: bool = True  # ask zKillboard's API when the live feed has no match (the feed may have been down)
+    api_url: str = "https://zkillboard.com/api"
+    min_api_gap_s: float = 10.0  # at most one zKillboard API request per this many seconds, over all checks
+    max_resolve: int = 3  # killmails per check whose time is read from ESI when the API list carries none
+
+
+@dataclass
 class NotificationSettings:
     """Character notifications from ESI: asset safety and structure attacks (UC-13).
 
@@ -257,6 +276,7 @@ class NotificationSettings:
     stagger_s: float = 60.0
     wait_s: float = 20.0  # how long the page's "anything new?" request is held open (long poll)
     discord: NotificationDiscordSettings = field(default_factory=NotificationDiscordSettings)
+    zkb_check: NotificationZkbSettings = field(default_factory=NotificationZkbSettings)
 
     def default_types(self) -> list[str]:
         return [t for g in self.groups for t in NOTIFICATION_GROUPS.get(g, [])]
@@ -364,6 +384,13 @@ class Settings:
                 raise ConfigError(
                     f"notifications.discord.groups: unknown {unknown_d}; max_age_min must be above 0"
                 )
+            z = n.zkb_check
+            if z.window_s <= 0 or z.interval_s < 5 or z.duration_s < 0 or z.min_api_gap_s < 0 or z.max_resolve < 0:
+                raise ConfigError(
+                    "notifications.zkb_check: window_s > 0, interval_s >= 5, duration_s >= 0, min_api_gap_s >= 0"
+                )
+            if z.enabled and not z.api_url.startswith(("http://", "https://")):
+                raise ConfigError("notifications.zkb_check.api_url must be an http(s) URL")
             if n.stagger_s < 0 or not 1 <= n.wait_s <= 60:
                 raise ConfigError("notifications.stagger_s >= 0 and wait_s between 1 and 60")
             unknown = [g for g in n.groups if g not in NOTIFICATION_GROUPS]
@@ -416,6 +443,7 @@ def _apply(obj: Any, data: dict[str, Any]) -> None:
             AlertDiscordSettings,
             NotificationSettings,
             NotificationDiscordSettings,
+            NotificationZkbSettings,
             AccessSettings,
             EveScoutSettings,
             AnsiblexSettings,

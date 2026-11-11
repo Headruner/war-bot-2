@@ -27,6 +27,7 @@ from typing import Any
 import httpx
 
 from . import __version__
+from .activity import activity
 from .config import AlertSettings
 from .crypto import redact
 from .db import Database
@@ -594,7 +595,8 @@ class AlertService:
         try:
             while not self._stop.is_set():
                 try:
-                    await self.poll_once()
+                    with activity("alerts.poll"):
+                        await self.poll_once()
                     self.state["last_error"] = None
                 except Exception as exc:
                     self.state["last_error"] = redact(repr(exc))

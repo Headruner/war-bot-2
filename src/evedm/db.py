@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 18  # v14: structure_refusals; v15: scout filter_v; v16: dock search; v17: search term and passes
-# v18: notification_reads
+SCHEMA_VERSION = 19  # v14: structure_refusals; v15: scout filter_v; v16: dock search; v17: search term and passes
+# v18: notification_reads; v19: notification_zkb
 READS_RETENTION_DAYS = 7  # notification_reads rows are kept this long (the hourly purge)
 log = logging.getLogger("evedm.db")
 
@@ -253,6 +253,30 @@ CREATE TABLE IF NOT EXISTS notification_reads (
     error        TEXT
 );
 CREATE INDEX IF NOT EXISTS notification_reads_by_time ON notification_reads(read_at);
+-- zKillboard confirmation of an asset safety notification: one row per EVENT (the key of notification_posts), kept
+-- apart from it because a post exists only when Discord is on and is created later than the check
+CREATE TABLE IF NOT EXISTS notification_zkb (
+    event_key         TEXT PRIMARY KEY,
+    notification_type TEXT NOT NULL,
+    solar_system_id   INTEGER,
+    structure_type_id INTEGER,
+    event_at          REAL,                         -- the notification's own timestamp
+    received_at       REAL NOT NULL,                -- when the first character's copy was stored
+    status            TEXT NOT NULL,                -- pending | found | not_found | skipped
+    planned           INTEGER NOT NULL DEFAULT 0,   -- checks planned until the deadline
+    checks            INTEGER NOT NULL DEFAULT 0,   -- checks made
+    next_check_at     REAL,
+    deadline_at       REAL,
+    killmail_id       INTEGER,
+    killmail_time     TEXT,
+    zkb_url           TEXT,
+    source            TEXT,                         -- feed | api
+    error             TEXT,                         -- the last zKillboard API problem (the check went on with the feed)
+    character_id      INTEGER,                      -- the first notification of the event: its message is rebuilt
+    notification_id   INTEGER,
+    updated_at        REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS notification_zkb_by_status ON notification_zkb(status, next_check_at);
 CREATE TABLE IF NOT EXISTS target_history (
     owner_id        INTEGER NOT NULL DEFAULT 0,
     solar_system_id INTEGER NOT NULL,
@@ -771,6 +795,7 @@ class Database:
         self.execute(
             "DELETE FROM notification_reads WHERE read_at < ?", (time.time() - READS_RETENTION_DAYS * 86400,)
         )
+        self.execute("DELETE FROM notification_zkb WHERE received_at < ?", (cutoff,))
         return self.execute("DELETE FROM character_notifications WHERE created_at < ?", (cutoff,))
 
     def due_notification_characters(self, character_ids: list[int], now: float | None = None) -> list[int]:
@@ -830,6 +855,98 @@ class Database:
             "SELECT character_id, timestamp, created_at FROM character_notifications WHERE created_at >= ?",
             (since,),
         )
+
+    # -- zKillboard check of asset safety notifications -----------------------------------------------
+    def zkb_check(self, event_key: str) -> sqlite3.Row | None:
+        rows = self.query("SELECT * FROM notification_zkb WHERE event_key=?", (event_key,))
+        return rows[0] if rows else None
+
+    def zkb_checks(self, event_keys: list[str]) -> dict[str, sqlite3.Row]:
+        out: dict[str, sqlite3.Row] = {}
+        for start in range(0, len(event_keys), 900):
+            chunk = event_keys[start : start + 900]
+            marks = ",".join("?" * len(chunk))
+            sql = f"SELECT * FROM notification_zkb WHERE event_key IN ({marks})"  # noqa: S608 - placeholders only
+            out.update({r["event_key"]: r for r in self.query(sql, tuple(chunk))})
+        return out
+
+    def create_zkb_check(self, **fields: Any) -> bool:
+        """Insert the check of an event; False when the event already has one (another character's copy)."""
+        fields.setdefault("updated_at", time.time())
+        cols = ",".join(fields)
+        marks = ",".join("?" * len(fields))
+        return bool(
+            self.execute(f"INSERT OR IGNORE INTO notification_zkb({cols}) VALUES({marks})", tuple(fields.values()))  # noqa: S608
+        )
+
+    def update_zkb_check(self, event_key: str, **fields: Any) -> None:
+        fields["updated_at"] = time.time()
+        sets = ",".join(f"{k}=?" for k in fields)
+        self.execute(f"UPDATE notification_zkb SET {sets} WHERE event_key=?", (*fields.values(), event_key))  # noqa: S608
+
+    def pending_zkb_checks(self) -> list[sqlite3.Row]:
+        return self.query("SELECT * FROM notification_zkb WHERE status='pending' ORDER BY next_check_at")
+
+    def zkb_counts(self, since: float = 0.0) -> dict[str, int]:
+        """Checks by status received since ``since`` and how many of them met a zKillboard API problem."""
+        out = {"pending": 0, "found": 0, "not_found": 0, "skipped": 0, "api_errors": 0}
+        if not self.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='notification_zkb'"):
+            return out  # a database that was not migrated yet (the read-only CLI)
+        for status, n, errors in self.query(
+            "SELECT status, COUNT(*), SUM(error IS NOT NULL) FROM notification_zkb WHERE received_at >= ? "
+            "GROUP BY status",
+            (since,),
+        ):
+            out[status] = n
+            out["api_errors"] += int(errors or 0)
+        return out
+
+    def destroyed_structures(self, system_id: int, type_id: int) -> list[sqlite3.Row]:
+        """Killmails of the live feed whose victim is a structure of ``type_id`` in ``system_id``, newest first."""
+        return self.query(
+            "SELECT killmail_id, killmail_hash, killmail_time FROM structure_alerts WHERE kind='destroyed' "
+            "AND solar_system_id=? AND structure_type_id=? ORDER BY killmail_time DESC LIMIT 50",
+            (system_id, type_id),
+        )
+
+    def notification_row(self, character_id: int, notification_id: int) -> sqlite3.Row | None:
+        rows = self.query(
+            "SELECT * FROM character_notifications WHERE character_id=? AND notification_id=?",
+            (character_id, notification_id),
+        )
+        return rows[0] if rows else None
+
+    def structure_types(self, structure_ids: list[int]) -> dict[int, int]:
+        """structure_id -> type ID from the scout's finds, else the public structure history."""
+        out: dict[int, int] = {}
+        ids = sorted({int(i) for i in structure_ids if i})
+        for start in range(0, len(ids), 900):
+            chunk = ids[start : start + 900]
+            marks = ",".join("?" * len(chunk))
+            for table in ("known_structures", "public_structure_history"):
+                sql = f"SELECT structure_id, type_id FROM {table} WHERE type_id IS NOT NULL AND structure_id IN ({marks})"  # noqa: S608
+                for sid, tid in self.query(sql, tuple(chunk)):
+                    out.setdefault(sid, tid)
+        return out
+
+    def structure_type_names(self, type_ids: list[int]) -> dict[int, str]:
+        """Type names the app already knows (the Structures page's names, ranking's, the alerts' and the history's)."""
+        out: dict[int, str] = {}
+        ids = sorted({int(i) for i in type_ids if i})
+        for start in range(0, len(ids), 900):
+            chunk = ids[start : start + 900]
+            marks = ",".join("?" * len(chunk))
+            for sql in (
+                f"SELECT entity_id, name FROM entity_names WHERE category='inventory_type' AND entity_id IN ({marks})",  # noqa: S608
+                f"SELECT type_id, name FROM type_names WHERE type_id IN ({marks})",  # noqa: S608
+                f"SELECT type_id, name FROM type_groups WHERE name IS NOT NULL AND type_id IN ({marks})",  # noqa: S608
+                f"SELECT type_id, type_name FROM public_structure_history WHERE type_name IS NOT NULL "  # noqa: S608
+                f"AND type_id IN ({marks})",
+            ):
+                for tid, name in self.query(sql, tuple(chunk)):
+                    if name:
+                        out.setdefault(tid, name)
+        return out
 
     def notification_checks(self) -> dict[int, sqlite3.Row]:
         return {r["character_id"]: r for r in self.query("SELECT * FROM notification_characters")}

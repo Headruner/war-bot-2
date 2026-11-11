@@ -12,8 +12,11 @@ import json
 import logging
 import time
 from collections import Counter
+from collections.abc import Generator
+from functools import lru_cache
 from typing import Any
 
+from ..activity import activity
 from ..db import Database
 from ..universe import GateGraph
 from .config import WarsSettings
@@ -27,6 +30,35 @@ TOMBSTONE = "1970-01-01T00:00:00Z"  # finished time stored for IDs ESI does not 
 ALLIANCE_CORPS_TTL_S = 86400
 NAMES_COOLDOWN_S = 60  # after a failed on-demand name lookup, pages are served without asking ESI again
 STATES = ("fighting", "pending", "ending")  # order of interest for the structure list
+
+
+@lru_cache(maxsize=65536)
+def _allies(raw: str) -> tuple[tuple[Any, Any], ...]:
+    """The allies column parsed once per distinct text (most are "[]"); read-only, so safe to share."""
+    return tuple((a, kind) for a, kind in json.loads(raw))
+
+
+def _drain(gen: Generator[None, None, Any]) -> Any:
+    """Run a stepwise computation to its end without yielding to the event loop (callers that are not async)."""
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        return stop.value
+
+
+async def _adrain(gen: Generator[None, None, Any]) -> Any:
+    """Run a stepwise computation, giving the event loop a turn at every step: no long synchronous section."""
+    try:
+        while True:
+            next(gen)
+            await asyncio.sleep(0)
+    except StopIteration as stop:
+        return stop.value
+
+
+STEP_ROWS = 400  # wars handled between two turns of the event loop
+STEP_WORK = 2500  # structures / corporations handled between two turns
 
 
 def iso(t: float | None = None) -> str:
@@ -81,7 +113,8 @@ class WarCensus:
         self.esi = esi
         self.structures = structures
         self.version = 0  # bumped whenever stored census data changes (cache key)
-        self._loot: tuple[tuple[int, float], list[dict[str, Any]]] | None = None
+        self._loot: tuple[Any, list[dict[str, Any]]] | None = None
+        self._at_war: tuple[int, str | None, dict[int, list[int]]] | None = None
         self._stats: tuple[tuple[int, float, int], dict[str, Any]] | None = None
         self.last_run: dict[str, Any] = {}
         self._names_lock = asyncio.Lock()
@@ -161,11 +194,16 @@ class WarCensus:
 
     async def run(self) -> dict[str, Any]:
         """One census step: new war IDs, part of the backwards scan, due refreshes, names, alliance members."""
+        with activity("wars.census"):
+            return await self._run()
+
+    async def _run(self) -> dict[str, Any]:
         t0 = time.time()
         newest = sorted({int(i) for i in (await self.esi.wars() or [])}, reverse=True)
         stats = {"new": 0, "scanned_pages": 0, "refreshed": 0, "failed": 0}
         if newest:
-            unknown = [i for i in newest if i not in self._known(newest)]
+            known = self._known(newest)  # once: asking per ID made this one synchronous block of seconds
+            unknown = [i for i in newest if i not in known]
             stats["failed"] += await self._fetch(unknown)
             stats["new"] = len(unknown)
             await self.ensure_names()
@@ -184,7 +222,8 @@ class WarCensus:
             if not page:
                 self._set_meta("complete", "true")
                 break
-            failed = await self._fetch([i for i in page if i not in self._known(page)])
+            known = self._known(page)
+            failed = await self._fetch([i for i in page if i not in known])
             stats["failed"] += failed
             if failed:  # retry this page next cycle, so no war below it is skipped
                 break
@@ -206,6 +245,8 @@ class WarCensus:
         stats["refreshed"] = len(due)
         await self._alliance_corps()
         await self._names()
+        await _adrain(self._loot_steps())  # the structure list and statistics are served from a warm cache
+        await _adrain(self._corps_at_war_steps())
         self.last_run = stats | {"at": time.time(), "duration_s": round(time.time() - t0, 1)}
         log.info("census: %s", self.last_run)
         return self.last_run
@@ -213,18 +254,26 @@ class WarCensus:
     def active_rows(self) -> list[Any]:
         return self.db.query(f"SELECT * FROM war_census WHERE {ACTIVE} ORDER BY war_id DESC", (iso(),))  # noqa: S608
 
-    def _alliances_at_war(self) -> set[int]:
+    def _alliances_at_war_steps(self) -> Generator[None, None, set[int]]:
         out: set[int] = set()
-        for r in self.active_rows():
+        rows = self.active_rows()
+        yield  # reading the rows is a step of its own
+        for n, r in enumerate(rows):
             for eid, kind in ((r["aggressor_id"], r["aggressor_type"]), (r["defender_id"], r["defender_type"])):
                 if eid and kind == "alliance":
                     out.add(int(eid))
-            out.update(int(a) for a, kind in json.loads(r["allies"]) if a and kind == "alliance")
+            out.update(int(a) for a, kind in _allies(r["allies"]) if a and kind == "alliance")
+            if n % STEP_ROWS == STEP_ROWS - 1:
+                yield
         return out
+
+    def _alliances_at_war(self) -> set[int]:
+        return _drain(self._alliances_at_war_steps())
 
     async def _alliance_corps(self) -> None:
         stored = {r[0]: r[1] for r in self.db.query("SELECT alliance_id, updated_at FROM alliance_corps")}
-        due = [a for a in self._alliances_at_war() if time.time() - stored.get(a, 0) > ALLIANCE_CORPS_TTL_S]
+        at_war = await _adrain(self._alliances_at_war_steps())
+        due = [a for a in at_war if time.time() - stored.get(a, 0) > ALLIANCE_CORPS_TTL_S]
         if not due:
             return
         sem = asyncio.Semaphore(self.s.census_concurrency)
@@ -247,34 +296,65 @@ class WarCensus:
         if rows:
             self.version += 1
 
-    def corps_at_war(self) -> dict[int, list[int]]:
-        """corporation -> active war IDs it is part of (directly, through its alliance, or as an ally)."""
+    def _corps_at_war_steps(self) -> Generator[None, None, dict[int, list[int]]]:
+        """corporation -> active war IDs; cached until the census changes or an active war ends."""
+        cached = self._at_war
+        if cached is not None and cached[0] == self.version and (cached[1] is None or iso() < cached[1]):
+            return cached[2]
+        version = self.version
         alliance_corps = self.alliance_corps()
+        yield
+        rows = self.active_rows()
+        yield
         out: dict[int, list[int]] = {}
-        for r in self.active_rows():
+        seen: dict[int, set[int]] = {}  # membership test of a war list in O(1)
+        ends: list[str] = []
+        work = 0
+        for r in rows:
+            if r["finished"]:
+                ends.append(r["finished"])
             sides = [(r["aggressor_id"], r["aggressor_type"]), (r["defender_id"], r["defender_type"])]
-            sides += [(a, kind) for a, kind in json.loads(r["allies"])]
+            sides += _allies(r["allies"])
             for eid, kind in sides:
                 if not eid:
                     continue
                 for corp in alliance_corps.get(int(eid), []) if kind == "alliance" else [int(eid)]:
-                    wars = out.setdefault(int(corp), [])
-                    if r["war_id"] not in wars:
-                        wars.append(r["war_id"])
+                    marks = seen.setdefault(int(corp), set())
+                    if r["war_id"] not in marks:
+                        marks.add(r["war_id"])
+                        out.setdefault(int(corp), []).append(r["war_id"])
+                    work += 1
+                if work >= STEP_WORK:
+                    work = 0
+                    yield
+        self._at_war = (version, min(ends) if ends else None, out)
         return out
+
+    def corps_at_war(self) -> dict[int, list[int]]:
+        """corporation -> active war IDs it is part of (directly, through its alliance, or as an ally)."""
+        return _drain(self._corps_at_war_steps())
 
     def alliance_corps(self) -> dict[int, list[int]]:
         return {r[0]: json.loads(r[1]) for r in self.db.query("SELECT alliance_id, corps FROM alliance_corps")}
 
+    def _wanted_names_steps(self) -> Generator[None, None, set[int]]:
+        wanted: set[int] = set()
+        rows = self.active_rows()
+        yield
+        for n, r in enumerate(rows):
+            wanted.update(i for i in (r["aggressor_id"], r["defender_id"]) if i)
+            wanted.update(int(a) for a, _ in _allies(r["allies"]) if a)
+            if n % STEP_ROWS == STEP_ROWS - 1:
+                yield
+        for n, row in enumerate((yield from self._loot_steps())):
+            wanted.update((row["owner_id"], row["type_id"]))
+            if n % (STEP_ROWS * 4) == STEP_ROWS * 4 - 1:
+                yield
+        return wanted
+
     def wanted_names(self) -> set[int]:
         """IDs shown by the statistics and the structure list: war sides, allies, structure owners and types."""
-        wanted: set[int] = set()
-        for r in self.active_rows():
-            wanted.update(i for i in (r["aggressor_id"], r["defender_id"]) if i)
-            wanted.update(int(a) for a, _ in json.loads(r["allies"]) if a)
-        for row in self._loot_base():
-            wanted.update((row["owner_id"], row["type_id"]))
-        return wanted
+        return _drain(self._wanted_names_steps())
 
     async def ensure_names(self, ids: set[int] | None = None, timeout: float | None = None) -> int:
         """Resolve every ID still without a name (ESI /universe/names, 1000 per call). Returns names added.
@@ -286,7 +366,7 @@ class WarCensus:
         if timeout is not None and time.time() - self._names_failed_at < NAMES_COOLDOWN_S:
             return 0
         async with self._names_lock:
-            wanted = self.wanted_names() if ids is None else {int(i) for i in ids if i}
+            wanted = await _adrain(self._wanted_names_steps()) if ids is None else {int(i) for i in ids if i}
             known = self.names(list(wanted))
             missing = [i for i in wanted if i not in known]
             if not missing:
@@ -322,8 +402,12 @@ class WarCensus:
         return out
 
     # -- high-sec structures of both sides ------------------------------------------------------------
-    def _loot_base(self) -> list[dict[str, Any]]:
-        """High-sec structures owned by any side of an active war (cached until census or dataset change)."""
+    def _loot_steps(self) -> Generator[None, None, list[dict[str, Any]]]:
+        """High-sec structures owned by any side of an active war (cached until census or dataset change).
+
+        A generator: it yields every few hundred wars or thousand structures so that an async caller can give the
+        event loop a turn (``_adrain``); a plain caller drains it at once (``_loot_base``).
+        """
         if self.structures is None or not self.structures.loaded:
             return []
         key = (self.version, self.structures.last_refresh, self.structures.revision, id(self.structures.index))
@@ -331,9 +415,12 @@ class WarCensus:
             return self._loot[1]
         now_iso = iso()
         alliance_corps = self.alliance_corps()
+        yield
         by_entity: dict[int, list[dict[str, Any]]] = {}
         kinds: dict[int, str] = {}
-        for r in self.active_rows():
+        rows_in = self.active_rows()
+        yield
+        for n, r in enumerate(rows_in):
             war = {
                 "war_id": r["war_id"],
                 "state": war_state(r["started"], r["finished"], now_iso),
@@ -344,18 +431,23 @@ class WarCensus:
             a_kind, d_kind = r["aggressor_type"], r["defender_type"]
             sides = [(r["aggressor_id"], a_kind, "aggressor", r["defender_id"], d_kind)]
             sides.append((r["defender_id"], d_kind, "defender", r["aggressor_id"], a_kind))
-            sides += [(a, kind, "ally", r["aggressor_id"], a_kind) for a, kind in json.loads(r["allies"])]
+            sides += [(a, kind, "ally", r["aggressor_id"], a_kind) for a, kind in _allies(r["allies"])]
             for eid, kind, side, opponent, opponent_kind in sides:
                 if eid:
                     by_entity.setdefault(int(eid), []).append(
                         war | {"side": side, "opponent_id": opponent, "opponent_type": opponent_kind}
                     )
                     kinds[int(eid)] = kind or "corporation"
+            if n % STEP_ROWS == STEP_ROWS - 1:
+                yield
         rows: dict[int, dict[str, Any]] = {}
+        work = 0
         for eid, wars in by_entity.items():
             corps = alliance_corps.get(eid, []) if kinds[eid] == "alliance" else [eid]
             for corp in corps:
-                for st in self.structures.index.get(int(corp), []) if self.structures.index else []:
+                owned = self.structures.index.get(int(corp), []) if self.structures.index else []
+                work += 1 + len(owned)
+                for st in owned:
                     idx = self.g.index.get(st.system_id) if st.system_id else None
                     if idx is None or self.g.sec[idx] < HIGHSEC_MIN:
                         continue
@@ -377,8 +469,12 @@ class WarCensus:
                         }
                     row["entities"].append({"id": eid, "type": kinds[eid]})
                     row["wars"].extend(wars)
+                    work += len(wars)
+                if work >= STEP_WORK:
+                    work = 0
+                    yield
         out = list(rows.values())
-        for row in out:
+        for n, row in enumerate(out):
             seen: set[tuple[int, str]] = set()
             row["wars"] = [
                 w
@@ -387,8 +483,13 @@ class WarCensus:
             ]
             row["state"] = min((w["state"] for w in row["wars"]), key=STATES.index)
             row["sides"] = sorted({"defender" if w["side"] == "ally" else w["side"] for w in row["wars"]})
+            if n % STEP_ROWS == STEP_ROWS - 1:
+                yield
         self._loot = (key, out)
         return out
+
+    def _loot_base(self) -> list[dict[str, Any]]:
+        return _drain(self._loot_steps())
 
     def loot(
         self,
@@ -410,12 +511,10 @@ class WarCensus:
         """
         base = self._loot_base()
         dist, origin = self.g.nearest(sources.keys(), avoid)
-        names = self.names(
-            [r["owner_id"] for r in base]
-            + [r["type_id"] for r in base]
-            + [e["id"] for r in base for e in r["entities"]]
-            + [w["opponent_id"] for r in base for w in r["wars"] if w["opponent_id"]]
-        )
+        wanted = {r["owner_id"] for r in base} | {r["type_id"] for r in base}  # a set: the lists held ~100k repeats
+        wanted.update(e["id"] for r in base for e in r["entities"])
+        wanted.update(w["opponent_id"] for r in base for w in r["wars"] if w["opponent_id"])
+        names = self.names(list(wanted))
         rows = []
         for r in base:
             i = r["system_index"]
