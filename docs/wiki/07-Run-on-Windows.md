@@ -179,14 +179,25 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
   `invalid_scope` (or set `EVE_OPTIONAL_SCOPES=none` in `.env` until you have).
 - Characters added before need to grant them once: sign in again with the main and use **Add character** for each
   alt. The Characters page says "structures not shared" for characters that have not.
-- The scout runs every 60 minutes and reads each character's assets once a day, **page by page**: the structures on
-  every page are saved in the database at once and structures already known are skipped, so a long asset list (or
-  an interrupted run) loses nothing. Only structures count (not containers, ships or NPC stations). A structure stays
-  in the database until it is destroyed or unanchored, even when no character can read it any more; names and owners
-  are re-read every 30 days and refused ones every 14 days.
+- The scout runs every 60 minutes and reads each character's assets once a day. The whole list is read first and
+  only then saved: a read that fails or is cut short saves nothing and keeps the earlier finds. Only items in a
+  Hangar, Deliveries or AssetSafety flag count, and not when the place is one of the character's own ships or
+  containers (those, NPC stations and fitted modules are not structures). After an upgrade from an older rule each
+  character is read again at once and the ships and containers stored as structures are removed automatically (the
+  Characters page counts drop to the real numbers). A structure stays in the database until it is destroyed or
+  unanchored, even when no character can read it any more; names and owners are re-read every 30 days and refused
+  ones every 14 days.
 - Structures of corporations at war (from the Wars census) are marked **at war**, and the high-sec ones also appear
   in the Wars page's High-sec structures tab.
-- The search box and filters are remembered in your browser like the other settings.
+- The search box and filters are remembered in your browser like the other settings. **Source** chooses what is
+  listed: *with assets* (the default: structures where a registered character has items), *can dock, no assets* or
+  *all*. "Can dock" means ESI's character search (`esi-search.search_structures.v1`, the scope Ansiblex mode already
+  asks for) returned the structure for at least one registered character, so that character may dock there even
+  without items; the page shows only how many characters can dock, never which. The search runs once a day per
+  character with the term " - " (every Upwell name is "<System> - <Name>"); a very long result counts as cut off, is
+  completed system by system over the next runs and is never assumed complete. Two things were not verified against
+  live ESI (that " - " matches as a substring and that the result is cut off at 500): check them with
+  `evedm structures search-probe --character ID` (see 06 · Operations) before relying on the list.
 - **Resolve unknown** (button on the page) starts a background job that reads every structure still missing a name,
   owner or system: ESI's public list first, then structures with a character that holds assets there (yours first),
   your main last (`esi-universe.read_structures.v1`). A refusal is remembered per structure and character for 14

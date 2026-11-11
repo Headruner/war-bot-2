@@ -292,6 +292,44 @@ def cmd_structures(args: argparse.Namespace) -> int:
         report["run"]["skipped"] = skipped
         print(json.dumps(report, indent=2))
         return 0
+    if args.action == "search-probe":
+        from .probe import default_search_terms, search_probe
+
+        if not args.character:
+            print("evedm: search-probe needs --character ID", file=sys.stderr)
+            return 2
+        svc = _services(s)
+        scout = svc.scout or StructureScout(s, svc.db, svc.graph, svc.chars, svc.esi)  # type: ignore[arg-type]
+        owners = {cid: own for cid, own, _ in scout.dock_searchers()}
+        wanted = list(dict.fromkeys(args.character))
+        missing = [c for c in wanted if c not in owners]
+        for c in missing:
+            print(f"evedm: character {c} is not registered with both search scopes", file=sys.stderr)
+
+        async def run_search() -> list[dict]:
+            try:
+                return [
+                    await search_probe(
+                        svc.db,
+                        svc.chars,  # type: ignore[arg-type]
+                        svc.esi,  # type: ignore[arg-type]
+                        c,
+                        owners[c],
+                        args.term or default_search_terms(svc.db, svc.graph, c, s.structures.dock_search_term),
+                        cap=s.structures.dock_search_cap,
+                    )
+                    for c in wanted
+                    if c in owners
+                ]
+            finally:
+                await svc.http.aclose()
+
+        try:
+            reports = asyncio.run(run_search())
+        finally:
+            svc.db.close()
+        print(json.dumps(reports[0] if len(reports) == 1 and len(wanted) == 1 else reports, indent=2))
+        return 2 if missing else 0
     db = Database(s.db_path, read_only=True)  # no migration, no write: safe next to a running server
     try:
         # stats() reads the database only; the graph, the character service and the ESI client are not needed
@@ -387,13 +425,23 @@ def main(argv: list[str] | None = None) -> int:
     sp.set_defaults(fn=cmd_export)
 
     sp = sub.add_parser(
-        "structures", help="structure scout diagnostics: stats (database only) or probe (reads asset pages from ESI)"
+        "structures",
+        help="structure scout diagnostics: stats (database only), probe (reads asset pages from ESI) or "
+        "search-probe (runs the dock search terms for a character)",
     )
-    sp.add_argument("action", choices=["stats", "probe"])
+    sp.add_argument("action", choices=["stats", "probe", "search-probe"])
     sp.add_argument("--characters", type=int, default=5, help="probe: this many characters with the most sightings")
-    sp.add_argument("--character", type=int, action="append", help="probe: this character ID (repeatable; overrides)")
+    sp.add_argument(
+        "--character",
+        type=int,
+        action="append",
+        help="probe: this character ID (repeatable; overrides); search-probe: the character to search for",
+    )
     sp.add_argument("--max-pages", type=int, default=50, help="probe: asset pages read per character")
     sp.add_argument("--samples", type=int, default=5, help="probe: example location IDs per type, flag and status")
+    sp.add_argument(
+        "--term", action="append", help="search-probe: a search term (repeatable; default: configured, ' » ', system)"
+    )
     sp.set_defaults(fn=cmd_structures)
 
     sp = sub.add_parser("launches", help="show recorded launches")

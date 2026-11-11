@@ -79,22 +79,27 @@ function row(r) {
     owner.append(w);
   }
   const seen = el("td", "small");
-  seen.append(el("div", null, ago(r.last_seen)), el("div", null, `${r.seen_by} character${r.seen_by === 1 ? "" : "s"}`));
+  seen.append(el("div", null, ago(r.last_seen)));
+  if (r.seen_by || source === "assets") seen.append(el("div", null, `${r.seen_by} character${r.seen_by === 1 ? "" : "s"}`));
+  // who may dock is shown as a count only, and only when the page also lists structures without assets
+  if (r.dock_by && source !== "assets") seen.append(el("div", null, `${r.dock_by} can dock`));
   if (!r.access && r.status === "ok") seen.append(el("div", null, "structure details currently unavailable from ESI"));
   tr.append(jumps, sys, st, owner, seen);
   return tr;
 }
 
-const DEFAULTS = { q: "", space: "", region: "", type: "", war: false, sort: "jumps" };
+let source = "assets"; // the Source filter: assets | dock | all
+const DEFAULTS = { q: "", space: "", region: "", type: "", war: false, sort: "jumps", source: "assets" };
 const prefs = Prefs.get("structures", DEFAULTS);
 
 async function load(append = false) {
   if (!append) offset = 0;
   const f = { q: $("#s-q").value.trim(), space: $("#s-space").value, region: $("#s-region").value,
-    type: $("#s-type").value, war: $("#s-war").checked, sort: $("#s-sort").value };
+    type: $("#s-type").value, war: $("#s-war").checked, sort: $("#s-sort").value, source: $("#s-source").value };
+  source = f.source;
   Prefs.set("structures", f);
   const qs = new URLSearchParams({ q: f.q, space: f.space, region: f.region, type: f.type, at_war: f.war ? 1 : 0,
-    sort: f.sort, limit: PAGE, offset });
+    source: f.source, sort: f.sort, limit: PAGE, offset });
   $("#s-info").textContent = "Loading…";
   const d = await api(`/api/structures?${qs}`);
   fillSelect($("#s-region"), d.facets.regions, f.region);
@@ -105,6 +110,8 @@ async function load(append = false) {
   offset += d.rows.length;
   $("#s-more").hidden = offset >= d.matched;
   const parts = [`${d.matched} of ${d.facets.total} structures`,
+    ...(d.facets.source === "assets" ? [] : [d.facets.source === "dock" ? "that characters can dock at, without assets"
+      : `${d.facets.sources.assets} with assets, ${d.facets.sources.dock} dockable only`]),
     `${d.scout.contributing_characters} character${d.scout.contributing_characters === 1 ? "" : "s"} sharing`];
   if (d.scout.last_run) parts.push(`scouted ${ago(d.scout.last_run.at)}`);
   else if (d.scout.running) parts.push("first scout run in progress");
@@ -121,9 +128,11 @@ $("#s-space").value = prefs.space || "";
 });
 $("#s-war").checked = Boolean(prefs.war);
 if ([...$("#s-sort").options].some((o) => o.value === prefs.sort)) $("#s-sort").value = prefs.sort;
+if ([...$("#s-source").options].some((o) => o.value === prefs.source)) $("#s-source").value = prefs.source;
+source = $("#s-source").value;
 let typing = null;
 $("#s-q").addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => load(), 300); });
-["#s-space", "#s-region", "#s-type", "#s-war", "#s-sort"].forEach((id) => $(id).addEventListener("change", () => load()));
+["#s-space", "#s-region", "#s-type", "#s-war", "#s-sort", "#s-source"].forEach((id) => $(id).addEventListener("change", () => load()));
 $("#s-reload").addEventListener("click", () => load());
 // Resolve unknown is a background job on the server: the button starts it, this page polls its state every 5 s.
 const num = (n) => Number(n || 0).toLocaleString("en-US").replace(/,/g, " ");

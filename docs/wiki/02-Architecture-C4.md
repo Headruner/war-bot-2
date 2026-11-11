@@ -68,12 +68,21 @@ Key mechanisms:
   systems. `UniverseGraph.route_with_links` runs the BFS over stargates plus the character's one-way links (1 jump each);
   `RankingService` adds `ansiblex` and `route_legs` (mode `ansiblex`). Single-flight background refresh.
 - **Structures from assets** (`StructureScout`): the assets of every registered character (ESI) reveal the structure
-  IDs where something is stored; each ID is then read from `/universe/structures/{id}` with the token of a
+  IDs where something is stored (flag Hangar, Deliveries or AssetSafety, and not one of the character's own item
+  IDs; the whole list is read first, nothing is saved after a failed or cut-short read); each ID is then read from `/universe/structures/{id}` with the token of a
   character that has an asset there (next character on 403). The pooled result feeds the Structures page.
   **Resolve unknown** (`POST /api/structures/resolve`) starts a background job that reads what is still unresolved
   with the characters that hold assets there (those of the signed-in main first) and the main last; a 403 is kept
   per (structure, character) in `structure_refusals` and not repeated for 14 days, and the job waits out ESI's
   error window instead of stopping (`GET /api/structures/resolve` is its state, `.../resolve/stop` cancels it).
+  **Dock search** (`StructureScout._dock_search`, shared request `esi.search_structure_ids`, also used by
+  Ansiblex): per character with the search and structures scopes, ESI's character search (term `" - "`) returns the
+  structures it may dock at; they go to `structure_access` (new IDs also to `known_structures`), per-character state
+  to `scout_dock_search` (`capped`, fallback `cursor`). A complete result replaces the set, a capped one only adds and
+  continues with "<System> - " terms (home region, then the structures' systems and regions); rows expire after 30
+  days. Characters with an access row are asked first when a structure is read, the orphan purge spares such rows,
+  and the shared list shows counts only (`dock_by`). The Wars structure lists and the alert matcher use all
+  resolved structures, the notification gate and the Characters count stay on assets.
   Structures nobody may read get historical details in `public_structure_history`, by source rank: EVE Ref
   (daily download), the local index (`structure_index.py` reads `data/structure-index.jsonl`, built offline by
   `scripts/build_structure_index.py`; read on every scout run, no network), Adam4EVE (daily). Live ESI data always

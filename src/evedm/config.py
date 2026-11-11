@@ -144,6 +144,12 @@ class StructureScoutSettings:
     everef_max_mb: int = 300  # the download is refused above this size
     # flat list built by scripts/build_structure_index.py; "" = <data dir>/structure-index.jsonl (missing file = unused)
     index_file: str = ""
+    # structures a character may dock at, found through ESI's character search (scope esi-search.search_structures.v1)
+    dock_search_enabled: bool = True
+    dock_search_hours: float = 24.0  # search again for each character this often
+    dock_search_term: str = " - "  # every Upwell structure is named "<System> - <Name>"; ESI needs 3+ characters
+    dock_search_cap: int = 500  # a result this long is treated as cut off (believed ESI limit, to be verified)
+    dock_search_max_terms: int = 40  # fallback searches ("<System> - ") per character and run, when capped
 
 
 @dataclass
@@ -317,6 +323,14 @@ class Settings:
             raise ConfigError("web.auth must be 'sso' or 'none'")
         if self.sqlite_journal not in ("delete", "wal"):
             raise ConfigError("sqlite_journal must be 'delete' or 'wal'")
+        sc = self.structures
+        if sc.dock_search_enabled:
+            if len(sc.dock_search_term) < 3:
+                raise ConfigError("structures.dock_search_term needs at least 3 characters (ESI's search rule)")
+            if sc.dock_search_hours <= 0 or sc.dock_search_cap < 1 or sc.dock_search_max_terms < 0:
+                raise ConfigError(
+                    "structures.dock_search_hours > 0, dock_search_cap >= 1 and dock_search_max_terms >= 0"
+                )
         a = self.alerts
         if a.enabled and a.poll_s < 6:
             raise ConfigError("alerts.poll_s must be at least 6 (zKillboard's rule)")

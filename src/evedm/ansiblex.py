@@ -19,12 +19,11 @@ import re
 import time
 from collections.abc import Iterable
 from typing import Any
-from urllib.parse import quote
 
 from .characters import REAUTH, CharacterService
 from .config import ANSIBLEX_SCOPE, STRUCTURE_SCOPES, AnsiblexSettings
 from .db import CharacterRow, Database
-from .esi import EsiClient, EsiError
+from .esi import EsiClient, EsiError, search_structure_ids
 from .sso import SsoError
 from .universe import GateGraph
 
@@ -157,10 +156,7 @@ class AnsiblexService:
         cid = c.character_id
         try:
             token = await self.chars.access_token(cid, c.owner_id)
-            found = await self.esi.get(
-                f"/characters/{cid}/search/?categories=structure&search={quote(SEARCH_TERM)}&strict=false", token
-            )
-            ids = [int(i) for i in (found or {}).get("structure", [])]
+            ids = await search_structure_ids(self.esi, cid, token, SEARCH_TERM)
             visible: list[int] = []
             for sid in ids:
                 if await self._gate(sid, token):

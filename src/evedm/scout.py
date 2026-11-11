@@ -1,7 +1,9 @@
 """Structure scout: player-owned structures found through the assets of every registered character.
 
-For each character that granted ``esi-assets.read_assets.v1`` the scout reads the asset list (locations only are
-kept) and takes every location that is not one of the character's own items as a structure candidate. Candidates are
+For each character that granted ``esi-assets.read_assets.v1`` the scout reads the whole asset list (only the item IDs
+and the locations are kept). A location is a structure candidate when its ID is at least 1e12, its ``location_flag``
+is Hangar, Deliveries or AssetSafety and it is not one of the character's own items (a ship or container in a
+hangar). ESI's ``location_type`` is not used: items in a structure are typed "item" as well. Candidates are
 read from ``/universe/structures/{id}`` with ``esi-universe.read_structures.v1``, using the token of a character
 with assets there first, then other scoped characters for unidentified structures. Only Upwell
 structures answer that endpoint. The result is shared by every main on the site (the Structures page) and also feeds
@@ -26,16 +28,22 @@ from typing import Any, NamedTuple
 import httpx
 
 from .characters import REAUTH, CharacterService
-from .config import STRUCTURE_SCOPES, Settings
+from .config import ANSIBLEX_SCOPE, STRUCTURE_SCOPES, Settings
 from .crypto import redact
 from .db import Database
-from .esi import EsiClient, EsiError
+from .esi import EsiClient, EsiError, search_structure_ids
 from .sso import SsoError
 from .structure_index import index_path
 from .structure_index import lookup as lookup_index
 from .universe import GateGraph, security_class
 
 SCOUT_ERROR_RESERVE = 60  # stop resolving structures when ESI has this few errors left in its 100-per-minute window
+STRUCTURE_MIN_ID = 1_000_000_000_000  # structures, customs offices, corporation offices and all items live above this
+# Only items in these flags sit in a structure hangar (a corporation-less character's hangar, its deliveries or its
+# asset safety). Fittings, cargo, drone bays and the like point at the character's own ships and containers.
+STRUCTURE_FLAGS = frozenset({"Hangar", "Deliveries", "AssetSafety"})
+ASSET_FILTER_VERSION = 2  # a character read with an older rule is read again at once, and the old finds are purged
+ACCESS_KEEP_DAYS = 30  # a dock-search row nobody refreshed for this long is dropped
 JOB_MAX_FAILURES = 3  # the Resolve unknown job stops after this many passing ESI failures in a row
 JOB_PUBLISH_EVERY = 50  # ... and shows what it found (names, caches, Wars page) after this many resolved structures
 # the structures the resolver still wants: no name, owner or system yet, not gone, not destroyed
@@ -47,6 +55,7 @@ UNKNOWN = (
 log = logging.getLogger("evedm.scout")
 
 READ_STRUCTURES, READ_ASSETS = STRUCTURE_SCOPES
+SEARCH_STRUCTURES = ANSIBLEX_SCOPE  # esi-search.search_structures.v1
 
 
 class ResolveError(Exception):
@@ -56,6 +65,36 @@ class ResolveError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+@dataclass
+class AssetScan:
+    """What one character's asset pages add up to: candidate locations and the character's own item IDs.
+
+    Only two sets are kept, not the rows. The candidates are known only when the whole list was read, because a
+    location that is the character's own item may be on a later page.
+    """
+
+    def __init__(self) -> None:
+        self.located: set[int] = set()  # locations at 1e12 or more in a structure flag
+        self.items: set[int] = set()  # the character's own item IDs at 1e12 or more
+
+    def add(self, page: list[dict[str, Any]]) -> None:
+        for a in page:
+            if a.get("item_id") is not None and int(a["item_id"]) >= STRUCTURE_MIN_ID:
+                self.items.add(int(a["item_id"]))
+            loc = int(a.get("location_id") or 0)
+            if loc >= STRUCTURE_MIN_ID and a.get("location_flag") in STRUCTURE_FLAGS:
+                self.located.add(loc)
+
+    @property
+    def candidates(self) -> set[int]:
+        return self.located - self.items
+
+
+def is_structure_candidate(location_id: int, flag: str | None, own_items: Any) -> bool:
+    """The ingestion rule for one asset row (``own_items``: anything supporting ``in``); the probe reports with it."""
+    return location_id >= STRUCTURE_MIN_ID and flag in STRUCTURE_FLAGS and location_id not in own_items
 
 
 @dataclass
@@ -102,6 +141,7 @@ class _Pool:
     refused: dict[int, set[int]]  # structure_id -> characters refused less than no_access_refresh_hours ago
     asked: dict[int, set[int]]  # structure_id -> characters ever refused (the pair was asked before)
     dead: set[int] = field(default_factory=set)  # characters whose token was not accepted during this pass
+    access: dict[int, list[int]] = field(default_factory=dict)  # structure_id -> characters that may dock there
 
 
 class _Read(NamedTuple):
@@ -143,7 +183,9 @@ class StructureScout:
         self._main_lock = asyncio.Lock()  # ESI reads of unresolved structures: the job or the hourly step, not both
         self._history_lock = asyncio.Lock()  # one public dataset download at a time
         self._job: ResolveJob | None = None
+        self._own_hits: set[int] = set()  # stored IDs that turned out to be a character's own items: purged next
         self._job_task: asyncio.Task[None] | None = None
+        self._by_region: dict[int, list[int]] | None = None  # region id -> system indexes (fallback terms)
         self._sleep: Callable[[float, asyncio.Event], Awaitable[None]] = self._cancellable_sleep  # tests replace it
 
     # -- which characters can contribute ---------------------------------------------------------
@@ -187,18 +229,32 @@ class StructureScout:
             "gone": 0,
             "errors": 0,
             "truncated": 0,
+            "purged_own_items": 0,
+            "purged_orphans": 0,
+            "dock_searched": 0,
+            "dock_capped": 0,
+            "dock_terms_capped": 0,
+            "dock_errors": 0,
+            "dock_found": 0,
         }
         contributors = self.contributors()
         linked = {c for c, _, _ in contributors}
-        checked = {r[0]: r[1] for r in self.db.query("SELECT character_id, checked_at FROM scout_characters")}
-        due = [c for c in contributors if time.time() - checked.get(c[0], 0) > self.s.assets_refresh_hours * 3600]
+        scouted = {r[0]: r for r in self.db.query("SELECT character_id, checked_at, filter_v FROM scout_characters")}
+        now = time.time()
+        due = [
+            c
+            for c in contributors
+            if c[0] not in scouted
+            or now - scouted[c[0]]["checked_at"] > self.s.assets_refresh_hours * 3600
+            or scouted[c[0]]["filter_v"] < ASSET_FILTER_VERSION  # read with an older rule: again, at once
+        ]
         sem = asyncio.Semaphore(self.s.concurrency)
 
         async def read_assets(item: tuple[int, int, list[str]]) -> None:
-            """One character's assets, page by page: each page's structure IDs go to the database at once."""
+            """One character's whole asset list; its structure candidates are saved only after a complete read."""
             cid, owner, _ = item
             started = time.time()
-            found: set[int] = set()
+            scan = AssetScan()
             total_pages = 1
             async with sem:
                 try:
@@ -207,21 +263,12 @@ class StructureScout:
                         f"/characters/{cid}/assets", token, max_pages=self.s.max_asset_pages
                     ):
                         total_pages = pages_reported
-                        # ESI types the location of an item inside a structure "other"; "item" is a container or
-                        # ship, "station" an NPC station. Only the IDs are kept: one record per structure.
-                        fresh = {
-                            int(a["location_id"])
-                            for a in page
-                            if a.get("location_type") == "other"
-                            and int(a.get("location_id") or 0) >= 1_000_000_000_000  # NPC stations are 60 million
-                        } - found
-                        if fresh:
-                            found |= fresh
-                            self._save_sightings(cid, fresh)
+                        scan.add(page)
                 except (EsiError, SsoError) as exc:
                     stats["errors"] += 1
-                    # what the earlier pages found is kept. A passing ESI trouble (error limit, 5xx, network) does not
-                    # use up the refresh interval: the character is read again on the next run
+                    # nothing is saved and the old sightings stay: a list read only in part cannot tell which
+                    # locations are the character's own items. A passing ESI trouble (error limit, 5xx, network) does
+                    # not use up the refresh interval: the character is read again on the next run
                     passing = isinstance(exc, EsiError) and (exc.status in (0, 420, 429) or exc.status >= 500)
                     self.db.execute(
                         "INSERT INTO scout_characters(character_id, checked_at, error) VALUES(?,?,?) "
@@ -230,23 +277,30 @@ class StructureScout:
                         (cid, 0.0 if passing else time.time(), redact(str(exc))[:200], int(passing)),
                     )
                     return
-            truncated = total_pages > self.s.max_asset_pages
-            now = time.time()
-            with self.db.tx() as c:
-                if not truncated:  # a complete read: structures this character no longer has items in are dropped
-                    c.execute("DELETE FROM structure_sightings WHERE character_id=? AND seen_at < ?", (cid, started))
-                c.execute(
-                    "INSERT INTO scout_characters(character_id, checked_at, structures, error) VALUES(?,?,?,?) "
-                    "ON CONFLICT(character_id) DO UPDATE SET checked_at=excluded.checked_at, "
-                    "structures=excluded.structures, error=excluded.error",
-                    (cid, now, len(found), None),  # a cut-off list is not an error: one item per structure is enough
-                )
-            if truncated:
+            if total_pages > self.s.max_asset_pages:  # cut short: same as a failed read, but not retried every run
                 stats["truncated"] += 1
                 log.info(
-                    "structure scout: %s has more than %s asset pages; structures on the rest are not seen",
+                    "structure scout: %s has more than %s asset pages; nothing is saved for this character",
                     cid,
                     self.s.max_asset_pages,
+                )
+                self.db.execute(
+                    "INSERT INTO scout_characters(character_id, checked_at, error) VALUES(?,?,?) "
+                    "ON CONFLICT(character_id) DO UPDATE SET checked_at=excluded.checked_at, error=excluded.error",
+                    (cid, time.time(), f"truncated: more than {self.s.max_asset_pages} asset pages, nothing saved"),
+                )
+                return
+            found = scan.candidates
+            if found:
+                self._save_sightings(cid, found)
+            self._own_hits |= self._stored_among(scan.items)
+            with self.db.tx() as c:  # a complete read: structures this character no longer has items in are dropped
+                c.execute("DELETE FROM structure_sightings WHERE character_id=? AND seen_at < ?", (cid, started))
+                c.execute(
+                    "INSERT INTO scout_characters(character_id, checked_at, structures, error, filter_v) "
+                    "VALUES(?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET checked_at=excluded.checked_at, "
+                    "structures=excluded.structures, error=excluded.error, filter_v=excluded.filter_v",
+                    (cid, time.time(), len(found), None, ASSET_FILTER_VERSION),
                 )
             stats["characters_read"] += 1
             stats["candidates"] += len(found)
@@ -266,8 +320,12 @@ class StructureScout:
         self.db.execute(
             "DELETE FROM structure_refusals WHERE character_id NOT IN (SELECT character_id FROM characters)"
         )
-        # known_structures is never pruned: a structure stays until ESI answers 404 (destroyed or unanchored), then it
-        # is kept as status 'gone' (not listed, not asked again), whoever sights it and whether or not anyone may dock
+        await self._dock_search(stats)
+        self._prune_access()
+        # a structure stays until ESI answers 404 (destroyed or unanchored), then it is kept as status 'gone' (not
+        # listed, not asked again). Only what is no structure at all is purged: a character's own items, and finds that
+        # nobody sights any more once every character has been read with the current filter
+        self._purge(stats, contributors)
         await self._resolve(stats)
         await self._refresh_directory()
         await self._names()
@@ -276,6 +334,237 @@ class StructureScout:
         self.state["last_run"] = stats | {"at": time.time(), "duration_s": round(time.time() - t0, 1)}
         log.info("structure scout: %s", self.state["last_run"])
         return self.state["last_run"]
+
+    # -- structures a character may dock at: ESI's character search -----------------------------------
+    def dock_searchers(self) -> list[tuple[int, int, list[str]]]:
+        """Characters holding both the search scope and the structures scope (one link per character)."""
+        return [c for c in self.contributors(SEARCH_STRUCTURES) if READ_STRUCTURES in c[2]]
+
+    def _region_systems(self) -> dict[int, list[int]]:
+        if self._by_region is None:
+            by: dict[int, list[int]] = {}
+            for i, region in enumerate(self.g.region_of):
+                by.setdefault(region, []).append(i)
+            self._by_region = by
+        return self._by_region
+
+    def dock_terms(self, character_id: int) -> list[str]:
+        """The fallback terms "<System> - " in the order they are tried for one character.
+
+        The character's last known system and the systems of its region first, then the systems of the structures it
+        sights or may dock at, then the regions of those. Each system once.
+        """
+        by_region = self._region_systems()
+        order: list[int] = []
+        snap = self.db.query("SELECT solar_system_id FROM snapshots WHERE character_id=?", (character_id,))
+        home = self.g.index.get(snap[0][0]) if snap and snap[0][0] else None
+        if home is not None:
+            order.append(home)
+            order.extend(by_region.get(self.g.region_of[home], ()))
+        rows = self.db.query(
+            "SELECT DISTINCT solar_system_id FROM known_structures WHERE solar_system_id IS NOT NULL AND "
+            "(structure_id IN (SELECT structure_id FROM structure_sightings WHERE character_id=?1) "
+            "OR structure_id IN (SELECT structure_id FROM structure_access WHERE character_id=?1)) "
+            "ORDER BY solar_system_id",
+            (character_id,),
+        )
+        systems = [self.g.index[r[0]] for r in rows if r[0] in self.g.index]
+        order.extend(systems)
+        for region in dict.fromkeys(self.g.region_of[i] for i in systems):
+            order.extend(by_region.get(region, ()))
+        return [f"{self.g.names[i]} - " for i in dict.fromkeys(order)]
+
+    async def _dock_search(self, stats: dict[str, int]) -> None:
+        """One search per due character (see ``_dock_one``); runs inside the scout step, before the purge."""
+        if not self.s.dock_search_enabled:
+            return
+        searchers = self.dock_searchers()
+        state = {r["character_id"]: r for r in self.db.query("SELECT * FROM scout_dock_search")}
+        now = time.time()
+        wait = self.s.dock_search_hours * 3600
+        due = [c for c in searchers if c[0] not in state or now - state[c[0]]["checked_at"] > wait]
+        sem = asyncio.Semaphore(self.s.concurrency)
+
+        async def one(item: tuple[int, int, list[str]]) -> None:
+            async with sem:
+                await self._dock_one(item, state.get(item[0]), stats)
+
+        await asyncio.gather(*(one(c) for c in due))
+
+    async def _dock_one(self, item: tuple[int, int, list[str]], prev: Any, stats: dict[str, int]) -> None:
+        """Search one character's dockable structures with the configured term.
+
+        A result shorter than the cap is complete: it replaces the character's set. A result of cap or more may be cut
+        off: it only adds, and ``dock_search_max_terms`` more searches with "<System> - " continue at the persisted
+        cursor. A passing ESI trouble (420, 429, 5xx, network, error window low) keeps the interval unused; 401/403
+        or a token that is not accepted records the error and waits the full interval.
+        """
+        cid, owner, _ = item
+        started = time.time()
+        cap = self.s.dock_search_cap
+        found: set[int] = set()
+        searched = False  # the search with the main term answered
+        count = 0
+        capped = False
+        cursor = int(prev["cursor"]) if prev else 0
+        error: str | None = None
+        passing = False
+
+        def blocked() -> bool:
+            return self.esi.blocked_for(reserve=SCOUT_ERROR_RESERVE) > 0
+
+        try:
+            if blocked():
+                return  # nothing recorded: the character is searched again next run
+            token = await self.chars.access_token(cid, owner)
+            raw = await search_structure_ids(self.esi, cid, token, self.s.dock_search_term)
+            searched = True
+            count = len(raw)
+            capped = count >= cap
+            found |= {i for i in raw if i >= STRUCTURE_MIN_ID}
+            if capped:
+                terms = self.dock_terms(cid)
+                n = min(self.s.dock_search_max_terms, len(terms))
+                start = cursor % len(terms) if terms else 0
+                done = 0
+                try:
+                    for k in range(n):
+                        if blocked():
+                            passing = True
+                            error = "paused: ESI error window low, continues next run"
+                            break
+                        raw = await search_structure_ids(self.esi, cid, token, terms[(start + k) % len(terms)])
+                        done += 1
+                        if len(raw) >= cap:
+                            stats["dock_terms_capped"] += 1
+                        found |= {i for i in raw if i >= STRUCTURE_MIN_ID}
+                finally:
+                    cursor = (start + done) % len(terms) if terms else 0
+        except (EsiError, SsoError) as exc:
+            passing = isinstance(exc, EsiError) and (exc.status in (0, 420, 429) or exc.status >= 500)
+            error = redact(str(exc))[:200]
+        now = time.time()
+        complete = searched and not capped and error is None
+        with self.db.tx() as c:
+            if found:
+                c.executemany(
+                    "INSERT INTO structure_access(structure_id, character_id, seen_at) VALUES(?,?,?) "
+                    "ON CONFLICT(structure_id, character_id) DO UPDATE SET seen_at=excluded.seen_at",
+                    [(sid, cid, now) for sid in found],
+                )
+                c.executemany(
+                    "INSERT INTO known_structures(structure_id, first_seen, last_seen) VALUES(?,?,?) "
+                    "ON CONFLICT(structure_id) DO UPDATE SET last_seen=excluded.last_seen",
+                    [(sid, now, now) for sid in found],
+                )
+            if complete:  # the whole list came back: structures no longer in it are dropped
+                c.execute("DELETE FROM structure_access WHERE character_id=? AND seen_at < ?", (cid, started))
+            if searched:
+                c.execute(
+                    "INSERT INTO scout_dock_search(character_id, checked_at, found, capped, cursor, error) "
+                    "VALUES(?,?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET "
+                    "checked_at=CASE WHEN ? THEN checked_at ELSE excluded.checked_at END, found=excluded.found, "
+                    "capped=excluded.capped, cursor=excluded.cursor, error=excluded.error",
+                    (cid, 0.0 if passing else now, count, int(capped), cursor, error, int(passing)),
+                )
+            else:  # the search itself failed: what was stored before stays
+                c.execute(
+                    "INSERT INTO scout_dock_search(character_id, checked_at, error) VALUES(?,?,?) "
+                    "ON CONFLICT(character_id) DO UPDATE SET "
+                    "checked_at=CASE WHEN ? THEN checked_at ELSE excluded.checked_at END, error=excluded.error",
+                    (cid, 0.0 if passing else now, error, int(passing)),
+                )
+        if searched:
+            stats["dock_searched"] += 1
+            stats["dock_found"] += len(found)
+            stats["dock_capped"] += int(capped)
+        if error:
+            stats["dock_errors"] += 1
+            log.warning("structure scout: dock search for character %s: %s", cid, error)
+        log.info(
+            "structure scout: character %s may dock at %s structures (result %s, cap %s%s)",
+            cid, len(found), count, cap, ", capped" if capped else "",
+        )
+
+    def _prune_access(self) -> None:
+        """Dock-search rows of characters that no longer exist, and rows nobody refreshed for 30 days."""
+        gone = "character_id NOT IN (SELECT character_id FROM characters)"
+        self.db.execute(f"DELETE FROM structure_access WHERE {gone}")  # noqa: S608
+        self.db.execute(f"DELETE FROM scout_dock_search WHERE {gone}")  # noqa: S608
+        keep = max(ACCESS_KEEP_DAYS * 86400.0, 2 * self.s.dock_search_hours * 3600)
+        self.db.execute("DELETE FROM structure_access WHERE seen_at < ?", (time.time() - keep,))
+
+    def _stored_among(self, item_ids: set[int]) -> set[int]:
+        """The IDs among ``item_ids`` that known_structures holds (a character's own items stored as structures)."""
+        hits: set[int] = set()
+        ordered = sorted(item_ids)
+        for start in range(0, len(ordered), 900):
+            chunk = ordered[start : start + 900]
+            sql = f"SELECT structure_id FROM known_structures WHERE structure_id IN ({','.join('?' * len(chunk))})"  # noqa: S608
+            hits.update(r[0] for r in self.db.query(sql, tuple(chunk)))
+        return hits
+
+    def _bump_meta(self, key: str, n: int) -> None:
+        self.db.set_meta(key, str(int(self.db.get_meta(key, "0") or 0) + n))
+
+    def _filters_current(self, contributors: list[tuple[int, int, list[str]]]) -> bool:
+        """True when there is a contributor and every one of them was last read completely with the current rule."""
+        have = {r[0]: r[1] for r in self.db.query("SELECT character_id, filter_v FROM scout_characters")}
+        return bool(contributors) and all(have.get(cid, 1) >= ASSET_FILTER_VERSION for cid, _, _ in contributors)
+
+    def _purge(self, stats: dict[str, int], contributors: list[tuple[int, int, list[str]]]) -> None:
+        """Delete what is no structure: own items found in asset lists, and finds nobody sights (orphans).
+
+        Runs under ``_main_lock``, the lock a Resolve unknown job holds for its whole run: with a job running nothing is
+        deleted (the own-item IDs are kept for the next run), so a row is never deleted while it is being asked.
+        Rows read as structures (status ok) are never purged; one that is a character's own item is warned about.
+        """
+        if self._main_lock.locked():
+            log.info("structure scout: a resolve job is running; the purge waits for the next run")
+            return
+        orphans_wanted = self._filters_current(contributors)
+        if not self._own_hits and not orphans_wanted:
+            return
+        with self.db.tx() as c:  # one transaction; the lock is free and nothing awaits in between
+            own = 0
+            hits = sorted(self._own_hits)
+            for start in range(0, len(hits), 900):
+                chunk = hits[start : start + 900]
+                marks = ",".join("?" * len(chunk))
+                rows = c.execute(
+                    f"SELECT structure_id, status FROM known_structures WHERE structure_id IN ({marks})",  # noqa: S608
+                    tuple(chunk),
+                ).fetchall()
+                for r in rows:
+                    if r[1] == "ok":
+                        log.warning("structure %s was read from ESI but is one of a character's own items: kept", r[0])
+                drop = [r[0] for r in rows if r[1] != "ok"]
+                marks = ",".join("?" * len(drop))
+                if drop:
+                    for table in ("structure_sightings", "structure_refusals"):
+                        c.execute(f"DELETE FROM {table} WHERE structure_id IN ({marks})", tuple(drop))  # noqa: S608
+                    known = f"DELETE FROM known_structures WHERE structure_id IN ({marks})"  # noqa: S608
+                    own += c.execute(known, tuple(drop)).rowcount
+            orphans = 0
+            if orphans_wanted:
+                orphan = (
+                    "SELECT structure_id FROM known_structures k WHERE status IN ('new','no_access') "
+                    "AND destroyed_at IS NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM structure_sightings s WHERE s.structure_id=k.structure_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM structure_access a WHERE a.structure_id=k.structure_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM public_structure_history h WHERE h.structure_id=k.structure_id)"
+                )
+                c.execute(f"DELETE FROM structure_refusals WHERE structure_id IN ({orphan})")  # noqa: S608
+                orphans = c.execute(f"DELETE FROM known_structures WHERE structure_id IN ({orphan})").rowcount  # noqa: S608
+        self._own_hits.clear()
+        stats["purged_own_items"] += own
+        stats["purged_orphans"] += orphans
+        if own or orphans:
+            self._bump_meta("scout_purged_own_items", own)
+            self._bump_meta("scout_purged_orphans", orphans)
+            log.info("structure scout: purged %s own items and %s orphans that are no structures", own, orphans)
+            self.version += 1  # the page and the caches drop them
+            self._notify()
 
     def _save_read(self, sid: int, body: dict[str, Any], now: float) -> None:
         """Store what ``/universe/structures/{id}`` returned: name, owner, system, type and position."""
@@ -309,7 +598,10 @@ class StructureScout:
             asked.setdefault(r[0], set()).add(r[1])
             if r[2] >= since:
                 refused.setdefault(r[0], set()).add(r[1])
-        return _Pool(readers, sightings, refused, asked)
+        access: dict[int, list[int]] = {}
+        for r in self.db.query("SELECT structure_id, character_id FROM structure_access ORDER BY character_id"):
+            access.setdefault(r[0], []).append(r[1])
+        return _Pool(readers, sightings, refused, asked, access=access)
 
     @staticmethod
     def _candidates(
@@ -317,14 +609,21 @@ class StructureScout:
     ) -> list[int]:
         """The characters to ask about one structure, best first; refused pairs and dead tokens left out.
 
-        Sighters (characters with assets there, holding the structures scope) come first. With ``main_id`` (the button)
-        those linked to that main go before the others and the main itself comes last. Without it (the hourly step) an
-        ``unidentified`` structure is also offered to every other reader. A ``public`` structure (ESI lists it as open
-        to everyone) ignores earlier refusals and falls back to any reader: its answer does not depend on who asks.
+        Characters that may dock there (a dock-search hit, known to be allowed) come first, then sighters (characters
+        with assets there); all of them must hold the structures scope. With ``main_id`` (the button) those linked to
+        that main go before the others within each group and the main itself comes last. Without it (the hourly step)
+        an ``unidentified`` structure is also offered to every other reader. A ``public`` structure (ESI lists it as
+        open to everyone) ignores earlier refusals and falls back to any reader: its answer does not depend on who asks.
         """
-        seen = [c for c in pool.sightings.get(sid, ()) if c in pool.readers]
+        docking = [c for c in pool.access.get(sid, ()) if c in pool.readers]
+        seen = docking + [c for c in pool.sightings.get(sid, ()) if c in pool.readers and c not in docking]
         if main_id is not None:
-            order = [c for c in seen if pool.readers[c] == main_id] + [c for c in seen if pool.readers[c] != main_id]
+
+            def mine_first(group: list[int]) -> list[int]:
+                mine = [c for c in group if pool.readers[c] == main_id]
+                return mine + [c for c in group if c not in mine]
+
+            order = mine_first(docking) + mine_first(seen[len(docking) :])
             if main_id in pool.readers:
                 order.append(main_id)
         else:
@@ -636,6 +935,12 @@ class StructureScout:
             (*readers, since),
         )[0][0]
         total = q(f"SELECT COUNT(*) FROM ({unknown})")[0][0]  # noqa: S608
+        columns = {r[1] for r in q("PRAGMA table_info(scout_characters)")}
+        if "filter_v" in columns:  # a database not migrated yet (the read-only CLI) has none
+            have = {r[0]: r[1] for r in q("SELECT character_id, filter_v FROM scout_characters")}
+        else:
+            have = {}
+        pending = sum(1 for cid, _, _ in self.contributors() if have.get(cid, 1) < ASSET_FILTER_VERSION)
         matches = {"EVE Ref": 0, "Local index": 0, "Adam4EVE": 0}
         for source, count in q(
             "SELECT COALESCE(source,'Adam4EVE'), COUNT(*) FROM public_structure_history "  # noqa: S608
@@ -643,6 +948,7 @@ class StructureScout:
         ):
             matches[source] = count
         return {
+            "dock_search": self._dock_stats(unknown),
             "by_status": {r[0]: r[1] for r in q("SELECT status, COUNT(*) FROM known_structures GROUP BY status")},
             "readers": len(readers),
             "unknown": total,
@@ -653,7 +959,46 @@ class StructureScout:
             "refusal_pairs": q(f"SELECT COUNT(*) FROM {refusals}")[0][0],  # noqa: S608
             "refusal_pairs_recent": q(f"SELECT COUNT(*) FROM {refusals} WHERE refused_at >= ?", (since,))[0][0],  # noqa: S608
             "public_history_matches": matches,
+            "filter_version": ASSET_FILTER_VERSION,
+            "filter_pending": pending,  # characters with the assets scope not yet read with the current filter
+            "purged_own_items": int(self.db.get_meta("scout_purged_own_items", "0") or 0),  # since the filter changed
+            "purged_orphans": int(self.db.get_meta("scout_purged_orphans", "0") or 0),
         }
+
+    def _dock_stats(self, unknown: str) -> dict[str, Any]:
+        """The ``dock_search`` block of ``stats()``: what the character search found, from the database alone."""
+        q = self.db.query
+        have = {r[0] for r in q("SELECT name FROM sqlite_master WHERE type='table'")}
+        out: dict[str, Any] = {
+            "enabled": self.s.dock_search_enabled,
+            "term": self.s.dock_search_term,
+            "cap": self.s.dock_search_cap,
+            "eligible_characters": len(self.dock_searchers()),  # both scopes
+            "characters_searched": 0,
+            "capped": 0,
+            "with_errors": 0,
+            "access_rows": 0,
+            "dockable": 0,
+            "dockable_without_assets": 0,
+            "dockable_unresolved": 0,
+        }
+        if "scout_dock_search" in have:
+            row = q(
+                "SELECT COALESCE(SUM(checked_at > 0), 0), COALESCE(SUM(capped), 0), "
+                "COALESCE(SUM(error IS NOT NULL), 0) FROM scout_dock_search"
+            )[0]
+            out["characters_searched"], out["capped"], out["with_errors"] = row[0], row[1], row[2]
+        if "structure_access" in have:
+            out["access_rows"] = q("SELECT COUNT(*) FROM structure_access")[0][0]
+            out["dockable"] = q("SELECT COUNT(DISTINCT structure_id) FROM structure_access")[0][0]
+            out["dockable_without_assets"] = q(
+                "SELECT COUNT(DISTINCT structure_id) FROM structure_access WHERE structure_id NOT IN "
+                "(SELECT structure_id FROM structure_sightings)"
+            )[0][0]
+            out["dockable_unresolved"] = q(
+                f"SELECT COUNT(DISTINCT structure_id) FROM structure_access WHERE structure_id IN ({unknown})"  # noqa: S608
+            )[0][0]
+        return out
 
     # historical details: public datasets, kept apart from live ESI records (EVE Ref > local index > Adam4EVE)
     HISTORY_PRIORITY = {"EVE Ref": 3, "Local index": 2, "Adam4EVE": 1}
@@ -855,6 +1200,7 @@ class StructureScout:
             return self._rows[1]
         rows = self.db.query(
             "SELECT k.*, (SELECT COUNT(*) FROM structure_sightings s WHERE s.structure_id=k.structure_id) AS seen_by, "
+            "(SELECT COUNT(*) FROM structure_access a WHERE a.structure_id=k.structure_id) AS dock_by, "
             "o.name AS owner_name, t.name AS type_name FROM known_structures k "
             "LEFT JOIN entity_names o ON o.entity_id=k.owner_id LEFT JOIN entity_names t ON t.entity_id=k.type_id "
             "WHERE k.solar_system_id IS NOT NULL AND k.status IN ('ok','no_access')"
@@ -877,6 +1223,9 @@ class StructureScout:
                     "system": self.g.describe(idx) | {"space": space_of(self.g, idx)},
                     "system_index": idx,
                     "seen_by": r["seen_by"],
+                    "assets": r["seen_by"] > 0,  # a registered character has assets there
+                    "dock_by": r["dock_by"],  # characters that may dock there: a count, never who
+                    "dockable": r["dock_by"] > 0,
                     "first_seen": r["first_seen"],
                     "last_seen": r["last_seen"],
                     "checked_at": r["checked_at"],
@@ -895,7 +1244,8 @@ class StructureScout:
         if self._unresolved is not None and self._unresolved[0] == self.version:
             return self._unresolved[1]
         rows = self.db.query(
-            "SELECT k.*, (SELECT COUNT(*) FROM structure_sightings s WHERE s.structure_id=k.structure_id) AS seen_by "
+            "SELECT k.*, (SELECT COUNT(*) FROM structure_sightings s WHERE s.structure_id=k.structure_id) AS seen_by, "
+            "(SELECT COUNT(*) FROM structure_access a WHERE a.structure_id=k.structure_id) AS dock_by "
             "FROM known_structures k WHERE k.solar_system_id IS NULL AND k.status IN ('new','ok','no_access')"
         )
         unknown = {
@@ -919,6 +1269,9 @@ class StructureScout:
                 "system": unknown,
                 "system_index": None,
                 "seen_by": r["seen_by"],
+                "assets": r["seen_by"] > 0,
+                "dock_by": r["dock_by"],
+                "dockable": r["dock_by"] > 0,
                 "first_seen": r["first_seen"],
                 "last_seen": r["last_seen"],
                 "checked_at": r["checked_at"],
@@ -969,11 +1322,25 @@ class StructureScout:
         type_name: str = "",
         space: str = "",
         war_only: bool = False,
+        source: str = "assets",
         sort: str = "jumps",
         limit: int = 100,
         offset: int = 0,
     ) -> dict[str, Any]:
-        base = self.structures() + self.unresolved()
+        """``source``: assets (default, a character has assets there), dock (may be docked at, no assets) or all."""
+        everything = self.structures() + self.unresolved()
+        by_source = {
+            "assets": sum(1 for r in everything if r["assets"]),
+            "dock": sum(1 for r in everything if r["dockable"] and not r["assets"]),
+            "all": len(everything),
+        }
+        if source == "all":
+            base = everything
+        elif source == "dock":
+            base = [r for r in everything if r["dockable"] and not r["assets"]]
+        else:
+            source = "assets"
+            base = [r for r in everything if r["assets"]]
         history = {r["structure_id"]: r for r in self.db.query("SELECT * FROM public_structure_history")}
         dist, origin = self.g.nearest(sources.keys(), avoid)
         at_war = at_war or {}
@@ -1013,6 +1380,8 @@ class StructureScout:
             "regions": Counter(r["system"]["region"] for r in rows).most_common(),
             "spaces": Counter(r["system"]["space"] for r in rows).most_common(),
             "total": len(rows),
+            "source": source,
+            "sources": by_source,  # structures per source filter, before the other filters
         }
         needle = q.strip().lower()
         if needle:

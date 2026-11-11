@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -300,3 +301,15 @@ class EsiClient:
             return {}
         rows = await self.post("/universe/names", ids)
         return {int(r["id"]): str(r["name"]) for r in rows}
+
+
+async def search_structure_ids(esi: Any, character_id: int, token: str, term: str) -> list[int]:
+    """Structure IDs the character may dock at whose name contains ``term`` (scope ``esi-search.search_structures.v1``).
+
+    ``esi`` is anything with ``get(path, token)``; ESI wants at least three characters in the term. Shared by the
+    Ansiblex reader (term " » ") and the scout's dock search (term " - ").
+    """
+    found = await esi.get(
+        f"/characters/{character_id}/search/?categories=structure&search={quote(term)}&strict=false", token
+    )
+    return [int(i) for i in (found or {}).get("structure", [])]

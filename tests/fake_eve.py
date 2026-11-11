@@ -115,6 +115,10 @@ class FakeState:
     structures: dict[int, dict[str, Any]] = field(default_factory=dict)
     corp_names: dict[int, str] = field(default_factory=dict)
     asset_page_size: int = 1000
+    # character structure search: result cap, (character, term) log, and a forced status per character
+    search_cap: int = 500
+    search_log: list[tuple[int, str]] = field(default_factory=list)
+    search_fail: dict[int, int] = field(default_factory=dict)
     waypoints: list[dict[str, Any]] = field(default_factory=list)  # autopilot destinations set via ESI
     # killmails readable by id/hash, and zKillboard's R2Z2 feed (sequence -> package)
     killmails: dict[tuple[int, str], dict[str, Any]] = field(default_factory=dict)
@@ -402,6 +406,24 @@ def create_fake_app(
             return JSONResponse({"error": "Requested page does not exist!"}, status_code=404)
         body = items[(page - 1) * size : page * size]
         return Response(json.dumps(body), media_type="application/json", headers={"X-Pages": str(pages)})
+
+    @app.get("/characters/{cid}/search/")
+    async def character_search(request: Request, cid: int, search: str = "", categories: str = "") -> Response:
+        """Structures whose name contains the term and that the character may dock at (acl None = anyone)."""
+        count("search")
+        if (err := esi_auth(request, cid, "esi-search.search_structures.v1")) is not None:
+            return err
+        st.search_log.append((cid, search))
+        if cid in st.search_fail:
+            return JSONResponse({"error": "forced"}, status_code=st.search_fail[cid])
+        if len(search) < 3:
+            return JSONResponse({"error": "search string too short"}, status_code=400)
+        hits = sorted(
+            sid
+            for sid, v in st.structures.items()
+            if search.lower() in str(v.get("name", "")).lower() and (v.get("acl") is None or cid in v["acl"])
+        )[: st.search_cap]
+        return esi_json(request, {"structure": hits} if hits else {}, 0)
 
     @app.get("/universe/structures/")
     async def public_structures(request: Request) -> Response:

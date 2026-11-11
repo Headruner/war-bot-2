@@ -5,6 +5,9 @@
     kinds of space. The assets come from ESI (<code>esi-assets.read_assets.v1</code>); each structure is then read
     from ESI by its ID for its name, owner, type and system. A character contributes once it has granted
     {% for s in scopes %}<code>{{ s }}</code>{% if not loop.last %} and {% endif %}{% endfor %}.</p>
+<p class="small"><b>Source</b>: "with assets" is the default list. "Can dock, no assets" adds structures that ESI's character
+    search (<code>esi-search.search_structures.v1</code>) says some character may dock at, even without items there; the page
+    shows how many characters can dock, never which.</p>
 {% endblock %}
 {% block content %}
 <div class="page structures-page">
@@ -16,6 +19,11 @@
         <option value="null">null-sec</option><option value="wormhole">wormhole</option></select></label>
     <label class="small">Region <select id="s-region"><option value="">all</option></select></label>
     <label class="small">Type <select id="s-type"><option value="">all</option></select></label>
+    <label class="small">Source
+      <select id="s-source" title="Which structures to list">
+        <option value="assets">with assets</option>
+        <option value="dock">can dock, no assets</option>
+        <option value="all">all</option></select></label>
     <label class="small"><input id="s-war" type="checkbox"> owner at war</label>
     <label class="small">Sort
       <select id="s-sort"><option value="jumps">nearest first</option><option value="system">system</option>

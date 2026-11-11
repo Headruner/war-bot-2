@@ -108,7 +108,7 @@ def test_an_old_database_gets_the_refusal_table_in_place(tmp_path):
     con.commit()
     con.close()
     d = Database(path)
-    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 14
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION
     assert d.query("SELECT COUNT(*) FROM structure_refusals")[0][0] == 0  # the table exists now
     assert d.query("SELECT structure_id, character_id FROM structure_sightings")[0][:] == (1, 2)  # data kept
     d.execute("INSERT INTO structure_refusals(structure_id, character_id, refused_at) VALUES(1, 2, 3.0)")
@@ -120,6 +120,50 @@ def test_an_old_database_gets_the_refusal_table_in_place(tmp_path):
     with pytest.raises(sqlite3.OperationalError):
         ro.execute("DELETE FROM structure_refusals")
     ro.close()
+
+
+def test_an_old_database_gets_the_asset_filter_column_in_place(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "v14.sqlite3"
+    d = Database(path)
+    d.close()
+    con = sqlite3.connect(path)  # a v14 database: scout_characters has no filter_v yet
+    con.execute("ALTER TABLE scout_characters DROP COLUMN filter_v")
+    con.execute("INSERT INTO scout_characters(character_id, checked_at, structures) VALUES(7, 5.0, 3)")
+    con.execute("PRAGMA user_version=14")
+    con.commit()
+    con.close()
+    d = Database(path)
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 16
+    row = d.query("SELECT checked_at, structures, filter_v FROM scout_characters WHERE character_id=7")[0]
+    assert tuple(row) == (5.0, 3, 1)  # the row is kept and counts as read with the first filter: read again at once
+    d.close()
+
+
+def test_an_old_database_gets_the_dock_search_tables_in_place(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "v15.sqlite3"
+    d = Database(path)
+    d.close()
+    con = sqlite3.connect(path)  # a v15 database: no structure_access, no scout_dock_search
+    con.execute("DROP TABLE structure_access")
+    con.execute("DROP TABLE scout_dock_search")
+    con.execute(
+        "INSERT INTO known_structures(structure_id, status, first_seen, last_seen) VALUES(1000000000001,'ok',1,1)"
+    )
+    con.execute("PRAGMA user_version=15")
+    con.commit()
+    con.close()
+    d = Database(path)
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 16
+    assert d.query("SELECT COUNT(*) FROM structure_access")[0][0] == 0
+    assert d.query("SELECT COUNT(*) FROM scout_dock_search")[0][0] == 0
+    cols = [r[1] for r in d.query("PRAGMA table_info(scout_dock_search)")]
+    assert cols == ["character_id", "checked_at", "found", "capped", "cursor", "error"]
+    assert d.query("SELECT COUNT(*) FROM known_structures")[0][0] == 1  # existing rows are kept
+    d.close()
 
 
 def test_upsert_keeps_local_settings(db):

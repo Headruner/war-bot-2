@@ -906,12 +906,14 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         type: str = "",  # noqa: A002
         space: str = "",
         at_war: int = 0,
+        source: str = "assets",
         sort: str = "jumps",
         limit: int = 100,
         offset: int = 0,
         refresh: int = 1,
     ) -> JSONResponse:
-        """Every player-owned structure the registered characters' assets revealed, shared by all members."""
+        """Player-owned structures shared by all members: those the characters' assets revealed (``source=assets``,
+        the default), those a character may dock at without assets there (``dock``), or ``all``. Counts only."""
         uid = owner(request)
         scout = await scout_of(request)
         svc = svc_of(request)
@@ -926,6 +928,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             type_name=type,
             space=space,
             war_only=bool(at_war),
+            source=source,
             sort=sort,
             limit=max(1, min(limit, 500)),
             offset=max(0, offset),

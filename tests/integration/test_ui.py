@@ -275,6 +275,14 @@ def test_structures_page_lists_every_space_and_remembers_filters(server, browser
     page.reload()
     page.wait_for_function("document.querySelectorAll('#s-rows tr').length === 1")
     assert page.input_value("#s-space") == "low" and page.input_value("#s-q") == "ember"
+    assert page.input_value("#s-source") == "assets"  # the default source: structures with assets
+    page.select_option("#s-source", "dock")  # remembered like the other filters; demo has none that are dock-only
+    page.wait_for_function("document.querySelectorAll('#s-rows tr').length === 0")
+    page.reload()
+    page.wait_for_function("document.querySelector('#s-info').textContent.includes('can dock')")
+    assert page.input_value("#s-source") == "dock"
+    page.select_option("#s-source", "assets")
+    page.wait_for_function("document.querySelectorAll('#s-rows tr').length === 1")
     page.locator("#s-rows .target-chip").first.click()
     page.wait_for_selector(".row.selected")
     assert "target=Amamake" in page.url

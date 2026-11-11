@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 14  # v12: historical structure directory entries; v13: their source; v14: structure_refusals
+SCHEMA_VERSION = 16  # v13: history source; v14: structure_refusals; v15: scout_characters.filter_v; v16: dock search
 log = logging.getLogger("evedm.db")
 
 SCHEMA = """
@@ -102,11 +102,28 @@ CREATE TABLE IF NOT EXISTS structure_refusals (
     refused_at   REAL NOT NULL,
     PRIMARY KEY (structure_id, character_id)
 );
+-- structures a character may dock at (ESI character search); used to pick a token that may read them, shown as counts
+CREATE TABLE IF NOT EXISTS structure_access (
+    structure_id INTEGER NOT NULL,
+    character_id INTEGER NOT NULL,
+    seen_at      REAL NOT NULL,
+    PRIMARY KEY (structure_id, character_id)
+);
+-- per character: the last dock search (found = IDs of the last search, capped = result hit the cap, cursor = fallback)
+CREATE TABLE IF NOT EXISTS scout_dock_search (
+    character_id INTEGER PRIMARY KEY,
+    checked_at   REAL NOT NULL,
+    found        INTEGER NOT NULL DEFAULT 0,
+    capped       INTEGER NOT NULL DEFAULT 0,
+    cursor       INTEGER NOT NULL DEFAULT 0,
+    error        TEXT
+);
 CREATE TABLE IF NOT EXISTS scout_characters (
     character_id INTEGER PRIMARY KEY,
     checked_at   REAL NOT NULL,
     structures   INTEGER NOT NULL DEFAULT 0,
-    error        TEXT
+    error        TEXT,
+    filter_v     INTEGER NOT NULL DEFAULT 1   -- the asset filter generation of the last complete read
 );
 -- structure alerts from zKillboard's live killmail feed
 CREATE TABLE IF NOT EXISTS structure_alerts (
@@ -469,6 +486,7 @@ class Database:
                     {"pos_x": "REAL", "pos_y": "REAL", "pos_z": "REAL", "destroyed_at": "REAL"},
                 )
                 self._add_columns("public_structure_history", {"source": "TEXT"})  # v12 -> v13
+                self._add_columns("scout_characters", {"filter_v": "INTEGER NOT NULL DEFAULT 1"})  # v14 -> v15
                 self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             except BaseException:
                 self._conn.execute("ROLLBACK")

@@ -180,20 +180,24 @@ async def test_paged_assets_and_truncation(settings, services, world):
     settings.structures.max_asset_pages = 2
     scout = scout_for(settings, services)
     stats = await scout.run()
-    row = services["db"].query("SELECT structures, error FROM scout_characters WHERE character_id=?", (A,))[0]
-    assert row["error"] is None and row["structures"] == 2 and stats["truncated"] == 1  # pages 1-2: S_HIGH and S_WH
+    db = services["db"]
+    row = db.query("SELECT structures, error, filter_v, checked_at FROM scout_characters WHERE character_id=?", (A,))[0]
+    # three pages, two read: the own-item set is incomplete, so nothing is saved and the filter stays old
+    assert stats["truncated"] == 1 and stats["characters_read"] == 0 and row["error"].startswith("truncated")
+    assert row["structures"] == 0 and row["filter_v"] == 1 and row["checked_at"] > 0  # not read again every run
+    assert db.query("SELECT COUNT(*) FROM structure_sightings")[0][0] == 0
     settings.structures.max_asset_pages = 20
-    services["db"].execute("UPDATE scout_characters SET checked_at=0")
+    db.execute("UPDATE scout_characters SET checked_at=0")
     stats = await scout.run()
-    row = services["db"].query("SELECT structures, error FROM scout_characters WHERE character_id=?", (A,))[0]
-    assert row["error"] is None and row["structures"] == 3 and stats["truncated"] == 0
+    row = db.query("SELECT structures, error, filter_v FROM scout_characters WHERE character_id=?", (A,))[0]
+    assert row["error"] is None and row["structures"] == 3 and stats["truncated"] == 0 and row["filter_v"] == 2
 
 
 async def test_item_typed_locations_are_never_structures(settings, services, world):
     container = 1_050_000_000_999  # a can in a station hangar; its row is on a page that is not read
     world.asset_page_size = 2
     world.assets[A] = [
-        asset(21, container),  # a ship or can's content: "item" typed, parent unknown while truncated
+        asset(21, container),  # a ship or can's content: "item" typed, flag Hangar, parent on another page
         asset(22, S_HIGH, "other"),
         asset(23, 60003760, "station"),
         asset(container, 60003760, "station"),
@@ -203,13 +207,14 @@ async def test_item_typed_locations_are_never_structures(settings, services, wor
     scout = scout_for(settings, services)
     await scout.run()
     db = services["db"]
-    row = db.query("SELECT structures, error FROM scout_characters WHERE character_id=?", (A,))[0]
-    assert row["error"] is None and row["structures"] == 1
-    assert [r[0] for r in db.query("SELECT structure_id FROM known_structures")] == [S_HIGH]
-    settings.structures.max_asset_pages = 20  # the whole list: still not a structure
+    # cut short: the can may be on a page not read, so nothing at all is saved
+    assert db.query("SELECT COUNT(*) FROM known_structures")[0][0] == 0
+    settings.structures.max_asset_pages = 20  # the whole list: the can is the character's own item, not a structure
     db.execute("UPDATE scout_characters SET checked_at=0")
     await scout.run()
     assert [r[0] for r in db.query("SELECT structure_id FROM known_structures")] == [S_HIGH]
+    row = db.query("SELECT structures FROM scout_characters WHERE character_id=?", (A,))[0]
+    assert row["structures"] == 1
 
 
 async def test_refused_structures_are_asked_again_only_after_the_long_interval(settings, services, world):
@@ -260,9 +265,11 @@ async def test_structures_already_read_are_skipped_on_the_next_run(settings, ser
     assert all(r[0] == old for r in db.query("SELECT checked_at FROM known_structures WHERE status='ok'"))
 
 
-async def test_each_page_is_saved_and_a_failure_keeps_the_earlier_pages(settings, services, world, monkeypatch):
+async def test_a_failed_read_saves_nothing_and_keeps_the_old_sightings(settings, services, world, monkeypatch):
     world.asset_page_size = 2
     await link(services, A, A)
+    db = services["db"]
+    sight(db, A, S_NULL)  # found by an earlier complete read
     real = services["esi"].iter_pages
 
     async def flaky(path, token, max_pages=20):
@@ -273,16 +280,17 @@ async def test_each_page_is_saved_and_a_failure_keeps_the_earlier_pages(settings
     monkeypatch.setattr(services["esi"], "iter_pages", flaky)
     scout = scout_for(settings, services)
     stats = await scout.run()
-    db = services["db"]
     assert stats["errors"] == 1 and stats["characters_read"] == 0
-    assert [r[0] for r in db.query("SELECT structure_id FROM structure_sightings")] == [S_HIGH]  # page 1 is in the file
-    row = db.query("SELECT checked_at, error FROM scout_characters WHERE character_id=?", (A,))[0]
+    # page 1 held S_HIGH, but without the whole list its own items are unknown: nothing is saved, S_NULL stays
+    assert [r[0] for r in db.query("SELECT structure_id FROM structure_sightings")] == [S_NULL]
+    row = db.query("SELECT checked_at, error, filter_v FROM scout_characters WHERE character_id=?", (A,))[0]
     assert row["checked_at"] == 0 and "503" in row["error"]  # a passing trouble: read again on the next run
+    assert row["filter_v"] == 1
     monkeypatch.undo()
     stats = await scout.run()
     assert stats["characters_read"] == 1
     assert {r[0] for r in db.query("SELECT structure_id FROM structure_sightings")} == {S_HIGH, S_WH, S_GONE}
-    assert db.query("SELECT error FROM scout_characters WHERE character_id=?", (A,))[0][0] is None
+    assert db.query("SELECT error, filter_v FROM scout_characters WHERE character_id=?", (A,))[0][:] == (None, 2)
 
 
 async def test_a_complete_read_drops_structures_the_character_left(settings, services, world):
@@ -303,12 +311,17 @@ async def test_a_structure_stays_in_the_file_until_it_is_gone(settings, services
     db = services["db"]
     await scout.run()
     assert scout.structures() and {r["structure_id"] for r in scout.structures()} == {S_HIGH, S_WH}
-    # nobody sights it and nobody may read it: the row is kept, not dropped
-    orphan = 1_060_000_000_001
+    # nobody sights it and nobody may read it: the row is kept while a public dataset knows it (a row without such a
+    # match is an orphan and is purged once every character was read with the current filter)
+    orphan, nobody = 1_060_000_000_001, 1_060_000_000_002
     now = time.time()
+    for sid in (orphan, nobody):
+        db.execute(
+            "INSERT INTO known_structures(structure_id, status, first_seen, last_seen) VALUES(?,?,?,?)",
+            (sid, "new", now, now),
+        )
     db.execute(
-        "INSERT INTO known_structures(structure_id, status, first_seen, last_seen) VALUES(?,?,?,?)",
-        (orphan, "new", now, now),
+        "INSERT INTO public_structure_history(structure_id, name, source) VALUES(?,?,?)", (orphan, "x", "EVE Ref")
     )
     # A loses docking access: the name, owner and system stay, flagged "no docking access"
     world.structures[S_HIGH]["acl"] = [B]
@@ -318,6 +331,7 @@ async def test_a_structure_stays_in_the_file_until_it_is_gone(settings, services
     row = {r["structure_id"]: r for r in scout.structures()}[S_HIGH]
     assert row["access"] is False and row["name"] == "Jita - Trade Hub"
     assert db.query("SELECT COUNT(*) FROM known_structures WHERE structure_id=?", (orphan,))[0][0] == 1
+    assert db.query("SELECT COUNT(*) FROM known_structures WHERE structure_id=?", (nobody,))[0][0] == 0  # purged
     # the structure is unanchored or destroyed: ESI answers 404, it is kept as a hidden 'gone' row, not asked again
     del world.structures[S_HIGH]
     db.execute("UPDATE known_structures SET checked_at=0")
@@ -1033,7 +1047,7 @@ async def test_eve_ref_outranks_adam4eve_and_skips_empty_records(settings, servi
     await scout._refresh_directory()
     assert history(db)[S_PRIVATE]["name"] == "Ref Name"
     # the listing says where the details come from
-    by_id = {r["structure_id"]: r for r in scout.listing({}, [])["rows"]}
+    by_id = {r["structure_id"]: r for r in scout.listing({}, [], source="all")["rows"]}  # seeded without sightings
     assert by_id[S_PRIVATE]["historical_source"] == "EVE Ref" and by_id[S_PRIVATE]["name"] == "Ref Name"
     assert by_id[S_HIGH]["historical_source"] == "Adam4EVE"
     # both datasets are asked once a day, not on every run
@@ -1106,7 +1120,7 @@ async def test_the_local_index_fills_unresolved_structures_and_ranks_between_the
     scout._directory_due = 0.0
     await scout._refresh_directory()
     assert history(db)[S_HIGH]["name"] == "Jita - Local High"
-    by_id = {r["structure_id"]: r for r in scout.listing({}, [])["rows"]}
+    by_id = {r["structure_id"]: r for r in scout.listing({}, [], source="all")["rows"]}  # seeded without sightings
     assert by_id[S_HIGH]["historical_source"] == "Local index" and by_id[S_HIGH]["name"] == "Jita - Local High"
 
 
@@ -1237,7 +1251,10 @@ async def test_probe_stops_cleanly_while_esi_is_error_limited(settings, services
     report = await probe_characters(services["db"], services["chars"], esi, [(A, A), (B, B)])
     assert report["run"]["stopped"] == {"reason": "blocked", "retry_in_s": 17, "before_character": A}
     assert fake_app.state.fake.calls.get("assets", 0) == 0  # nothing was sent
-    assert report["total"]["characters"] == 0 and report["verdict"] == {"location_type_other_by_flag": {}}
+    assert report["total"]["characters"] == 0 and report["verdict"] == {
+        "location_type_other_by_flag": {},
+        "candidates": {"distinct_ids": 0, "db": {"ok": 0, "no_access": 0, "new": 0, "gone": 0, "not_in_db": 0}},
+    }
 
 
 def test_probe_command_reads_asset_pages_and_writes_nothing(tmp_path, settings, fake_app, monkeypatch, capsys):
@@ -1311,3 +1328,683 @@ def test_probe_command_reads_asset_pages_and_writes_nothing(tmp_path, settings, 
     assert tables() == before
     text = json.dumps(out)
     assert "token" not in text and "Bravo" not in text  # no tokens, no character names
+
+
+# ------------------------------------------------------------------------------------ asset filter and purge
+T1, T2, T3, T4, T5 = (1_070_000_000_000 + n for n in range(1, 6))
+SHIP1, SHIP2, SHIP3 = 1_080_000_000_001, 1_080_000_000_002, 1_080_000_000_003  # a character's own ships
+
+
+async def test_only_hangar_deliveries_and_asset_safety_of_not_own_locations_are_structures(settings, services, world):
+    world.assets[A] = [
+        asset(31, T1, "item", "Hangar"),  # typed "item" or "other": the type is not used
+        asset(32, T2, "other", "Deliveries"),
+        asset(33, T3, "item", "AssetSafety"),
+        asset(34, T4, "item", "MedSlot0"),  # fitted into a ship: the ID is the ship, never a structure
+        asset(35, T5, "other", "Cargo"),
+        asset(SHIP1, 60003760, "station"),
+        asset(36, SHIP1, "item", "Hangar"),  # a flag Hangar, but the location is the character's own ship
+        asset(37, SHIP1, "item", "Cargo"),
+        asset(38, 60003760, "station"),
+    ]
+    await link(services, A, A)
+    scout = scout_for(settings, services)
+    stats = await scout.run()
+    db = services["db"]
+    assert {r[0] for r in db.query("SELECT structure_id FROM known_structures")} == {T1, T2, T3}
+    assert {r[0] for r in db.query("SELECT structure_id FROM structure_sightings")} == {T1, T2, T3}
+    assert stats["candidates"] == 3 and stats["characters_read"] == 1
+    row = db.query("SELECT structures, filter_v FROM scout_characters WHERE character_id=?", (A,))[0]
+    assert (row["structures"], row["filter_v"]) == (3, 2)  # the Characters page count is now the real number
+    assert services["db"].structure_counts() == {A: 3}
+
+
+async def test_the_scan_keeps_ids_not_rows():
+    from evedm.scout import AssetScan, is_structure_candidate
+
+    scan = AssetScan()
+    scan.add([asset(SHIP1, 60003760, "station"), asset(1, SHIP1, "item", "Hangar")])
+    scan.add([asset(2, T1, "item", "Hangar")])  # the own ship was on an earlier page; here it could be on a later one
+    scan.add([asset(3, T2, "item", "Hangar"), asset(T2, 60003760, "station")])
+    assert scan.items == {SHIP1, T2} and scan.candidates == {T1}
+    assert is_structure_candidate(T1, "Deliveries", set()) and not is_structure_candidate(T1, "Cargo", set())
+    assert not is_structure_candidate(T1, "Hangar", {T1}) and not is_structure_candidate(60003760, "Hangar", set())
+
+
+async def test_own_items_stored_as_structures_are_purged_with_their_sightings_and_refusals(
+    settings, services, world, caplog
+):
+    db = services["db"]
+    await link(services, A, A)
+    seed_unresolved(db, {SHIP1: "no_access", SHIP2: "gone", SHIP3: "ok", T1: "new"})
+    db.execute("UPDATE known_structures SET checked_at=? WHERE structure_id=?", (time.time(), SHIP3))
+    sight(db, A, SHIP1, SHIP3)
+    sight(db, B, SHIP1)  # whoever sighted it: an own item is no structure for anybody
+    db.execute("INSERT INTO structure_refusals VALUES(?,?,?)", (SHIP1, A, time.time()))
+    world.assets[A] = [
+        asset(SHIP1, 60003760, "station"),
+        asset(SHIP2, 60003760, "station"),
+        asset(SHIP3, 60003760, "station"),
+        asset(41, T1, "item", "Hangar"),
+    ]
+    scout = scout_for(settings, services)
+    with caplog.at_level("WARNING", logger="evedm.scout"):
+        stats = await scout.run()
+    assert stats["purged_own_items"] == 2 and stats["purged_orphans"] == 0
+    assert {r[0]: r[1] for r in db.query("SELECT structure_id, status FROM known_structures")} == {
+        SHIP3: "ok",  # read from ESI once: never purged this way, but warned about
+        T1: "gone",  # the real candidate stays (ESI does not know this ID in the fake, so it is read as gone)
+    }
+    assert [r[0] for r in db.query("SELECT structure_id FROM structure_sightings")] == [T1]
+    assert db.query("SELECT COUNT(*) FROM structure_refusals WHERE structure_id=?", (SHIP1,))[0][0] == 0
+    assert any(str(SHIP3) in r.getMessage() and r.levelname == "WARNING" for r in caplog.records)
+    numbers = scout.stats()
+    assert (numbers["purged_own_items"], numbers["purged_orphans"], numbers["filter_pending"]) == (2, 0, 0)
+
+
+async def test_a_character_read_with_an_older_filter_is_read_again_and_orphans_wait_for_everybody(
+    settings, services, world, fake_app, monkeypatch
+):
+    await link(services, A, A)
+    await link(services, B, B)
+    scout = scout_for(settings, services)
+    await scout.run()
+    db = services["db"]
+    calls = fake_app.state.fake.calls["assets"]
+    await scout.run()
+    assert fake_app.state.fake.calls["assets"] == calls  # nothing due: current filter, fresh read
+    now = time.time()
+    with db.tx() as conn:
+        # refused a moment ago, so the hourly step does not ask ESI about them meanwhile (a 404 would make them 'gone')
+        for sid, status in ((T1, "no_access"), (T2, "no_access"), (T3, "ok"), (T4, "gone")):
+            conn.execute(
+                "INSERT INTO known_structures(structure_id, status, first_seen, last_seen, checked_at) "
+                "VALUES(?,?,?,?,?)",
+                (sid, status, now, now, now),
+            )
+        conn.execute("INSERT INTO structure_refusals VALUES(?,?,?)", (T2, A, now))
+        conn.execute("UPDATE scout_characters SET filter_v=1")  # as after an upgrade from the old rule
+    assert scout.stats()["filter_pending"] == 2
+    real = services["esi"].iter_pages
+
+    async def flaky(path, token, max_pages=20):
+        if f"/characters/{B}/" in path:
+            raise EsiError(503, "boom")
+        async for chunk in real(path, token, max_pages):
+            yield chunk
+
+    monkeypatch.setattr(services["esi"], "iter_pages", flaky)
+    stats = await scout.run()
+    assert fake_app.state.fake.calls["assets"] == calls + 1  # A is read at once, B fails
+    assert stats["purged_orphans"] == 0
+    assert {T1, T2} <= {r[0] for r in db.query("SELECT structure_id FROM known_structures")}
+    assert scout.stats()["filter_pending"] == 1  # B is not current: the orphans stay
+    monkeypatch.undo()
+    stats = await scout.run()
+    assert fake_app.state.fake.calls["assets"] == calls + 2
+    assert stats["purged_orphans"] == 2 and scout.stats()["filter_pending"] == 0
+    left = {r[0] for r in db.query("SELECT structure_id FROM known_structures")}
+    assert T1 not in left and T2 not in left and {T3, T4} <= left  # status ok and gone are never orphans
+    assert db.query("SELECT COUNT(*) FROM structure_refusals WHERE structure_id=?", (T2,))[0][0] == 0
+    assert scout.stats()["purged_orphans"] == 2
+
+
+async def test_no_orphans_are_purged_without_a_contributor(settings, services, world):
+    db = services["db"]
+    seed_unresolved(db, {T1: "new"})
+    scout = scout_for(settings, services)
+    stats = await scout.run()  # nobody is registered: nothing proves the finds are orphans
+    assert stats["purged_orphans"] == 0 and statuses(db) == {T1: "new"}
+
+
+async def test_the_purge_waits_while_a_resolve_job_holds_the_lock(settings, services, world):
+    db = services["db"]
+    seed_unresolved(db, {SHIP1: "no_access"})
+    scout = scout_for(settings, services)
+    scout._own_hits = {SHIP1}
+    stats = {"purged_own_items": 0, "purged_orphans": 0}
+    async with scout._main_lock:  # what a running job holds
+        scout._purge(stats, [])
+    assert statuses(db) == {SHIP1: "no_access"} and scout._own_hits == {SHIP1}  # nothing deleted, nothing forgotten
+    scout._purge(stats, [])
+    assert statuses(db) == {} and stats["purged_own_items"] == 1 and scout._own_hits == set()
+
+
+def test_probe_counts_the_candidates_the_scout_would_take(db):
+    from evedm.probe import probe_assets
+
+    probe_db(db)  # P1 ok, P2 no_access, P3 new, P4 gone; P5 not stored
+    rows = [
+        probe_row(1_000_000_000_201, P1, "item", "Hangar"),
+        probe_row(1_000_000_000_202, P1, "other", "Hangar"),
+        probe_row(1_000_000_000_203, P2, "item", "Deliveries"),
+        probe_row(1_000_000_000_204, P2, "item", "Hangar"),  # P2 again, in another flag
+        probe_row(1_000_000_000_205, P5, "item", "AssetSafety"),
+        probe_row(1_000_000_000_206, P3, "item", "MedSlot0"),  # fitting: not a candidate
+        probe_row(SHIP, P4, "item", "Hangar", 28352),
+        probe_row(1_000_000_000_207, SHIP, "item", "Hangar"),  # a flag Hangar, but inside the character's own ship
+    ]
+    report = probe_assets({A: rows}, db)
+    mine = report["characters"][str(A)]["buckets"]
+    assert bucket_of(mine, "item", "Hangar")["candidates"] == 3 and bucket_of(mine, "item", "Hangar")["locations"] == 4
+    assert bucket_of(mine, "other", "Hangar")["candidates"] == 1
+    assert bucket_of(mine, "item", "Deliveries")["candidates"] == 1
+    assert bucket_of(mine, "item", "AssetSafety")["candidates"] == 1
+    assert bucket_of(mine, "item", "MedSlot0")["candidates"] == 0
+    cands = report["verdict"]["candidates"]
+    # P1, P2, P4 (in Hangar) and P5; the own ship is no candidate. P2 counts once although it is in two flags
+    assert cands == {"distinct_ids": 4, "db": {"ok": 1, "no_access": 1, "new": 0, "gone": 1, "not_in_db": 1}}
+
+
+# ------------------------------------------------------------------------------------ dock search (character search)
+DOCK = ALL + [ANSIBLEX_SCOPE]  # both the structures scopes and esi-search.search_structures.v1
+D1, D2, D3 = (1_095_000_000_000 + n for n in range(1, 4))
+
+
+@pytest.fixture
+def dock_world(world):
+    """A may dock at S_HIGH, D1 and D2; B at S_NULL and D2; C at D2 only (S_WH, S_PRIVATE: no " - " in the name)."""
+    world.structures.update(
+        {
+            D1: {"name": "Perimeter - Dock Only", "owner_id": CORP, "solar_system_id": 30000144, "type_id": 35832,
+                 "acl": [A]},
+            D2: {"name": "Jita - Open House", "owner_id": CORP, "solar_system_id": JITA, "type_id": 35825, "acl": None},
+        }
+    )
+    return world
+
+
+def fresh_stats():
+    from collections import defaultdict
+
+    return defaultdict(int)
+
+
+def docks(db) -> dict[int, set[int]]:
+    out: dict[int, set[int]] = {}
+    for r in db.query("SELECT structure_id, character_id FROM structure_access"):
+        out.setdefault(r[1], set()).add(r[0])
+    return out
+
+
+def dock_state(db, character_id: int):
+    rows = db.query("SELECT * FROM scout_dock_search WHERE character_id=?", (character_id,))
+    return dict(rows[0]) if rows else None
+
+
+def due_again(db) -> None:
+    db.execute("UPDATE scout_dock_search SET checked_at=1 WHERE checked_at > 1")
+
+
+def fail_search(scout, monkeypatch, exc: Exception) -> None:
+    real = scout.esi.get
+
+    async def get(path, token=None):
+        if "/search/" in path:
+            raise exc
+        return await real(path, token)
+
+    monkeypatch.setattr(scout.esi, "get", get)
+
+
+async def test_the_dock_search_stores_access_rows_and_creates_known_rows(settings, services, dock_world):
+    dock_world.structures[60_003_760] = {"name": "Jita - Station", "acl": None}  # below 1e12: never a structure here
+    await link(services, A, A, DOCK)
+    scout = scout_for(settings, services)
+    stats = fresh_stats()
+    await scout._dock_search(stats)
+    db = services["db"]
+    assert docks(db) == {A: {S_HIGH, D1, D2}}
+    assert statuses(db) == {S_HIGH: "new", D1: "new", D2: "new"}  # new rows, exactly like sightings
+    state = dock_state(db, A)
+    assert (state["found"], state["capped"], state["cursor"], state["error"]) == (4, 0, 0, None)
+    assert state["checked_at"] > 0  # the raw result had 4 hits, one of them no structure ID
+    assert stats["dock_searched"] == 1 and stats["dock_found"] == 3 and stats["dock_capped"] == 0
+    assert dock_world.search_log == [(A, " - ")]
+    await scout._dock_search(stats)  # not due for 24 hours
+    assert dock_world.search_log == [(A, " - ")]
+
+
+async def test_the_dock_search_needs_both_scopes_and_can_be_switched_off(settings, services, dock_world):
+    await link(services, A, A, DOCK)
+    await link(services, B, B, ALL)  # structures scopes, no search scope
+    await link(services, C, C, ALL_SCOPES + [ANSIBLEX_SCOPE])  # search scope, no structures scopes
+    scout = scout_for(settings, services)
+    assert [c for c, _, _ in scout.dock_searchers()] == [A]
+    await scout._dock_search(fresh_stats())
+    assert {c for c, _ in dock_world.search_log} == {A}
+    settings.structures.dock_search_enabled = False
+    dock_world.search_log.clear()
+    due_again(services["db"])
+    await scout._dock_search(fresh_stats())
+    assert dock_world.search_log == []
+
+
+async def test_a_complete_result_replaces_the_set_and_a_capped_one_only_adds(settings, services, dock_world):
+    await link(services, A, A, DOCK)
+    scout = scout_for(settings, services)
+    db = services["db"]
+    await scout._dock_search(fresh_stats())
+    assert docks(db)[A] == {S_HIGH, D1, D2}
+    dock_world.structures[D1]["acl"] = []  # A may no longer dock at D1
+    due_again(db)
+    await scout._dock_search(fresh_stats())
+    assert docks(db)[A] == {S_HIGH, D2}  # complete (2 < 500): what is gone is dropped
+    assert dock_state(db, A)["capped"] == 0
+    # a result of cap or more may be cut off: it adds and refreshes, it never drops
+    settings.structures.dock_search_cap = 2
+    dock_world.structures[D1]["acl"] = [A]
+    dock_world.structures[D2]["acl"] = []  # D2 is no longer returned ...
+    due_again(db)
+    stats = fresh_stats()
+    await scout._dock_search(stats)
+    assert docks(db)[A] == {S_HIGH, D1, D2}  # ... but D2 stays, D1 is added
+    state = dock_state(db, A)
+    assert state["capped"] == 1 and state["found"] == 2 and stats["dock_capped"] == 1
+
+
+def forge_and_delve(g) -> tuple[list[str], list[str]]:
+    def region_names(system_id: int) -> list[str]:
+        r = g.region_of[g.index[system_id]]
+        return [g.names[i] for i in range(len(g.names)) if g.region_of[i] == r]
+
+    return region_names(JITA), region_names(DQ1)
+
+
+async def test_the_fallback_terms_go_home_region_first_then_the_structures_and_their_regions(
+    settings, services, dock_world
+):
+    await link(services, A, A, DOCK)
+    scout = scout_for(settings, services)
+    db = services["db"]
+    forge, delve = forge_and_delve(scout.g)
+    db.save_snapshot(A, solar_system_id=JITA)  # last known system
+    assert scout.dock_terms(A) == [f"{n} - " for n in ["Jita", *[n for n in forge if n != "Jita"]]]
+    now = time.time()
+    with db.tx() as conn:  # a sighted structure in Delve, a dockable one in Jita (already in the first block)
+        for sid, system in ((S_NULL, DQ1), (D2, JITA)):
+            conn.execute(
+                "INSERT INTO known_structures(structure_id, solar_system_id, status, first_seen, last_seen) "
+                "VALUES(?,?,'ok',?,?)",
+                (sid, system, now, now),
+            )
+        conn.execute("INSERT INTO structure_access VALUES(?,?,?)", (D2, A, now))
+    sight(db, A, S_NULL)
+    terms = scout.dock_terms(A)
+    expected = ["Jita", *[n for n in forge if n != "Jita"], "1DQ1-A", *[n for n in delve if n != "1DQ1-A"]]
+    assert terms == [f"{n} - " for n in expected]
+    assert len(set(terms)) == len(terms)  # each system once
+
+
+async def test_a_capped_result_searches_the_fallback_terms_bounded_and_resumes_at_the_cursor(
+    settings, services, dock_world
+):
+    await link(services, A, A, DOCK)
+    settings.structures.dock_search_cap = 1  # every non-empty result counts as cut off
+    settings.structures.dock_search_max_terms = 3
+    scout = scout_for(settings, services)
+    db = services["db"]
+    db.save_snapshot(A, solar_system_id=JITA)
+    terms = scout.dock_terms(A)
+    stats = fresh_stats()
+    await scout._dock_search(stats)
+    assert [t for _, t in dock_world.search_log] == [" - ", *terms[:3]]  # the term, then at most 3 systems
+    assert dock_state(db, A)["cursor"] == 3 and stats["dock_capped"] == 1
+    assert terms[0] == "Jita - " and docks(db)[A] >= {S_HIGH, D1, D2}  # "Jita - " finds the Jita structures
+    dock_world.search_log.clear()
+    due_again(db)
+    await scout._dock_search(fresh_stats())
+    assert [t for _, t in dock_world.search_log] == [" - ", *terms[3:6]]  # a later run goes on where this one stopped
+    assert dock_state(db, A)["cursor"] == 6
+
+
+async def test_the_fallback_cursor_cycles_through_all_terms(settings, services, dock_world, monkeypatch):
+    await link(services, A, A, DOCK)
+    settings.structures.dock_search_cap = 1
+    settings.structures.dock_search_max_terms = 2
+    scout = scout_for(settings, services)
+    monkeypatch.setattr(scout, "dock_terms", lambda cid: ["Aaa - ", "Bbb - ", "Ccc - "])
+    db = services["db"]
+    seen: list[str] = []
+    for expected_cursor in (2, 1, 0):
+        dock_world.search_log.clear()
+        await scout._dock_search(fresh_stats())
+        seen += [t for _, t in dock_world.search_log if t != " - "]
+        assert dock_state(db, A)["cursor"] == expected_cursor
+        due_again(db)
+    assert seen == ["Aaa - ", "Bbb - ", "Ccc - ", "Aaa - ", "Bbb - ", "Ccc - "]  # wraps around, eventually everything
+    settings.structures.dock_search_max_terms = 0  # no fallback at all
+    dock_world.search_log.clear()
+    await scout._dock_search(fresh_stats())
+    assert [t for _, t in dock_world.search_log] == [" - "]
+
+
+async def test_a_passing_error_keeps_the_interval_and_a_refusal_waits_the_whole_of_it(
+    settings, services, dock_world, monkeypatch
+):
+    await link(services, A, A, DOCK)
+    scout = scout_for(settings, services)
+    db = services["db"]
+    await scout._dock_search(fresh_stats())
+    due_again(db)
+    passing_errors = (EsiError(503, "boom"), EsiError(429, "slow"), EsiError(420, "error limited"), EsiError(0, "net"))
+    for passing in passing_errors:
+        fail_search(scout, monkeypatch, passing)
+        stats = fresh_stats()
+        await scout._dock_search(stats)
+        state = dock_state(db, A)
+        assert state["checked_at"] == 1 and state["error"] and stats["dock_errors"] == 1  # still due next run
+        assert docks(db)[A] == {S_HIGH, D1, D2}  # what was stored stays
+        monkeypatch.undo()
+    stats = fresh_stats()
+    await scout._dock_search(stats)  # ESI is back: searched again at once
+    state = dock_state(db, A)
+    assert state["checked_at"] > 1 and state["error"] is None and stats["dock_searched"] == 1
+    # 403: the error is recorded and the character waits the full interval
+    due_again(db)
+    fail_search(scout, monkeypatch, EsiError(403, "token not valid for scope"))
+    await scout._dock_search(fresh_stats())
+    state = dock_state(db, A)
+    assert "scope" in state["error"] and state["checked_at"] > time.time() - 60
+    monkeypatch.undo()
+    dock_world.search_log.clear()
+    await scout._dock_search(fresh_stats())
+    assert dock_world.search_log == [] and docks(db)[A] == {S_HIGH, D1, D2}
+    # a token SSO does not accept counts the same
+    due_again(db)
+    fail_search(scout, monkeypatch, SsoError("refresh token revoked"))
+    await scout._dock_search(fresh_stats())
+    assert dock_state(db, A)["checked_at"] > time.time() - 60 and "revoked" in dock_state(db, A)["error"]
+
+
+async def test_a_first_search_that_fails_for_a_passing_reason_is_retried_next_run(
+    settings, services, dock_world, monkeypatch
+):
+    await link(services, A, A, DOCK)
+    scout = scout_for(settings, services)
+    db = services["db"]
+    fail_search(scout, monkeypatch, EsiError(502, "bad gateway"))
+    await scout._dock_search(fresh_stats())
+    assert dock_state(db, A)["checked_at"] == 0.0 and docks(db) == {}
+    monkeypatch.undo()
+    await scout._dock_search(fresh_stats())
+    assert docks(db) == {A: {S_HIGH, D1, D2}}
+
+
+async def test_the_dock_search_respects_the_error_window_and_pauses_the_fallback(
+    settings, services, dock_world, monkeypatch
+):
+    await link(services, A, A, DOCK)
+    scout = scout_for(settings, services)
+    db = services["db"]
+    reserves: list[int] = []
+    monkeypatch.setattr(scout.esi, "blocked_for", lambda reserve=5: reserves.append(reserve) or 30.0)
+    await scout._dock_search(fresh_stats())
+    assert dock_world.search_log == [] and dock_state(db, A) is None  # nothing sent, nothing recorded
+    from evedm.scout import SCOUT_ERROR_RESERVE
+
+    assert reserves == [SCOUT_ERROR_RESERVE]
+    # the window closes in the middle of the fallback: what was found is kept, the cursor says where it stopped
+    settings.structures.dock_search_cap = 1
+    settings.structures.dock_search_max_terms = 5
+    monkeypatch.setattr(scout, "dock_terms", lambda cid: ["Jita - ", "Perimeter - ", "Amarr - ", "Rens - "])
+    calls = {"n": 0}
+
+    def closing(reserve=5):
+        if reserve != SCOUT_ERROR_RESERVE:  # the client's own check
+            return 0.0
+        calls["n"] += 1
+        return 0.0 if calls["n"] <= 3 else 30.0  # before the term, before "Jita - ", before "Perimeter - "
+
+    monkeypatch.setattr(scout.esi, "blocked_for", closing)
+    stats = fresh_stats()
+    await scout._dock_search(stats)
+    assert [t for _, t in dock_world.search_log] == [" - ", "Jita - ", "Perimeter - "]
+    state = dock_state(db, A)
+    assert state["cursor"] == 2 and "paused" in state["error"] and state["checked_at"] == 0.0  # retried next run
+    assert docks(db)[A] == {S_HIGH, D1, D2} and stats["dock_errors"] == 1
+
+
+async def test_characters_that_may_dock_are_asked_first_and_resolve_without_a_403(
+    settings, services, dock_world, monkeypatch
+):
+    dock_world.structures[D3] = {"name": "Delve - Club", "owner_id": CORP, "solar_system_id": DQ1, "type_id": 35832,
+                                 "acl": [A]}
+    dock_world.assets[B] = [*dock_world.assets[B], asset(14, D3, "other")]  # B has assets in D3 but may not read it
+    await link(services, A, A, DOCK)
+    await link(services, B, B, ALL)
+    scout = scout_for(settings, services)
+    sight(services["db"], B, D3)
+    await scout._dock_search(fresh_stats())
+    pool = scout._load_pool()
+    assert pool.access[D3] == [A] and pool.sightings[D3] == [B]
+    assert scout._candidates(D3, pool) == [A, B]  # the one known to be allowed goes first, then the sighter
+    assert scout._candidates(D3, pool, main_id=B) == [A, B]  # even before the main's own link
+    sent = watch(scout, monkeypatch)
+    await scout.run()
+    assert [x for x in sent if x[0] == D3] == [(D3, A)]
+    assert statuses(services["db"])[D3] == "ok" and not {r for r in refusals(services["db"]) if r[0] == D3}
+
+
+async def test_the_orphan_purge_spares_structures_somebody_may_dock_at(settings, services, world):
+    await link(services, A, A, ALL)
+    scout = scout_for(settings, services)
+    await scout.run()
+    db = services["db"]
+    now = time.time()
+    with db.tx() as conn:
+        for sid in (T1, T2):  # refused a moment ago: the hourly step leaves them alone
+            conn.execute(
+                "INSERT INTO known_structures(structure_id, status, first_seen, last_seen, checked_at) "
+                "VALUES(?,?,?,?,?)",
+                (sid, "no_access", now, now, now),
+            )
+        conn.execute("INSERT INTO structure_access VALUES(?,?,?)", (T1, A, now))
+    stats = await scout.run()
+    assert stats["purged_orphans"] == 1
+    left = statuses(db)
+    assert T1 in left and T2 not in left  # no sighting, but A may dock there
+
+
+async def test_dock_search_rows_of_unregistered_characters_and_old_rows_are_pruned(settings, services, world):
+    await link(services, A, A, ALL)
+    scout = scout_for(settings, services)
+    db = services["db"]
+    now = time.time()
+    with db.tx() as conn:
+        conn.executemany(
+            "INSERT INTO structure_access VALUES(?,?,?)",
+            [(T1, A, now), (T2, A, now - 31 * 86400), (T1, 777, now), (T3, 777, now)],
+        )
+        conn.execute("INSERT INTO scout_dock_search(character_id, checked_at) VALUES(777, ?)", (now,))
+        conn.execute("INSERT INTO scout_dock_search(character_id, checked_at) VALUES(?, ?)", (A, now))
+    await scout.run()  # prunes as part of the step
+    assert docks(db) == {A: {T1}}  # character 777 is not registered, T2 was not refreshed for 30 days
+    assert [r[0] for r in db.query("SELECT character_id FROM scout_dock_search")] == [A]
+
+
+async def test_the_listing_source_filter_defaults_to_assets_and_shows_counts_only(settings, services, dock_world):
+    await link(services, A, A, DOCK)
+    await link(services, B, B, ALL)
+    scout = scout_for(settings, services)
+    await scout._dock_search(fresh_stats())  # D1 and D2 are stored, not yet read
+    scout.version += 1
+    unread = {r["structure_id"]: r for r in scout.listing({}, [], source="dock")["rows"]}
+    assert {D1, D2, S_HIGH} == set(unread) and unread[D1]["status"] == "unread"
+    await scout.run()
+    ids = lambda **kw: {r["structure_id"] for r in scout.listing({}, [], **kw)["rows"]}  # noqa: E731
+    with_assets = ids()
+    assert ids(source="assets") == with_assets and {S_HIGH, S_WH, S_NULL} <= with_assets
+    assert D1 not in with_assets and D2 not in with_assets  # dockable, but nobody has assets there
+    assert ids(source="dock") == {D1, D2}  # dockable and without assets (S_HIGH has both)
+    assert ids(source="all") == with_assets | {D1, D2} and ids(source="nonsense") == with_assets
+    listing = scout.listing({}, [], source="all", limit=500)
+    by_id = {r["structure_id"]: r for r in listing["rows"]}
+    assert (by_id[S_HIGH]["assets"], by_id[S_HIGH]["dockable"], by_id[S_HIGH]["dock_by"]) == (True, True, 1)
+    d1 = by_id[D1]
+    assert (d1["assets"], d1["dockable"], d1["dock_by"], d1["seen_by"]) == (False, True, 1, 0)
+    assert (by_id[S_WH]["assets"], by_id[S_WH]["dockable"], by_id[S_WH]["dock_by"]) == (True, False, 0)
+    assert listing["facets"]["sources"] == {"assets": len(with_assets), "dock": 2, "all": len(with_assets) + 2}
+    assert listing["facets"]["total"] == len(with_assets) + 2 and listing["facets"]["source"] == "all"
+    assert scout.listing({}, [])["facets"]["total"] == len(with_assets)  # the header count of the default view
+    text = json.dumps(listing)
+    assert str(A) not in text and str(B) not in text and "Alpha" not in text  # who may dock is never shown
+    assert all(isinstance(r["dock_by"], int) for r in listing["rows"])
+
+
+def test_the_structures_api_takes_the_source_filter(tmp_path):
+    with demo(tmp_path) as c:
+        get = lambda **p: c.get("/api/structures", params=p).json()  # noqa: E731
+        base = get()
+        assert base["matched"] == 7 and base["facets"]["source"] == "assets"
+        assert base["facets"]["sources"] == {"assets": 7, "dock": 0, "all": 7}
+        assert get(source="dock")["matched"] == 0 and get(source="all")["matched"] == 7
+        svc = c.app.state.svc
+        sid = 1_099_000_000_001
+        now = time.time()
+        with svc.db.tx() as conn:  # a structure somebody may dock at, nobody has assets there
+            conn.execute(
+                "INSERT INTO known_structures(structure_id,name,owner_id,solar_system_id,type_id,status,first_seen,"
+                "last_seen,checked_at) VALUES(?,?,?,?,?,'ok',?,?,?)",
+                (sid, "Jita - Open House", 1, 30000142, 35832, now, now, now),
+            )
+            conn.execute("INSERT INTO structure_access VALUES(?,?,?)", (sid, 5, now))
+            conn.execute("INSERT INTO structure_access VALUES(?,?,?)", (sid, 6, now))
+        svc.scout.version += 1
+        assert get()["matched"] == 7  # the default view is unchanged
+        dock = get(source="dock")
+        assert dock["matched"] == 1 and dock["rows"][0]["dock_by"] == 2 and dock["rows"][0]["seen_by"] == 0
+        assert get(source="all")["matched"] == 8 and get(source="all")["facets"]["sources"]["dock"] == 1
+        assert "character" not in json.dumps(dock["rows"][0]).replace("characters", "")  # counts, not characters
+        assert 'id="s-source"' in c.get("/structures").text and "s-source" in c.get("/static/structures.js").text
+
+
+async def test_stats_have_a_dock_search_block(settings, services, dock_world):
+    await link(services, A, A, DOCK)
+    scout = scout_for(settings, services)
+    empty = scout.stats()["dock_search"]
+    assert empty["characters_searched"] == 0 and empty["access_rows"] == 0 and empty["eligible_characters"] == 1
+    assert empty["term"] == " - " and empty["cap"] == 500 and empty["enabled"] is True
+    await scout._dock_search(fresh_stats())
+    block = scout.stats()["dock_search"]
+    assert block["characters_searched"] == 1 and block["capped"] == 0 and block["with_errors"] == 0
+    assert block["access_rows"] == 3 and block["dockable"] == 3 and block["dockable_unresolved"] == 3
+    await scout.run()  # reads them; S_HIGH has assets of A
+    block = scout.stats()["dock_search"]
+    assert block["dockable"] == 3 and block["dockable_without_assets"] == 2 and block["dockable_unresolved"] == 0
+    services["db"].execute("DROP TABLE structure_access")  # a database that was not migrated yet (read-only CLI)
+    services["db"].execute("DROP TABLE scout_dock_search")
+    old = scout.stats()["dock_search"]
+    assert old["access_rows"] == 0 and old["characters_searched"] == 0
+
+
+async def test_search_structure_ids_is_the_one_request_for_the_character_search(services, dock_world):
+    tokens = await mint(services["http"], A, scopes=DOCK)
+    from evedm.esi import search_structure_ids
+
+    esi = services["esi"]
+    assert await search_structure_ids(esi, A, tokens["access_token"], " - ") == sorted([S_HIGH, D1, D2])
+    assert await search_structure_ids(esi, A, tokens["access_token"], " » ") == []  # ESI answers {}: no match
+    assert dock_world.search_log == [(A, " - "), (A, " » ")]
+
+    class Stub:
+        paths: list[str] = []
+
+        async def get(self, path, token=None):
+            self.paths.append(path)
+
+    stub = Stub()
+    assert await search_structure_ids(stub, 5, "t", " - ") == []
+    assert stub.paths == ["/characters/5/search/?categories=structure&search=%20-%20&strict=false"]
+
+
+def test_the_dock_search_settings_are_checked():
+    s = Settings()
+    s.secret_key, s.demo = "k", True
+    assert (s.structures.dock_search_enabled, s.structures.dock_search_hours, s.structures.dock_search_term) == (
+        True,
+        24.0,
+        " - ",
+    )
+    assert (s.structures.dock_search_cap, s.structures.dock_search_max_terms) == (500, 40)
+    s.validate_for_serve()
+    from evedm.config import ConfigError
+
+    for field, value in (("dock_search_term", "ab"), ("dock_search_hours", 0), ("dock_search_cap", 0),
+                         ("dock_search_max_terms", -1)):
+        bad = Settings()
+        bad.secret_key, bad.demo = "k", True
+        setattr(bad.structures, field, value)
+        with pytest.raises(ConfigError, match="dock_search"):
+            bad.validate_for_serve()
+        bad.structures.dock_search_enabled = False  # not checked while switched off
+        bad.validate_for_serve()
+
+
+def test_search_probe_command_runs_the_terms_and_writes_nothing(tmp_path, settings, fake_app, monkeypatch, capsys):
+    from common import FAKE
+    from evedm import cli
+    from evedm.characters import CharacterService
+    from evedm.crypto import TokenCipher
+    from evedm.db import Database
+    from evedm.sso import AuthService
+
+    fake = fake_app.state.fake
+    fake.structures.update(
+        {
+            S_HIGH: {"name": "Jita - Trade Hub", "solar_system_id": JITA, "acl": [A]},
+            D1: {"name": "Perimeter - Dock Only", "solar_system_id": 30000144, "acl": [A]},
+            D2: {"name": "Jita - Open House", "solar_system_id": JITA, "acl": None},
+            D3: {"name": "Jita » Amarr - Gate", "solar_system_id": JITA, "acl": [A]},
+        }
+    )
+
+    async def seed() -> None:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fake_app), base_url=FAKE) as http:
+            db = Database(settings.db_path, settings.sqlite_journal)
+            auth = AuthService(settings.eve, http)
+            chars = CharacterService(db, TokenCipher(settings.secret_key), auth, settings)
+            for cid, scopes in ((A, DOCK), (B, ALL)):
+                tokens = await mint(http, cid, scopes=scopes)
+                chars.store(await auth.refresh(tokens["refresh_token"]), owner_id=cid)
+            db.save_snapshot(A, solar_system_id=JITA)
+            db.close()
+
+    asyncio.run(seed())
+
+    def tables() -> dict[str, list]:
+        db = Database(settings.db_path, read_only=True)
+        out = {
+            t: [tuple(r) for r in db.query(f"SELECT * FROM {t} ORDER BY 1, 2")]  # noqa: S608
+            for t in ("known_structures", "structure_sightings", "structure_refusals", "structure_access",
+                      "scout_dock_search")
+        }
+        db.close()
+        return out
+
+    before = tables()
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(cli, "_settings", lambda args: settings)
+    fake_client = lambda **kw: real_client(transport=httpx.ASGITransport(app=fake_app), base_url=FAKE)  # noqa: E731
+    monkeypatch.setattr("evedm.web.app.httpx.AsyncClient", fake_client)
+    settings.structures.dock_search_cap = 3
+    assert cli.main(["structures", "search-probe", "--character", str(A)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    by_term = {t["term"]: t for t in out["terms"]}
+    assert list(by_term) == [" - ", " » ", "Jita - "]  # configured, the Ansiblex term, the last known system
+    assert by_term[" - "]["count"] == 4 and by_term[" - "]["hit_cap"] is True  # the cap is 3 here
+    assert by_term[" - "]["structure_ids"] == 4 and by_term[" - "]["sample"] == sorted(by_term[" - "]["sample"])
+    assert len(by_term[" - "]["sample"]) == 4 and by_term[" » "]["count"] == 1 and by_term[" » "]["hit_cap"] is False
+    assert by_term["Jita - "]["count"] == 2 and by_term["Jita - "]["sample"] == sorted([S_HIGH, D2])
+    assert out["cap"] == 3 and out["stopped"] is None and out["character_id"] == A
+    assert tables() == before  # nothing stored
+    assert cli.main(["structures", "search-probe", "--character", str(A), "--term", "Perim", "--term", "zzz"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert [(t["term"], t["count"], t["sample"]) for t in out["terms"]] == [("Perim", 1, [D1]), ("zzz", 0, [])]
+    assert tables() == before
+    # a character without both scopes cannot be searched; no character at all is a usage error
+    assert cli.main(["structures", "search-probe", "--character", str(B)]) == 2
+    assert "not registered with both search scopes" in capsys.readouterr().err
+    assert cli.main(["structures", "search-probe"]) == 2
+    text = json.dumps(out)
+    assert "token" not in text and "Alpha" not in text

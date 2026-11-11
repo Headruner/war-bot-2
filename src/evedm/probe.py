@@ -1,14 +1,15 @@
 """Read-only diagnostics for the structure scout: what the asset locations of a few characters really are.
 
-The scout takes every asset whose ``location_type`` is ``other`` and whose ``location_id`` is at least 1e12 for the
-ID of an Upwell structure. Customs offices and corporation offices share that ID range and cannot be resolved, and
-``other`` also covers items inside a hangar flag such as ``AutoFit``. This module reads the asset lists of some
-characters and groups the locations by (location_type, location_flag), so the ingestion filter can be chosen from
-evidence: how many distinct IDs each group has, how many are the character's own items (ships, containers), and what
-the database already knows about the rest (resolved, refused, never asked, gone, or not stored at all).
+The scout takes a location for a structure when its ID is at least 1e12, its flag is one of ``STRUCTURE_FLAGS`` and
+it is not one of the character's own items (``is_structure_candidate`` in ``scout.py``; ``location_type`` is not used).
+This module reads the asset lists of some characters and groups the locations by (location_type, location_flag), so
+the rule can be checked against evidence: how many distinct IDs each group has, how many pass the rule (``candidates``),
+how many are the character's own items (ships, containers), and what the database already knows about them (resolved,
+refused, never asked, gone, or not stored at all).
 
-Nothing here writes to ``known_structures``, ``structure_sightings`` or ``structure_refusals``. The only ESI calls are
-``GET /characters/{id}/assets`` pages (they cost no errors); a token refresh goes through ``CharacterService``.
+Nothing here writes to ``known_structures``, ``structure_sightings``, ``structure_access`` or
+``structure_refusals``. The only ESI calls are ``GET /characters/{id}/assets`` pages and, for ``search_probe``,
+``GET /characters/{id}/search/`` (neither costs errors); a token refresh goes through ``CharacterService``.
 """
 
 from __future__ import annotations
@@ -19,10 +20,11 @@ from typing import Any
 
 from .characters import CharacterService
 from .db import Database
-from .esi import EsiClient, EsiError
+from .esi import EsiClient, EsiError, search_structure_ids
+from .scout import STRUCTURE_MIN_ID as HIGH_ID
+from .scout import is_structure_candidate
 from .sso import SsoError
 
-HIGH_ID = 1_000_000_000_000  # structures, customs offices and corporation offices all live above this
 STATUSES = ("ok", "no_access", "new", "gone", "not_in_db")
 TOP_PARENT_TYPES = 5
 
@@ -33,6 +35,7 @@ class _Bucket:
     locs: set[int] = field(default_factory=set)
     own: set[int] = field(default_factory=set)  # locations that are items of the character itself
     parents: Counter[int] = field(default_factory=Counter)  # type_id of those parent items, once per location
+    cands: set[int] = field(default_factory=set)  # locations the scout's rule takes for structures
 
 
 def _scan(rows: list[dict[str, Any]]) -> dict[tuple[str, str], _Bucket]:
@@ -47,6 +50,8 @@ def _scan(rows: list[dict[str, Any]]) -> dict[tuple[str, str], _Bucket]:
         bucket.rows += 1
         if loc not in bucket.locs:
             bucket.locs.add(loc)
+            if is_structure_candidate(loc, r.get("location_flag"), type_of):
+                bucket.cands.add(loc)
             if loc in type_of:
                 bucket.own.add(loc)
                 if type_of[loc] is not None:
@@ -62,6 +67,7 @@ def _merge(parts: list[dict[tuple[str, str], _Bucket]]) -> dict[tuple[str, str],
             t.rows += b.rows
             t.locs |= b.locs
             t.own |= b.own
+            t.cands |= b.cands
             t.parents.update(b.parents)
     return total
 
@@ -92,6 +98,7 @@ def _render(
                 "rows": b.rows,
                 "locations": len(b.locs),
                 "own_item": len(b.own),
+                "candidates": len(b.cands),  # distinct IDs that pass the scout's rule
                 "db": {s: len(v) for s, v in by.items()},
                 "samples": {s: v[: max(0, samples)] for s, v in by.items() if v},
                 "own_item_parent_types": [
@@ -103,7 +110,7 @@ def _render(
     return out
 
 
-def _verdict(total: list[dict[str, Any]]) -> dict[str, Any]:
+def _verdict(total: list[dict[str, Any]], candidates: dict[str, Any]) -> dict[str, Any]:
     """Per location_flag under location_type ``other``: the share of distinct IDs resolved (ok) against refused."""
     flags: dict[str, Any] = {}
     for b in total:
@@ -126,7 +133,7 @@ def _verdict(total: list[dict[str, Any]]) -> dict[str, Any]:
             "own_item": b["own_item"],
             "reading": tag,  # mostly_resolved: ok >= half; mostly_refused: no_access >= half; else mixed
         }
-    return {"location_type_other_by_flag": flags}
+    return {"location_type_other_by_flag": flags, "candidates": candidates}
 
 
 def probe_assets(assets: dict[int, list[dict[str, Any]]], db: Database, samples: int = 5) -> dict[str, Any]:
@@ -143,6 +150,9 @@ def probe_assets(assets: dict[int, list[dict[str, Any]]], db: Database, samples:
     type_ids = {t for part in scans.values() for b in part.values() for t in b.parents}
     names = db.get_type_names(sorted(type_ids)) if type_ids else {}
     rendered_total = _render(total, status, names, samples)
+    cand_ids = {loc for b in total.values() for loc in b.cands}
+    by_status = Counter(status[loc] for loc in cand_ids)
+    candidates = {"distinct_ids": len(cand_ids), "db": {s: by_status.get(s, 0) for s in STATUSES}}
     return {
         "characters": {
             str(cid): {
@@ -158,7 +168,7 @@ def probe_assets(assets: dict[int, list[dict[str, Any]]], db: Database, samples:
             "assets_at_1e12_or_more": sum(b.rows for b in total.values()),
             "buckets": rendered_total,
         },
-        "verdict": _verdict(rendered_total),
+        "verdict": _verdict(rendered_total, candidates),
     }
 
 
@@ -225,3 +235,65 @@ async def probe_characters(
         report["characters"][cid_text]["read"] = info
     report["run"] = {"characters": [c for c, _ in picked], "max_pages": max_pages, "stopped": stopped}
     return report
+
+
+async def search_probe(
+    db: Database,
+    chars: CharacterService,
+    esi: EsiClient,
+    character_id: int,
+    owner_id: int,
+    terms: list[str],
+    *,
+    cap: int,
+    samples: int = 5,
+) -> dict[str, Any]:
+    """Run the structure search of one character for each term and report what came back (nothing is stored).
+
+    This is how to check the two assumptions behind the scout's dock search on a live character: that the term " - "
+    matches as a substring (``count`` well above 0) and where the result is cut off (``hit_cap``, ``count`` equal to the
+    cap on every long term). Stops cleanly while ESI's error window is low or after a 420/429.
+    """
+    out: list[dict[str, Any]] = []
+    stopped: dict[str, Any] | None = None
+    token: str | None = None
+    for term in terms:
+        wait = esi.blocked_for()
+        if wait > 0:
+            stopped = {"reason": "blocked", "retry_in_s": round(wait), "before_term": term}
+            break
+        row: dict[str, Any] = {
+            "term": term,
+            "count": None,
+            "hit_cap": None,
+            "structure_ids": None,
+            "sample": [],
+            "error": None,
+        }
+        try:
+            token = token or await chars.access_token(character_id, owner_id)
+            ids = await search_structure_ids(esi, character_id, token, term)
+            row["count"] = len(ids)
+            row["hit_cap"] = len(ids) >= cap
+            row["structure_ids"] = sum(1 for i in ids if i >= HIGH_ID)
+            row["sample"] = ids[: max(0, samples)]
+        except (EsiError, SsoError) as exc:
+            row["error"] = str(exc)[:120]
+            if isinstance(exc, EsiError) and exc.status in (420, 429):
+                stopped = {"reason": "blocked", "retry_in_s": round(esi.blocked_for()), "before_term": term}
+        out.append(row)
+        if stopped is not None:
+            break
+    return {"character_id": character_id, "cap": cap, "terms": out, "stopped": stopped}
+
+
+def default_search_terms(db: Database, graph: Any, character_id: int, configured: str) -> list[str]:
+    """The configured term, the Ansiblex term and "<system> - " for the character's last known system."""
+    from .ansiblex import SEARCH_TERM
+
+    terms = [configured, SEARCH_TERM]
+    rows = db.query("SELECT solar_system_id FROM snapshots WHERE character_id=?", (character_id,))
+    idx = graph.index.get(rows[0][0]) if rows and rows[0][0] else None
+    if idx is not None:
+        terms.append(f"{graph.names[idx]} - ")
+    return list(dict.fromkeys(terms))
