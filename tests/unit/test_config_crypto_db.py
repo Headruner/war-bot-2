@@ -135,7 +135,7 @@ def test_an_old_database_gets_the_asset_filter_column_in_place(tmp_path):
     con.commit()
     con.close()
     d = Database(path)
-    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 17
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 18
     row = d.query("SELECT checked_at, structures, filter_v FROM scout_characters WHERE character_id=7")[0]
     assert tuple(row) == (5.0, 3, 1)  # the row is kept and counts as read with the first filter: read again at once
     d.close()
@@ -157,7 +157,7 @@ def test_an_old_database_gets_the_dock_search_tables_in_place(tmp_path):
     con.commit()
     con.close()
     d = Database(path)
-    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 17
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 18
     assert d.query("SELECT COUNT(*) FROM structure_access")[0][0] == 0
     assert d.query("SELECT COUNT(*) FROM scout_dock_search")[0][0] == 0
     cols = [r[1] for r in d.query("PRAGMA table_info(scout_dock_search)")]
@@ -186,7 +186,7 @@ def test_an_old_database_gets_the_search_term_and_pass_columns_in_place(tmp_path
     con.commit()
     con.close()
     d = Database(path)
-    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 17
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 18
     row = d.query("SELECT structure_id, character_id, seen_at, term FROM structure_access")[0]
     assert tuple(row) == (1000000000001, 7, 5.0, None)  # existing rows get no term
     state = d.query(

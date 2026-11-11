@@ -238,15 +238,17 @@ class NotificationSettings:
     """
 
     enabled: bool = True
-    poll_s: float = 60.0  # the loop runs every minute; ESI caches each character for 600 s
+    poll_s: float = 60.0  # longest sleep of the loop (it wakes when a character is due); ESI caches a character 600 s
     character_interval_s: float = 600.0  # a character is asked again when its cached copy expires
     retention_days: float = 30.0
     concurrency: int = 4
     groups: list[str] = field(default_factory=lambda: list(DEFAULT_NOTIFICATION_GROUPS))
     # A character is read only when it has assets in at least this many player structures (NPC stations do not
-    # count): small characters add ESI load without ever receiving a structure notification. 0 = read everyone.
-    min_structures: int = 10
-    min_interval_s: float = 30.0  # never ask one character more often than this, whatever ESI's Expires says
+    # count). The default 1 skips only characters with no structure at all; a larger value saves ESI requests but
+    # silently stops reading everybody below it. 0 = read everyone, also before the first asset scan.
+    min_structures: int = 1
+    # Never ask one character more often than this when ESI sends no usable Expires; a real Expires is followed.
+    min_interval_s: float = 30.0
     retry_s: float = 60.0  # a character whose read failed (ESI 5xx, error limit, network) is retried after this
     # Spread the reads of the characters over ESI's cache window: several characters of one corporation get the
     # same structure notification, each with its own 600 s cache, so with their reads evenly apart the first copy

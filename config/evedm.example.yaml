@@ -62,12 +62,12 @@ access:                                     # who sees the members-only tabs: No
 
 notifications:                              # notifications of every registered character with a valid token (Notifications page)
   enabled: ${EVEDM_NOTIFICATIONS_ENABLED:-true}
-  poll_s: 60                                # the loop runs this often; ESI caches each character 600 s
+  poll_s: 60                                # the loop wakes at the latest this often (and exactly when a character is due); ESI caches each character 600 s
   character_interval_s: 600                 # so a character is asked again only after its cache expires
   retention_days: 30
   concurrency: 4
-  min_structures: 10                        # a character is checked only with at least this many player structures holding assets (NPC stations do not count)
-  min_interval_s: 30                        # the next check is set to ESI's cache expiry, but never sooner than this
+  min_structures: 1                         # a character is checked only with at least this many player structures holding assets (NPC stations do not count); 0 = everybody
+  min_interval_s: 30                        # the next check follows ESI's Expires; this floor applies only when ESI sends none
   retry_s: 60                               # retry after a transient ESI error (420/429/5xx, network)
   stagger_s: 60                             # spread the characters' reads over ESI's 600 s window (a read moves at most this much later per round; 0 = off)
   wait_s: 20                                # the page's "anything new?" request is held open this long (new notifications appear at once)

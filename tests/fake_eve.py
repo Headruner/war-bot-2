@@ -128,6 +128,13 @@ class FakeState:
     r2z2_user_agents: set[str] = field(default_factory=set)
     # character notifications and public affiliation (Notifications page)
     notifications: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
+    # what the notifications endpoint says about its own freshness: cache lifetime, how old the data is
+    # (Last-Modified), the server clock's offset to the host (Date, Expires), no Expires at all, a forced status
+    notif_ttl: float = 600.0
+    notif_age_s: float | None = None
+    notif_skew_s: float = 0.0
+    notif_no_expires: bool = False
+    notif_status: int = 0
     affiliations: dict[int, dict[str, int]] = field(default_factory=dict)
     default_alliance: int = 99010320
     # EVE-Scout's public signature list (Thera / Turnur wormholes), served at /evescout/signatures
@@ -289,12 +296,12 @@ def create_fake_app(
             return JSONResponse({"error": "missing compatibility date"}, status_code=400)
         return None
 
-    def esi_json(request: Request, body: Any, ttl: int) -> Response:
+    def esi_json(request: Request, body: Any, ttl: float, skew_s: float = 0.0) -> Response:
         payload = json.dumps(body).encode()
         etag = '"' + hashlib.md5(payload).hexdigest() + '"'  # noqa: S324
         headers = {
             "ETag": etag,
-            "Expires": email.utils.formatdate(time.time() + ttl, usegmt=True),
+            "Expires": email.utils.formatdate(time.time() + skew_s + ttl, usegmt=True),
             "X-Ratelimit-Group": "char-location",
             "X-Ratelimit-Limit": "1200/15m",
             "X-Ratelimit-Remaining": "1150",
@@ -360,7 +367,17 @@ def create_fake_app(
         await maybe_delay()
         if (err := esi_auth(request, cid, "esi-characters.read_notifications.v1")) is not None:
             return err
-        return esi_json(request, st.notifications.get(cid, []), 600)
+        if st.notif_status:
+            return JSONResponse({"error": "forced"}, status_code=st.notif_status)
+        resp = esi_json(request, st.notifications.get(cid, []), st.notif_ttl, st.notif_skew_s)
+        resp.headers["Date"] = email.utils.formatdate(time.time() + st.notif_skew_s, usegmt=True)
+        if st.notif_age_s is not None:
+            resp.headers["Last-Modified"] = email.utils.formatdate(
+                time.time() + st.notif_skew_s - st.notif_age_s, usegmt=True
+            )
+        if st.notif_no_expires:
+            del resp.headers["Expires"]
+        return resp
 
     @app.get("/characters/{cid}")
     async def character_public(request: Request, cid: int) -> Response:

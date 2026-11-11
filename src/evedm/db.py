@@ -13,7 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 17  # v14: structure_refusals; v15: scout filter_v; v16: dock search; v17: search term and passes
+SCHEMA_VERSION = 18  # v14: structure_refusals; v15: scout filter_v; v16: dock search; v17: search term and passes
+# v18: notification_reads
+READS_RETENTION_DAYS = 7  # notification_reads rows are kept this long (the hourly purge)
 log = logging.getLogger("evedm.db")
 
 SCHEMA = """
@@ -238,6 +240,19 @@ CREATE TABLE IF NOT EXISTS notification_characters (
     notifications INTEGER NOT NULL DEFAULT 0,
     error         TEXT
 );
+-- one row per attempt to read a character's notifications: what ESI said about its own freshness and how late we were
+CREATE TABLE IF NOT EXISTS notification_reads (
+    character_id INTEGER NOT NULL,
+    read_at      REAL NOT NULL,
+    status       INTEGER NOT NULL DEFAULT 0,  -- 200 or 304; 0: no answer (cached copy, or the read failed)
+    data_age_s   REAL,                        -- Date - Last-Modified of the answer
+    lifetime_s   REAL,                        -- Expires - Date of the answer
+    late_s       REAL,                        -- read time - the time this read was scheduled for
+    new          INTEGER NOT NULL DEFAULT 0,  -- notifications stored by this read
+    max_delay_s  REAL,                        -- the oldest of them: read time - its timestamp
+    error        TEXT
+);
+CREATE INDEX IF NOT EXISTS notification_reads_by_time ON notification_reads(read_at);
 CREATE TABLE IF NOT EXISTS target_history (
     owner_id        INTEGER NOT NULL DEFAULT 0,
     solar_system_id INTEGER NOT NULL,
@@ -753,6 +768,9 @@ class Database:
     def purge_notifications(self, days: float) -> int:
         cutoff = time.time() - days * 86400
         self.execute("DELETE FROM notification_posts WHERE created_at < ?", (cutoff,))
+        self.execute(
+            "DELETE FROM notification_reads WHERE read_at < ?", (time.time() - READS_RETENTION_DAYS * 86400,)
+        )
         return self.execute("DELETE FROM character_notifications WHERE created_at < ?", (cutoff,))
 
     def due_notification_characters(self, character_ids: list[int], now: float | None = None) -> list[int]:
@@ -776,6 +794,41 @@ class Database:
             "VALUES(?,?,?,?,?) ON CONFLICT(character_id) DO UPDATE SET checked_at=excluded.checked_at,"
             " next_check_at=excluded.next_check_at, notifications=excluded.notifications, error=excluded.error",
             (character_id, time.time(), next_check_at, notifications, error),
+        )
+
+    def save_notification_read(  # noqa: PLR0913
+        self,
+        character_id: int,
+        *,
+        status: int = 0,
+        data_age_s: float | None = None,
+        lifetime_s: float | None = None,
+        late_s: float | None = None,
+        new: int = 0,
+        max_delay_s: float | None = None,
+        error: str | None = None,
+        read_at: float | None = None,
+    ) -> None:
+        self.execute(
+            "INSERT INTO notification_reads(character_id,read_at,status,data_age_s,lifetime_s,late_s,new,"
+            "max_delay_s,error) VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                character_id, time.time() if read_at is None else read_at, status, data_age_s, lifetime_s,
+                late_s, new, max_delay_s, error,
+            ),
+        )
+
+    def notification_reads(self, since: float) -> list[sqlite3.Row]:
+        """Reads since ``since`` (oldest first); none when the table does not exist yet (a database not migrated)."""
+        if not self.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='notification_reads'"):
+            return []
+        return self.query("SELECT * FROM notification_reads WHERE read_at >= ? ORDER BY read_at", (since,))
+
+    def notifications_stored_since(self, since: float) -> list[sqlite3.Row]:
+        """character_id, timestamp and created_at of the notifications stored since ``since``."""
+        return self.query(
+            "SELECT character_id, timestamp, created_at FROM character_notifications WHERE created_at >= ?",
+            (since,),
         )
 
     def notification_checks(self) -> dict[int, sqlite3.Row]:

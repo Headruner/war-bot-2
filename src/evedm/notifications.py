@@ -1,9 +1,10 @@
 """Character notifications from ESI: asset safety and structure attacks (UC-13, NTF-01..NTF-12).
 
-ESI caches ``/characters/{id}/notifications`` for 600 s per character, so the loop runs every minute and
-only asks for the characters whose cached copy has expired (the ESI client revalidates with ETag). Every
-registered character with a valid token is read, whoever linked it, and the page lists them all (D17). Who
-may open the page is decided by the alliance gate (``access.py``, D16).
+ESI caches ``/characters/{id}/notifications`` for 600 s per character. Each character is asked again the moment
+its cached copy expires (a quarter of a second later; the ESI client revalidates with ETag), so a notification
+waits for ESI's window and nothing else. Every registered character with a valid token is read, whoever linked
+it, and the page lists them all (D17). Who may open the page is decided by the alliance gate (``access.py``,
+D16). ``lag()`` explains where the time between a notification's timestamp and its delivery goes.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import json
 import logging
 import re
 import time
+from bisect import bisect_right
 from datetime import datetime
 from typing import Any
 
@@ -31,7 +33,14 @@ log = logging.getLogger("evedm.notifications")
 # libyaml's safe loader parses a notification body several times faster than the pure Python one
 _YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 PURGE_EVERY_S = 3600.0
-MIN_SLEEP_S = 1.0  # the loop wakes at most this often; a character is read within a second or two of its expiry
+MIN_SLEEP_S = 0.05  # shortest sleep of the loop (a character that is already due is read at once)
+READ_MARGIN_S = 0.25  # a character is asked this long after ESI's copy expires (clock and header rounding)
+MIN_REARM_S = 1.0  # the shortest honest re-arm, when ESI says the copy still lives for a moment
+SHORT_REARMS = 5  # this many short re-arms in a row without anything new: fall back to ``min_interval_s``
+LATE_S = 30.0  # a read later than this after its scheduled time is "late" in the lag report
+HISTORY_S = 86400.0  # a notification stored more than this after its timestamp is history (a first read), not lag
+HISTOGRAM_STEP_S = 120
+HISTOGRAM_MAX_S = 1800
 MAX_WAITERS = 100  # open "anything new?" requests; more than this are answered at once
 
 GROUP_OF = {t: group for group, types in NOTIFICATION_GROUPS.items() for t in types}
@@ -146,6 +155,14 @@ class NotificationService:
         self._expires: dict[int, float | None] = {}  # character_id -> when ESI's cached copy of the list expires
         self._known: dict[int, set[int]] = {}  # character_id -> notification IDs already stored
         self._purged_at = 0.0
+        self._real_lifetime: dict[int, bool] = {}  # did ESI's answer carry a usable Expires?
+        self._short_rearms: dict[int, int] = {}
+        self._meta: dict[int, Any] = {}  # character_id -> ResponseMeta of the read in progress
+        self._max_delay: dict[int, float | None] = {}
+        self._post_lock = asyncio.Lock()
+        self._post_retry_at = 0.0
+        self._eligible_n: int | None = None
+        self._lag_cache: tuple[float, dict[str, Any]] | None = None
         # pushed to the page: the version grows whenever something new is stored, and waiters are woken at once
         self.version = 0
         self._changed = asyncio.Event()
@@ -181,9 +198,22 @@ class NotificationService:
         pollable = self.pollable()
         need = self.s.min_structures
         if need <= 0 or not pollable:
-            return pollable
-        counts = self.db.structure_counts()
-        return {cid: owner for cid, owner in pollable.items() if counts.get(cid, 0) >= need}
+            eligible = pollable
+        else:
+            counts = self.db.structure_counts()
+            eligible = {cid: owner for cid, owner in pollable.items() if counts.get(cid, 0) >= need}
+        if len(eligible) != self._eligible_n:
+            log.info(
+                "notifications: reading %d of %d registered characters (%d below min_structures=%d)",
+                len(eligible), len(pollable), len(pollable) - len(eligible), need,
+            )
+            self._eligible_n = len(eligible)
+        return eligible
+
+    def excluded_by_gate(self) -> list[int]:
+        """Registered characters that are not read because they have fewer than ``min_structures`` structures."""
+        eligible = self.eligible()
+        return sorted(c for c in self.pollable() if c not in eligible)
 
     def sources(self) -> dict[int, int]:
         """character_id -> polling owner of every character whose notifications the page lists (D17, NTF-13)."""
@@ -213,8 +243,12 @@ class NotificationService:
             return 0
         token = await self.chars.access_token(character_id, owner_id)
         path = f"/characters/{character_id}/notifications"
-        items = await self.esi.get(path, token)
+        items, meta = await self.esi.get_with_meta(path, token)
+        self._meta[character_id] = meta
         self._expires[character_id] = self.esi.cached_expiry(path)
+        if meta is not None:  # None: the cached copy was still fresh, nothing was asked
+            left = meta.lifetime_s if meta.lifetime_s is not None else (meta.expires or 0.0) - meta.received_at
+            self._real_lifetime[character_id] = meta.expires is not None and left >= 0
         # ESI repeats the whole list (up to 500 entries) on every read: only entries not stored yet are parsed
         known = self._known.get(character_id)
         if known is None:
@@ -247,20 +281,38 @@ class NotificationService:
             )
         new = self.db.save_notifications(rows) if rows else 0
         known.update(r["notification_id"] for r in rows)
+        self._max_delay[character_id] = max((self._age_s(r["timestamp"]) for r in rows), default=None)
         self.state["read"] += len(items or [])
         self.state["stored"] += new
         return new
 
     def next_check_at(self, character_id: int, now: float) -> float:
-        """When to ask for this character again: the moment ESI's cached copy expires (plus a second).
+        """When to ask for this character again: the moment ESI's cached copy expires, plus a quarter of a second.
 
         A fixed 600 s after our own read drifts against ESI's cache window and a notification can then wait up to
-        two windows. Bounded by ``min_interval_s`` below and ``character_interval_s`` above.
+        two windows. ESI's own lifetime is followed, also a short one (the answer was still stale: ask again when
+        it says it expires). Only when ESI sends no usable Expires does ``min_interval_s`` apply, and
+        ``character_interval_s`` (plus the margin) is the longest wait. Without any expiry (not known after a
+        restart, or the copy was evicted) the schedule saved in the database is kept.
         """
+        window = self.s.character_interval_s
         expires = self._expires.get(character_id)
         if expires is None:
-            return now + self.s.character_interval_s
-        return min(max(expires + 1.0, now + self.s.min_interval_s), now + self.s.character_interval_s)
+            saved = self.db.notification_checks().get(character_id)
+            if saved is not None and now < saved["next_check_at"] <= now + window:
+                return float(saved["next_check_at"])
+            return now + window
+        at = expires + READ_MARGIN_S
+        floor = MIN_REARM_S
+        if not self._real_lifetime.get(character_id, True):
+            floor = self.s.min_interval_s  # no Expires, or one that is nonsense: a prompt retry, not a hot loop
+        elif at - now < self.s.min_interval_s:
+            count = self._short_rearms[character_id] = self._short_rearms.get(character_id, 0) + 1
+            if count > SHORT_REARMS:  # ESI keeps saying "a moment" without anything changing: slow down
+                floor = self.s.min_interval_s
+        else:
+            self._short_rearms[character_id] = 0
+        return min(max(at, now + floor), now + window + READ_MARGIN_S)
 
     def staggered(self, character_id: int, base: float, others: list[float]) -> float:
         """``base`` moved later by up to ``stagger_s``, toward the middle between the reads before and after it.
@@ -364,14 +416,22 @@ class NotificationService:
             payload["allowed_mentions"] = {"roles": [str(role)]}
         return payload
 
-    async def post_discord(self) -> int:
+    async def post_discord(self, *, respect_backoff: bool = False) -> int:
         """Post the notifications not posted yet; a notification several characters received is one message that
-        is edited to list them all. Returns how many messages were posted or updated."""
+        is edited to list them all. Returns how many messages were posted or updated. With ``respect_backoff``
+        nothing is sent while the last failed post is less than ``retry_s`` ago."""
         if self.notifier is None:
             return 0
+        async with self._post_lock:  # reads post as they finish: two posters must not send the same row twice
+            if respect_backoff and time.time() < self._post_retry_at:
+                return 0
+            return await self._post_rows()
+
+    async def _post_rows(self) -> int:
         from .wars.discord import NotifyError, WebhookInvalid
 
         d = self.s.discord
+        self._post_pending = False  # anything stored while this runs sets it again
         allowed = {t for g in (d.groups or self.s.groups) for t in NOTIFICATION_GROUPS.get(g, [])}
         rows = self.db.pending_notification_posts()
         names = self.db.character_names(sorted({r["character_id"] for r in rows}))
@@ -405,13 +465,16 @@ class NotificationService:
                 self._post_pending = False  # nothing to gain from asking again until something new arrives
                 return done
             except NotifyError as exc:
-                log.warning("notification post failed (retried on the next round): %s", redact(str(exc)))
+                log.warning("notification post failed (retried in %.0f s): %s", self.s.retry_s, redact(str(exc)))
+                self._post_retry_at = time.time() + self.s.retry_s
+                self._post_pending = True
                 return done
             message_id = str(message.get("id") or (post["message_id"] if post is not None else "") or "")
             self.db.save_notification_post(key, message_id or None, characters)
             self.db.mark_notification_posted(cid, nid, 1)
             done += 1
-        self._post_pending = len(rows) >= 100  # a full page: more may wait
+        self._post_retry_at = 0.0
+        self._post_pending = self._post_pending or len(rows) >= 100  # a full page: more may wait
         self.state["posted"] = self.state.get("posted", 0) + done
         return done
 
@@ -420,8 +483,47 @@ class NotificationService:
         """A failure worth retrying soon: network trouble, ESI 5xx, the error limit or a rate limit."""
         return isinstance(exc, EsiError) and (exc.status in (0, 420, 429) or exc.status >= 500)
 
-    async def poll_once(self) -> int:
-        """One round: every character whose cached copy has expired (NTF-03)."""
+    def _retry_wait(self, exc: Exception) -> float:
+        """How long a failed read waits: a refusal for a full window, a passing error ``retry_s`` and the error
+        limit (420) exactly until ESI lets us in again."""
+        if not self._transient(exc):
+            return self.s.character_interval_s
+        if isinstance(exc, EsiError) and exc.status == 420 and self.esi is not None:
+            blocked = self.esi.blocked_for()
+            return min(blocked + READ_MARGIN_S if blocked > 0 else MIN_REARM_S, self.s.character_interval_s)
+        return self.s.retry_s
+
+    def _record_read(self, cid: int, late_s: float, new: int, exc: Exception | None = None) -> None:
+        """One row in ``notification_reads`` for the read that just ended (see ``lag``); never fails the round."""
+        meta = self._meta.pop(cid, None)
+        max_delay = self._max_delay.pop(cid, None)
+        try:
+            self.db.save_notification_read(
+                cid,
+                status=meta.status if meta is not None else 0,
+                data_age_s=meta.data_age_s if meta is not None else None,
+                lifetime_s=meta.lifetime_s if meta is not None else None,
+                late_s=late_s,
+                new=new,
+                max_delay_s=max_delay,
+                error=redact(repr(exc))[:200] if exc is not None else None,
+            )
+        except Exception:  # a statistics row is never worth losing a read for
+            log.warning("notification read could not be recorded", exc_info=True)
+
+    async def _post_after_read(self) -> None:
+        """Discord gets a character's new notifications as soon as they are stored, not after the whole round."""
+        if self.notifier is None or not self._post_pending or time.time() < self._post_retry_at:
+            return
+        try:
+            await self.post_discord(respect_backoff=True)
+        except Exception as exc:  # the next round tries again
+            self.state["last_error"] = redact(repr(exc))
+            log.exception("notification post failed")
+
+    async def poll_once(self, post: bool = False) -> int:
+        """One round: every character whose cached copy has expired (NTF-03). With ``post`` the new notifications
+        of each character go to Discord the moment that character has been read."""
         pollable = self.eligible()
         due = self.db.due_notification_characters(list(pollable))
         if not due:
@@ -431,27 +533,41 @@ class NotificationService:
         checks = self.db.notification_checks()
         scheduled = {c: checks[c]["next_check_at"] for c in pollable if c in checks and c not in due}
 
-        async def one(cid: int) -> int:
+        async def read_and_store(cid: int) -> int:
             async with sem:
                 now = time.time()
+                planned = checks[cid]["next_check_at"] if cid in checks else 0.0
+                late = max(0.0, now - planned) if planned else 0.0
                 try:
                     new = await self.read_character(cid, pollable[cid])
                 except (EsiError, SsoError) as exc:
-                    wait = self.s.retry_s if self._transient(exc) else self.s.character_interval_s
-                    self.db.set_notification_check(cid, now + wait, 0, repr(exc)[:200])
+                    wait = self._retry_wait(exc)
+                    self.db.set_notification_check(cid, now + wait, 0, redact(repr(exc))[:200])
+                    self._record_read(cid, late, 0, exc)
                     return 0
                 except Exception as exc:  # an odd answer must not leave the character due on every round
                     log.warning("notifications of %s could not be read: %s", cid, redact(repr(exc)))
                     self.db.set_notification_check(cid, now + self.s.retry_s, 0, redact(repr(exc))[:200])
+                    self._record_read(cid, late, 0, exc)
                     return 0
                 if new:
                     self._post_pending = True
                     self._bump()  # on the page at once, while the other characters are still being read
-                nxt = self.next_check_at(cid, time.time())
-                others = [v for c, v in scheduled.items() if c != cid]
-                scheduled[cid] = nxt = self.staggered(cid, nxt, others)
+                done = time.time()
+                nxt = self.next_check_at(cid, done)
+                if nxt - done >= self.s.character_interval_s / 2:  # a full window: spread it; a short re-arm is exact
+                    others = [v for c, v in scheduled.items() if c != cid]
+                    nxt = self.staggered(cid, nxt, others)
+                scheduled[cid] = nxt
                 self.db.set_notification_check(cid, nxt, new, None)
+                self._record_read(cid, late, new)
                 return new
+
+        async def one(cid: int) -> int:
+            new = await read_and_store(cid)
+            if new and post:
+                await self._post_after_read()  # outside the semaphore: a slow Discord holds no read slot
+            return new
 
         for result in await asyncio.gather(*(one(cid) for cid in due), return_exceptions=True):
             if isinstance(result, BaseException):
@@ -465,12 +581,165 @@ class NotificationService:
         return new_total
 
     def sleep_s(self) -> float:
-        """How long the loop may sleep: until the next character is due, at most ``poll_s``, at least 1 s."""
-        checks = self.db.notification_checks()
-        upcoming = [checks[c]["next_check_at"] for c in self.eligible() if c in checks]
-        if not upcoming:
+        """How long the loop may sleep: until the next character is due (one that was never read is due now), at
+        most ``poll_s`` so that new or changed characters are noticed."""
+        eligible = self.eligible()
+        if not eligible:
             return self.s.poll_s
-        return min(self.s.poll_s, max(MIN_SLEEP_S, min(upcoming) - time.time()))
+        checks = self.db.notification_checks()
+        now = time.time()
+        wait = min((checks[c]["next_check_at"] if c in checks else 0.0) for c in eligible) - now
+        if self.notifier is not None and self._post_pending and self._post_retry_at > now:
+            wait = min(wait, self._post_retry_at - now)  # a failed Discord post is tried again when it is due
+        return min(self.s.poll_s, max(MIN_SLEEP_S, wait))
+
+    # -- where the time goes ------------------------------------------------------------------------------
+    @staticmethod
+    def _stats(values: list[float]) -> dict[str, Any]:
+        """n, p50, p90 and max of ``values`` (seconds, one decimal); None where there is nothing."""
+        vals = sorted(v for v in values if v is not None)
+        if not vals:
+            return {"n": 0, "p50": None, "p90": None, "max": None}
+
+        def pct(q: float) -> float:
+            return round(vals[min(len(vals) - 1, int(q * (len(vals) - 1) + 0.5))], 1)
+
+        return {"n": len(vals), "p50": pct(0.5), "p90": pct(0.9), "max": round(vals[-1], 1)}
+
+    @staticmethod
+    def _histogram(delays: list[float]) -> dict[str, int]:
+        """Seconds in steps of 120 up to 1800 ("0-120" .. "1680-1800") and the open bucket ">=1800"."""
+        buckets = {
+            f"{lo}-{lo + HISTOGRAM_STEP_S}": 0 for lo in range(0, HISTOGRAM_MAX_S, HISTOGRAM_STEP_S)
+        } | {f">={HISTOGRAM_MAX_S}": 0}
+        keys = list(buckets)
+        for d in delays:
+            buckets[keys[min(int(d // HISTOGRAM_STEP_S), len(keys) - 1)]] += 1
+        return buckets
+
+    def lag(self, hours: float = 24.0, now: float | None = None) -> dict[str, Any]:
+        """What the notifications of the last ``hours`` waited for, from ``notification_reads`` and the stored
+        notifications. The delay of a notification is the time from its timestamp (EVE gives it to the minute, so
+        up to a minute of it is rounding) to the moment it was stored; ``reading`` names the biggest component."""
+        now = time.time() if now is None else now
+        since = now - hours * 3600
+        reads = self.db.notification_reads(since)
+        window = self.s.character_interval_s
+        errors = [r for r in reads if r["error"]]
+        by_status = {"200": 0, "304": 0, "no_request": 0}
+        for r in reads:
+            if not r["error"]:
+                by_status[str(r["status"]) if r["status"] in (200, 304) else "no_request"] += 1
+        data_age = self._stats([r["data_age_s"] for r in reads])
+        lifetime = self._stats([r["lifetime_s"] for r in reads])
+        late = self._stats([r["late_s"] for r in reads])
+        late_share = sum(1 for r in reads if (r["late_s"] or 0.0) >= LATE_S) / len(reads) if reads else 0.0
+
+        times: dict[int, list[float]] = {}
+        late_of: dict[int, list[float | None]] = {}
+        for r in reads:
+            times.setdefault(r["character_id"], []).append(r["read_at"])
+            late_of.setdefault(r["character_id"], []).append(r["late_s"])
+        delays: list[float] = []
+        on_time: list[float] = []
+        late_reads: list[float] = []
+        unmatched = history = 0
+        for row in self.db.notifications_stored_since(since):
+            try:
+                stamp = datetime.fromisoformat(str(row["timestamp"]).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+            delay = max(0.0, row["created_at"] - stamp)
+            if delay > HISTORY_S:
+                history += 1
+                continue
+            delays.append(delay)
+            ts = times.get(row["character_id"], [])
+            i = bisect_right(ts, row["created_at"] + 1.0) - 1  # the read that stored it
+            if i < 0:
+                unmatched += 1
+            elif (late_of[row["character_id"]][i] or 0.0) < LATE_S:
+                on_time.append(delay)
+            else:
+                late_reads.append(delay)
+
+        pollable = self.pollable()
+        eligible = self.eligible()
+        recent = {r["character_id"] for r in reads if r["read_at"] >= now - 3600 and not r["error"]}
+        thresholds = {"errors_share": 0.1, "late_s": LATE_S, "data_age_s": 60.0, "window_s": window}
+        delivery = self._stats(delays)
+        if not reads:
+            dominant, text = "no data", f"no reads recorded in the last {hours:g} h (is the poller running?)"
+        elif len(errors) / len(reads) >= thresholds["errors_share"]:
+            dominant = "errors"
+            text = f"{len(errors)} of {len(reads)} reads failed: those characters were not read for a while"
+        elif late_share >= 0.1 or (late["p90"] or 0.0) >= LATE_S:
+            dominant = "late reads"
+            text = (
+                f"{late_share:.0%} of the reads started {LATE_S:.0f} s or more after their time "
+                f"(p90 {late['p90']} s): blocked event loop, a slow ESI answer or the app was not running"
+            )
+        elif (data_age["p50"] or 0.0) >= thresholds["data_age_s"]:
+            dominant = "ESI data age"
+            text = f"ESI sends data that is already {data_age['p50']} s old (median): its own delay before the cache"
+        else:
+            dominant = "within the cache window"
+            text = (
+                f"reads are on time and ESI's data is fresh: the delay is ESI's {window:.0f} s cache window "
+                f"(median about {window / 2:.0f} s, worst case about {window:.0f} s)"
+            )
+        return {
+            "hours": hours,
+            "reads": {
+                "n": len(reads),
+                "200": by_status["200"],
+                "304": by_status["304"],
+                "no_request": by_status["no_request"],
+                "errors": len(errors),
+            },
+            "data_age_s": data_age,
+            "lifetime_s": lifetime,
+            "late_s": late,
+            "delivery_delay_s": {
+                **delivery,
+                "histogram": self._histogram(delays),
+                "read_on_time": {**self._stats(on_time), "histogram": self._histogram(on_time)},
+                "read_late": {**self._stats(late_reads), "histogram": self._histogram(late_reads)},
+                "unmatched": unmatched,
+                "history_ignored": history,
+            },
+            "characters": {
+                "registered": len(pollable),
+                "eligible": len(eligible),
+                "excluded_by_gate": sorted(c for c in pollable if c not in eligible),
+                "min_structures": self.s.min_structures,
+                "not_read_last_hour": sorted(c for c in eligible if c not in recent),
+            },
+            "reading": {"dominant": dominant, "text": text, "thresholds": thresholds},
+        }
+
+    def lag_brief(self, hours: float = 24.0) -> dict[str, Any]:
+        """The numbers of ``lag`` that belong in the health output and the page's state (cached for a minute)."""
+        now = time.time()
+        if self._lag_cache is not None and now - self._lag_cache[0] < 60:
+            return self._lag_cache[1]
+        full = self.lag(hours, now)
+        brief = {
+            "hours": hours,
+            "reads": full["reads"]["n"],
+            "errors": full["reads"]["errors"],
+            "delay_p50_s": full["delivery_delay_s"]["p50"],
+            "delay_p90_s": full["delivery_delay_s"]["p90"],
+            "late_p90_s": full["late_s"]["p90"],
+            "data_age_p50_s": full["data_age_s"]["p50"],
+            "eligible": full["characters"]["eligible"],
+            "registered": full["characters"]["registered"],
+            "excluded_by_gate": len(full["characters"]["excluded_by_gate"]),
+            "not_read_last_hour": len(full["characters"]["not_read_last_hour"]),
+            "reading": full["reading"]["dominant"],
+        }
+        self._lag_cache = (now, brief)
+        return brief
 
     # -- views (NTF-06..NTF-09) ----------------------------------------------------------------------
     def default_types(self) -> list[str]:
@@ -533,9 +802,9 @@ class NotificationService:
         try:
             while not self._stop.is_set():
                 try:
-                    await self.poll_once()
+                    await self.poll_once(post=True)
                     self.state["last_error"] = None
-                    if self.notifier is not None and self._post_pending:
+                    if self.notifier is not None and self._post_pending and time.time() >= self._post_retry_at:
                         await self.post_discord()
                 except Exception as exc:  # one bad round must not stop the loop
                     self.state["last_error"] = redact(repr(exc))

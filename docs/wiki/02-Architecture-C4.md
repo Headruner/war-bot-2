@@ -49,15 +49,19 @@ Key mechanisms:
   scope and a valid token is polled with its own token once per ESI cache window (600 s), whoever linked it; the
   page lists them all and adds the viewer's own three closest characters to each card. A character is polled only
   when its `notify` tick is on and `structure_counts()` (player structures, location id >= 1e12, holding assets) reaches
-  `min_structures` (10). The next check is `Expires` + 1 s from ESI (`esi.cached_expiry`), clamped to
-  `min_interval_s`..`character_interval_s`; transient errors retry after `retry_s`; the loop sleeps until the earliest due
-  character. Each card gets the closer of Thera / Turnur (`EveScout.nearest`) and each closest character its route type.
+  `min_structures` (default 1). The next check is `Expires` + 0.25 s from ESI (`esi.cached_expiry`, measured against
+  ESI's own `Date`/`Age`), at most `character_interval_s` later, a short lifetime followed exactly and `min_interval_s`
+  only when ESI sends no usable `Expires`; transient errors retry after `retry_s`, a 420 when `blocked_for()` ends; the
+  loop sleeps exactly until the earliest due character and a restart keeps the saved `next_check_at`. Each read leaves a
+  row in `notification_reads` (`EsiClient.get_with_meta` returns the `ResponseMeta` of the 200 or 304; schema v18) that
+  `NotificationService.lag()` / `evedm notifications lag` turn into the delay report, and `LoopLagMonitor`
+  (`looplag.py`) shows in `/api/health` how late the shared event loop wakes up. Each card gets the closer of Thera / Turnur (`EveScout.nearest`) and each closest character its route type.
   Kept fast: a re-read parses only entries not stored yet (`Database.notification_ids`, libyaml loader), any failure
   backs the character off, the purge runs hourly over an index on `created_at` (schema v10), the API measures each
   system once per request and never waits for EVE-Scout once a list exists (`ensure_fresh_soon`), and the page
   redraws only when the answer changed. Delivery: reads are spread over ESI's window (`staggered()`), a stored
   notification bumps `version` and wakes the pages holding `GET /api/notifications/wait` (long poll), and
-  `post_discord()` sends one embed per event through the wars webhook (`DiscordNotifier.send` / `edit`,
+  `post_discord()` (called as soon as each character is read) sends one embed per event through the wars webhook (`DiscordNotifier.send` / `edit`,
   `notification_posts`, `character_notifications.posted`; schema v11). Schema v12/v13 add `public_structure_history`
   (historical structure details with their source).
 - **Big-kill filter** (`alerts.py`): `hull_class()` maps a hull's ESI group to battleship (Battleship, Black Ops,

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from common import AMARR, JITA, PERIMETER, TAMA, add_character
 from evedm.config import NOTIFICATION_SCOPE, Settings
-from evedm.notifications import NotificationService, parse_body, title_of
+from evedm.notifications import MIN_SLEEP_S, READ_MARGIN_S, NotificationService, parse_body, title_of
 from evedm.wars.config import WarsSettings
 from evedm.web.app import create_app
 
@@ -315,14 +315,20 @@ async def test_the_next_read_follows_the_expiry_of_esis_cache(ns, services, http
     await add_character(services, A)
     await push(http, A, [item(1)])
     now = time.time()
+    def near(got: float, want: float) -> bool:  # epoch seconds: pytest.approx is far too loose here
+        return abs(got - want) < 0.01
+
     ns._expires[A] = now + 200  # ESI's copy goes stale in 200 s
-    assert now + 200 < ns.next_check_at(A, now) < now + 205  # not a fixed 600 s later
-    ns._expires[A] = now + 3  # never more often than min_interval_s
-    assert ns.next_check_at(A, now) == pytest.approx(now + ns.s.min_interval_s)
+    assert near(ns.next_check_at(A, now), now + 200 + READ_MARGIN_S)  # not a fixed 600 s later, no extra second
+    ns._expires[A] = now + 3  # ESI says it expires in 3 s: ask then, not after min_interval_s (was: 30 s)
+    assert near(ns.next_check_at(A, now), now + 3 + READ_MARGIN_S)
+    ns._real_lifetime[A] = False  # ... but with no usable Expires from ESI min_interval_s is the floor
+    assert near(ns.next_check_at(A, now), now + ns.s.min_interval_s)
+    ns._real_lifetime[A] = True
     ns._expires[A] = now + 5000  # and never later than character_interval_s
-    assert ns.next_check_at(A, now) == pytest.approx(now + ns.s.character_interval_s)
+    assert near(ns.next_check_at(A, now), now + ns.s.character_interval_s + READ_MARGIN_S)
     ns._expires[A] = None
-    assert ns.next_check_at(A, now) == pytest.approx(now + ns.s.character_interval_s)
+    assert near(ns.next_check_at(A, now), now + ns.s.character_interval_s)
 
 
 async def test_a_passing_esi_error_is_retried_soon_but_a_refusal_waits(ns, services, http):
@@ -345,13 +351,13 @@ async def test_a_passing_esi_error_is_retried_soon_but_a_refusal_waits(ns, servi
 
 async def test_the_loop_sleeps_until_the_next_character_is_due(ns, services, http):
     await add_character(services, A)
-    assert ns.sleep_s() == ns.s.poll_s  # nothing read yet
+    assert ns.sleep_s() == MIN_SLEEP_S  # never read: due at once (was: a full poll_s)
     services["db"].set_notification_check(A, time.time() + 20)
-    assert 15 < ns.sleep_s() <= 21
+    assert 19 < ns.sleep_s() <= 20  # exactly until it is due (was: >= 1 s granularity)
     services["db"].set_notification_check(A, time.time() + 5000)
     assert ns.sleep_s() == ns.s.poll_s
     services["db"].set_notification_check(A, time.time() - 5)
-    assert ns.sleep_s() == 1.0
+    assert ns.sleep_s() == MIN_SLEEP_S  # was: 1.0
 
 
 async def test_the_api_sets_the_notifications_tick(tmp_path):

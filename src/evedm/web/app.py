@@ -33,6 +33,7 @@ from ..demo import seed_demo, seed_demo_notifications, seed_demo_roster
 from ..esi import EsiClient, EsiError
 from ..evescout import EveScout
 from ..logs import LaunchRecorder, peak_rss_mb, rss_mb, setup_logging, trim_memory
+from ..looplag import LoopLagMonitor
 from ..notifications import NotificationService
 from ..ranking import DemoProvider, LiveProvider, RankingService
 from ..resolver import TargetResolver
@@ -86,6 +87,7 @@ class Services:
     gate: AllianceGate | None = None  # who may see the Notifications and Structures tabs (D16)
     evescout: EveScout | None = None  # Thera / Turnur wormholes for the Ranking filter (UC-15)
     ansiblex: AnsiblexService | None = None  # Ansiblex jump gates per character for the Ranking filter (UC-16)
+    looplag: LoopLagMonitor | None = None  # how late the shared event loop wakes up
 
 
 class RequestCounter:
@@ -258,6 +260,8 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                 structures.set_discovered(svc.scout.index())
         svc.alerts = build_alerts(settings, ws, svc)
         attach_notification_discord(settings, ws, svc)
+        svc.looplag = LoopLagMonitor()
+        svc.looplag.start()
         svc.launch.start(
             {
                 "universe": svc.graph.build,
@@ -277,6 +281,8 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         try:
             yield
         finally:
+            if svc.looplag is not None:
+                await svc.looplag.stop()
             if svc.notifications is not None:
                 await svc.notifications.stop()
             if svc.alerts is not None:
@@ -560,10 +566,15 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                 else {"running": svc.scout.state["running"], "cycles": svc.scout.state["cycles"]},
                 "notifications": None
                 if svc.notifications is None
-                else {"running": svc.notifications.state["running"], "polls": svc.notifications.state["polls"]},
+                else {
+                    "running": svc.notifications.state["running"],
+                    "polls": svc.notifications.state["polls"],
+                    "lag": svc.notifications.lag_brief(),
+                },
                 "alerts": None
                 if svc.alerts is None
                 else {"running": svc.alerts.state["running"], "polls": svc.alerts.state["polls"]},
+                "event_loop": None if svc.looplag is None else svc.looplag.snapshot(),
             }
         )
 
@@ -756,7 +767,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                     ],
                     "last_check": max((checks[cid]["checked_at"] for cid in ids if cid in checks), default=None),
                 },
-                "state": ns.state,
+                "state": {**ns.state, "lag": ns.lag_brief()},
             }
         )
 

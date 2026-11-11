@@ -260,15 +260,16 @@ to the system, and the three closest characters from *your* **Characters** set a
   An empty list opens both tabs to every signed-in main.
 - Every member sees the notifications of all registered characters, including those linked by other mains. A
   character is read when it has granted the notifications scope, its token has not been revoked, its **Notifications**
-  tick on the Characters page is on (default) and it holds assets in at least **10 player structures** (NPC stations do
-  not count; `notifications.min_structures`). The ranking on/off switch does not matter.
+  tick on the Characters page is on (default) and it holds assets in at least **1 player structure** (NPC stations do
+  not count; `notifications.min_structures`, 0 = everybody). The ranking on/off switch does not matter.
 - It needs one more scope on your EVE application: tick `esi-characters.read_notifications.v1`, then
   **Add character** again for every character. A character that has not granted it is marked Limited and is
   never polled.
 - ESI caches notifications for 600 seconds per character, so the app asks once per character per cache window
   and the page is told the moment a new one is stored (it also refreshes every 30 seconds). The next read of a character is scheduled at ESI's own cache expiry (not a fixed
   10 minutes after the last read, which could delay a notification by up to ~15-20 minutes); a transient ESI error
-  is retried after 60 s (`notifications.min_interval_s`, `retry_s`).
+  is retried after 60 s (`notifications.retry_s`). `evedm notifications lag` shows where the time between a
+  notification and its delivery goes.
 - Everything else ESI sends (corporation mail, bills, insurance, sovereignty…) is filtered out until you tick it
   under **Filters**; types ESI sends that CCP added after this release appear under **Other notifications**.
   Your selection and the period are remembered in your browser.

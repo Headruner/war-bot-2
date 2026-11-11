@@ -1,4 +1,4 @@
-"""Command line: ``evedm serve | rank | db | users | wars | structures | universe | import | export | check | ...``."""
+"""Command line: ``evedm serve | rank | db | users | wars | structures | notifications | universe | import | ...``."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import urllib.request
 from pathlib import Path
@@ -360,6 +361,23 @@ def cmd_structures(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_notifications(args: argparse.Namespace) -> int:
+    from .db import Database
+    from .notifications import NotificationService
+
+    s = _settings(args)
+    db = Database(s.db_path, read_only=True)  # no migration, no write: safe next to a running server
+    try:
+        # lag() reads the database only; the graph, the character service and the ESI client are not needed
+        service = NotificationService(s.notifications, db, None, None, None)  # type: ignore[arg-type]
+        text = json.dumps(service.lag(args.hours), indent=2)
+        # a histogram is one line, not sixteen
+        print(re.sub(r'("histogram": )(\{[^{}]*\})', lambda m: m.group(1) + " ".join(m.group(2).split()), text))
+    finally:
+        db.close()
+    return 0
+
+
 def cmd_launches(args: argparse.Namespace) -> int:
     from .db import Database
 
@@ -465,6 +483,15 @@ def main(argv: list[str] | None = None) -> int:
         "--term", action="append", help="search-probe: a search term (repeatable; default: ' » ', prefix, system)"
     )
     sp.set_defaults(fn=cmd_structures)
+
+    sp = sub.add_parser(
+        "notifications",
+        help="notification diagnostics: lag (database only) shows where the time between a notification and its "
+        "delivery goes",
+    )
+    sp.add_argument("action", choices=["lag"])
+    sp.add_argument("--hours", type=float, default=24.0, help="lag: look back this many hours")
+    sp.set_defaults(fn=cmd_notifications)
 
     sp = sub.add_parser("launches", help="show recorded launches")
     sp.add_argument("--limit", type=int, default=20)

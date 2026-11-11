@@ -124,6 +124,18 @@ entity notification_characters {
   notifications : INTEGER
   error : TEXT
 }
+entity notification_reads {
+  character_id : INTEGER
+  read_at : REAL
+  --
+  status : 200 | 304 | 0 (no answer, v18)
+  data_age_s : REAL (Date - Last-Modified)
+  lifetime_s : REAL (Expires - Date)
+  late_s : REAL (read time - scheduled time)
+  new : INTEGER
+  max_delay_s : REAL
+  error : TEXT
+}
 entity ansiblex_gates {
   * structure_id : INTEGER <<PK>>
   --
@@ -206,6 +218,7 @@ characters ||--o| scout_dock_search
 characters ||--o| snapshots
 characters ||--o{ character_notifications
 characters ||--o| notification_characters
+characters ||--o{ notification_reads
 characters ||--o| scout_characters
 characters ||--o| ansiblex_characters
 characters ||--o{ ansiblex_access

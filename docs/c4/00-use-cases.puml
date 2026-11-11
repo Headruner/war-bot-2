@@ -18,7 +18,7 @@ rectangle "EVE Distance Meter" {
   usecase "UC-04 Rank characters for a target\nand see the route on the star map" as UC4
   usecase "UC-05 Get the target from\npasted notification text" as UC5
   usecase "UC-12 Upload a static roster\n(name + system, no ESI) and rank it" as UC12
-  usecase "UC-13 Watch the ESI notifications of every registered\ncharacter with >= 10 structures (members only)" as UC13
+  usecase "UC-13 Watch the ESI notifications of every registered\ncharacter with with >= 1 structure (members only)" as UC13
   usecase "UC-14 Browse the structures where any\nregistered character has assets (members only)" as UC14
   usecase "UC-15 Rank through the Thera / Turnur\nwormholes listed by EVE-Scout" as UC15
   usecase "UC-16 Rank over the Ansiblex jump gates\neach character can see" as UC16

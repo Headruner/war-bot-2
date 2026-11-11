@@ -56,9 +56,9 @@ when you press **Set destination** for an online character.
   the system, its region, EVE time (no local time), a violet **Thera** or orange **Turnur** label for whichever is
   closer to the system, and your closest characters from both the Characters and the Roster set; live characters show
   their route type (gates, Thera or Turnur), roster characters jumps only. A character is checked only when its *Notifications* tick on the Characters page is
-  on (default) **and** it has at least **10 player structures with assets** (NPC stations do not count;
-  `notifications.min_structures`). The next check is scheduled at ESI's cache expiry (not a fixed 10 minutes), and
-  transient ESI errors are retried after 60 s; this removes the up-to-15-minute delays. The characters' reads are
+  on (default) **and** it has at least **1 player structure with assets** (NPC stations do not count;
+  `notifications.min_structures`, 0 = everybody). The next check is scheduled at ESI's cache expiry (not a fixed 10 minutes), and
+  transient ESI errors are retried after 60 s; this removes the up-to-15-minute delays. `evedm notifications lag` shows where the remaining time goes. The characters' reads are
   spread over ESI's 10-minute window (`notifications.stagger_s`), so a notification that several characters receive
   shows up after the earliest of them; the page is told at once when something new is stored (long poll) instead
   of waiting for its timer. New notifications are also **posted to Discord** through the wars webhook

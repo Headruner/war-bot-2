@@ -1183,7 +1183,7 @@ class StructureScout:
         if not wanted:
             return found
         try:  # the local flat list costs no network: asked on every run
-            rows = self._fetch_local(wanted)
+            rows = await asyncio.to_thread(self._fetch_local, wanted)  # a file scan: not on the event loop
         except (OSError, ValueError) as exc:
             log.warning("local structure index unreadable: %s", exc)
         else:
@@ -1235,7 +1235,12 @@ class StructureScout:
         url = "https://static.adam4eve.eu/IDs/playerStructure_extended.csv"
         response = await self.esi.http.get(url, timeout=20)
         response.raise_for_status()
-        reader = csv.DictReader(io.StringIO(response.content.decode("utf-8-sig")), delimiter=";")
+        # parsing the whole CSV is seconds of pure CPU: off the event loop (it touches no database)
+        return await asyncio.to_thread(self._parse_adam4eve, response.content, wanted)
+
+    @staticmethod
+    def _parse_adam4eve(content: bytes, wanted: set[int]) -> list[tuple[Any, ...]]:
+        reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig")), delimiter=";")
         if not {"structureID", "name", "ownerID", "lastSeen"} <= set(reader.fieldnames or ()):
             raise ValueError("unrecognized CSV header")
         wanted_text = {str(i) for i in wanted}
@@ -1276,13 +1281,19 @@ class StructureScout:
                 if len(buf) > cap:
                     raise ValueError(f"download larger than {self.s.everef_max_mb} MB")
         payload = bytes(buf)
+        del buf
+        # decompressing and parsing up to hundreds of MB blocks for seconds: off the event loop (no database use)
+        return await asyncio.to_thread(self._parse_everef, payload, wanted, cap, self.s.everef_max_mb)
+
+    @staticmethod
+    def _parse_everef(payload: bytes, wanted: set[int], cap: int, cap_mb: int) -> list[tuple[Any, ...]]:
         if payload[:3] == b"BZh":  # a .bz2 scrape, if the URL points at one
             unpacked = bz2.BZ2Decompressor().decompress(payload, max_length=cap + 1)
             if len(unpacked) > cap:
-                raise ValueError(f"unpacked data larger than {self.s.everef_max_mb} MB")
+                raise ValueError(f"unpacked data larger than {cap_mb} MB")
             payload = unpacked
         data = json.loads(payload)
-        del payload, buf
+        del payload
         if not isinstance(data, dict):
             raise ValueError("unrecognized EVE Ref structure file")
         matches: list[tuple[Any, ...]] = []

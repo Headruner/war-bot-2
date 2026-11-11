@@ -26,27 +26,77 @@ class EsiError(Exception):
         self.detail = detail
 
 
+def _http_date(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return parsedate_to_datetime(value).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass(frozen=True)
+class ResponseMeta:
+    """What an ESI answer says about its own freshness (all times are ESI's clock, epoch seconds)."""
+
+    status: int  # 200 or 304
+    received_at: float  # our clock, when the answer arrived
+    date: float | None
+    expires: float | None
+    last_modified: float | None
+    age: float | None  # seconds a cache in between held it (Age header)
+
+    @property
+    def data_age_s(self) -> float | None:
+        """How old the data already was when ESI sent it: Date - Last-Modified."""
+        if self.date is None or self.last_modified is None:
+            return None
+        return max(0.0, self.date - self.last_modified)
+
+    @property
+    def lifetime_s(self) -> float | None:
+        """How long ESI lets this copy live from the moment it answered: Expires - Date (- Age)."""
+        if self.date is None or self.expires is None:
+            return None
+        return self.expires - self.date - (self.age or 0.0)
+
+
+def _meta(resp: httpx.Response) -> ResponseMeta:
+    h = resp.headers
+    try:
+        age = float(h["Age"]) if "Age" in h else None
+    except ValueError:
+        age = None
+    return ResponseMeta(
+        resp.status_code, time.time(), _http_date(h.get("Date")), _http_date(h.get("Expires")),
+        _http_date(h.get("Last-Modified")), age,
+    )
+
+
 @dataclass
 class _Entry:
     body: Any
     etag: str | None
     expires: float
+    meta: ResponseMeta | None = None
 
 
 def _expires(resp: httpx.Response, default_s: float = 5.0) -> float:
+    """When the copy in ``resp`` stops being fresh, on our clock. No usable Expires (or one already past) means a
+    lifetime of at most a few seconds, so the next read is prompt rather than a full cache window away."""
     value = resp.headers.get("Expires")
     if value:
-        try:
-            expires = parsedate_to_datetime(value).timestamp()
-        except (TypeError, ValueError):
-            expires = None
+        expires = _http_date(value)
         if expires is not None:
             # measure the lifetime against the server's own Date, not our clock: a host clock that runs behind
             # (a VM after sleep) would otherwise keep the copy too long, one that runs ahead would ask too early
-            try:
-                served = parsedate_to_datetime(resp.headers["Date"]).timestamp()
-            except (KeyError, TypeError, ValueError):
+            served = _http_date(resp.headers.get("Date"))
+            if served is None:
                 return expires
+            try:
+                served += float(resp.headers.get("Age", 0) or 0)  # a shared cache in between: the copy is older
+            except ValueError:
+                pass
             return time.time() + max(0.0, expires - served)
     cc = resp.headers.get("Cache-Control", "")
     for part in cc.split(","):
@@ -115,6 +165,18 @@ class EsiClient:
         entry = self._cache.get(path)
         return entry.expires if entry is not None else None
 
+    def last_meta(self, path: str) -> ResponseMeta | None:
+        """The metadata of the latest answer ESI sent for ``path`` (200 or 304), None when it is not cached."""
+        entry = self._cache.get(path)
+        return entry.meta if entry is not None else None
+
+    async def get_with_meta(self, path: str, token: str | None = None) -> tuple[Any, ResponseMeta | None]:
+        """``get`` plus the metadata of the answer; None when the cached copy was still fresh (no request)."""
+        before = self.last_meta(path)
+        body = await self.get(path, token)
+        after = self.last_meta(path)
+        return body, (after if after is not before else None)
+
     async def get(self, path: str, token: str | None = None, *, cache: bool = True) -> Any:
         """GET with Expires/ETag caching; identical concurrent requests share one HTTP call.
 
@@ -160,12 +222,13 @@ class EsiClient:
         if resp.status_code == 304 and entry is not None:
             self.stats["not_modified"] += 1
             entry.expires = _expires(resp)
+            entry.meta = _meta(resp)
             self._cache.move_to_end(key)
             return entry.body
         if resp.status_code == 200:
             body = resp.json()
             if store:
-                self._cache[key] = _Entry(body, resp.headers.get("ETag"), _expires(resp))
+                self._cache[key] = _Entry(body, resp.headers.get("ETag"), _expires(resp), _meta(resp))
                 self._cache.move_to_end(key)
                 while len(self._cache) > self._cache_size:
                     self._cache.popitem(last=False)

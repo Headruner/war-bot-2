@@ -25,7 +25,7 @@ gate -> db : users.alliance_id, affiliation_at
 web --> ui : 303 /  (nav shows Notifications + Structures only when alliance_id is in access.alliance_ids)
 
 == background: notifications of registered characters (loop sleeps until the earliest due character, 5 s .. poll_s) ==
-ntf -> db : characters with the notifications scope and a valid token (status is not REAUTH),\nwhoever linked them, one link per character,\nwith characters.notify = 1 and >= min_structures (10) player structures holding assets
+ntf -> db : characters with the notifications scope and a valid token (status is not REAUTH),\nwhoever linked them, one link per character,\nwith characters.notify = 1 and >= min_structures (1) player structures holding assets
 loop each character whose ESI cache (600 s) has expired
   ntf -> chars : access_token(character, owner)
   ntf -> esi : GET /characters/{id}/notifications (ETag)
