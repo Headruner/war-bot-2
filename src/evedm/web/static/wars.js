@@ -1,4 +1,4 @@
-/* EVE Distance Meter - Wars page: new wars, statistics of every active war, high-sec structures of both sides.
+/* EVE Distance Meter - Wars page: new wars, statistics of every active war, structures of both sides in all space.
    The chosen tab and filters are remembered in this browser (prefs cookie). */
 "use strict";
 
@@ -41,6 +41,7 @@ function extLink(text, href, cls) {
 const zkbWar = (id) => `${ZKB}/war/${id}/`;
 
 function rankLink(sys) {
+  if (sys.space === "wormhole" || sys.space === "unknown") return el("span", "target-chip", sys.name);  // no gates to rank by
   const a = el("a", "target-chip");
   a.href = `/?target=${encodeURIComponent(sys.name)}`;
   a.title = `Rank my characters by jumps to ${sys.name}`;
@@ -66,7 +67,7 @@ function party(p, label) {
 function structures(side, label) {
   if (!side) return null;
   const d = el("details", "structs");
-  d.append(el("summary", null, `${label}: ${side.total ? `${side.total} public structure(s)` : "no public structures known"}`));
+  d.append(el("summary", null, `${label}: ${side.total ? `${side.total} known structure(s)` : "no known structures"}`));
   if (side.total) {
     const types = Object.entries(side.by_type).map(([t, n]) => `${n}× ${t}`).join(", ");
     d.append(el("div", "small", types));
@@ -154,7 +155,7 @@ async function load(append = false) {
 
 /* ---------------------------------------------------------------- preferences + tabs */
 const DEFAULTS = { tab: "feed", type: "", only: false, s_type: "", s_region: "", s_side: "", s_state: "",
-  s_sec: "0.5", s_sort: "jumps" };
+  s_min: "-1", s_space: "", s_sort: "jumps" };
 const prefs = Prefs.get("wars", DEFAULTS);
 const tabs = [...document.querySelectorAll(".tab")].map((b) => b.dataset.tab);
 const loaded = new Set();
@@ -163,7 +164,7 @@ function savePrefs() {
   const v = (id) => ($(id) ? $(id).value : undefined);
   Prefs.set("wars", {
     type: v("#war-type"), only: $("#only-targets").checked, s_type: v("#f-type"), s_region: v("#f-region"),
-    s_side: v("#f-side"), s_state: v("#f-state"), s_sec: v("#f-sec"), s_sort: v("#f-sort"),
+    s_side: v("#f-side"), s_state: v("#f-state"), s_min: v("#f-sec"), s_space: v("#f-space"), s_sort: v("#f-sort"),
   });
 }
 
@@ -206,9 +207,10 @@ async function loadStats() {
   [["Active wars", t.active], ["Fighting", t.fighting], ["Starting within 24 h", t.pending], ["Ending", t.ending],
     ["Mutual", t.mutual], ["Declared in 24 h", t.declared_24h], ["Declared in 7 days", t.declared_7d],
     ["Ships killed", t.ships_killed.toLocaleString()], ["ISK destroyed", isk(t.isk_destroyed)],
-    ["High-sec structures at war", d.structures.highsec]].forEach(([label, value]) => {
+    ["Structures at war", d.structures.total], ["High-sec structures at war", d.structures.highsec]].forEach(([label, value]) => {
     const c = el("div", "kpi");
     c.append(el("b", null, String(value)), el("span", null, label));
+    if (label === "Structures at war") c.title = Object.entries(d.structures.by_space || {}).map(([k, n]) => `${k}: ${n}`).join(", ");
     k.append(c);
   });
   const who = (e) => extLink(`${e.name}${e.type === "alliance" ? " (alliance)" : ""}`, e.zkill);
@@ -227,6 +229,7 @@ async function loadStats() {
 
 /* ---------------------------------------------------------------- high-sec structures */
 const LOOT_PAGE = 100;
+const SPACE_LABEL = { high: "high-sec", low: "low-sec", null: "null-sec", wormhole: "wormhole" };
 let lootOffset = 0;
 
 function fillSelect(sel, facets, keep) {
@@ -267,8 +270,8 @@ function lootRow(r) {
   jumps.append(el("b", null, r.jumps == null ? "—" : String(r.jumps)));
   if (r.nearest && r.nearest.characters.length) jumps.append(el("div", "small", r.nearest.characters[0]));
   const sys = el("td");
-  sys.append(rankLink({ ...r.system, why: [] }), el("div", "small", r.system.region));
-  const route = window.findRoute(r.system.name, r.system.space);
+  sys.append(rankLink({ ...r.system, why: [] }), el("div", "small", `${r.system.region} · ${SPACE_LABEL[r.system.space] || r.system.space}`));
+  const route = r.system.space === "wormhole" ? null : window.findRoute(r.system.name, r.system.space);
   if (route) sys.append(route);
   const st = el("td");
   st.append(el("div", null, r.name), el("div", "small", r.type));
@@ -286,7 +289,7 @@ async function loadLoot(append = false) {
   if (!append) lootOffset = 0;
   savePrefs();
   const q = new URLSearchParams({ type: $("#f-type").value, region: $("#f-region").value, side: $("#f-side").value,
-    state: $("#f-state").value, min_sec: $("#f-sec").value, sort: $("#f-sort").value, limit: LOOT_PAGE, offset: lootOffset });
+    state: $("#f-state").value, min_sec: $("#f-sec").value, space: $("#f-space").value, sort: $("#f-sort").value, limit: LOOT_PAGE, offset: lootOffset });
   $("#loot-info").textContent = "Loading…";
   const d = await api(`/api/wars/structures?${q}`);
   fillSelect($("#f-type"), d.facets.types, $("#f-type").value);
@@ -314,9 +317,9 @@ if ($("#f-type")) {
     if (v) $(id).append(new Option(v, v));
     $(id).value = v;
   });
-  [["#f-side", prefs.s_side], ["#f-state", prefs.s_state], ["#f-sec", prefs.s_sec], ["#f-sort", prefs.s_sort]]
+  [["#f-side", prefs.s_side], ["#f-state", prefs.s_state], ["#f-space", prefs.s_space], ["#f-sec", prefs.s_min], ["#f-sort", prefs.s_sort]]
     .forEach(([id, v]) => { if ([...$(id).options].some((o) => o.value === v)) $(id).value = v; });
-  ["#f-type", "#f-region", "#f-side", "#f-state", "#f-sec", "#f-sort"].forEach((id) => $(id).addEventListener("change", () => loadLoot()));
+  ["#f-type", "#f-region", "#f-side", "#f-state", "#f-space", "#f-sec", "#f-sort"].forEach((id) => $(id).addEventListener("change", () => loadLoot()));
   $("#loot-reload").addEventListener("click", () => loadLoot());
   $("#loot-more").addEventListener("click", () => loadLoot(true));
 }

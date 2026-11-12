@@ -49,6 +49,16 @@ def security_class(sec: float) -> str:
     return "null"
 
 
+WSPACE_MIN_ID = 31000000  # J-space and the other systems without stargates start here
+
+
+def space_of(graph: GateGraph, idx: int) -> str:
+    """high | low | null | wormhole (J-space and other systems without stargates), for the system at ``idx``."""
+    if graph.ids[idx] >= WSPACE_MIN_ID:
+        return "wormhole"
+    return security_class(graph.sec[idx])
+
+
 # --------------------------------------------------------------------------- building
 @dataclass
 class RawUniverse:

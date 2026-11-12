@@ -1,4 +1,4 @@
-"""War census: every active war in New Eden (statistics) and the high-sec structures of both sides (loot list)."""
+"""War census: every active war in New Eden (statistics) and the known structures of both sides in all space."""
 
 import random
 import time
@@ -148,7 +148,14 @@ async def test_statistics(db, graph):
         }
     ]
     assert s["census"]["complete"] is True and s["census"]["known_wars"] == 11
-    assert s["structures"] == {"highsec": 0, "by_type": [], "by_region": [], "loaded": False}
+    assert s["structures"] == {
+        "total": 0,
+        "highsec": 0,
+        "by_space": {"high": 0, "low": 0, "null": 0, "wormhole": 0},
+        "by_type": [],
+        "by_region": [],
+        "loaded": False,
+    }
 
 
 def structure_index(graph) -> StructureIndex:
@@ -156,7 +163,7 @@ def structure_index(graph) -> StructureIndex:
     idx.index = {
         CORP_A: [  # member of the aggressor alliance
             Structure(1, "Jita - Trade Hub", 35832, JITA, CORP_A),
-            Structure(2, "Tama - Lowsec Base", 35832, TAMA, CORP_A),  # low-sec: never listed
+            Structure(2, "Tama - Lowsec Base", 35832, TAMA, CORP_A),  # low-sec: listed since WAR-17
         ],
         DEFENDER: [
             Structure(3, "Amarr - Fort", 35833, AMARR, DEFENDER),
@@ -169,7 +176,7 @@ def structure_index(graph) -> StructureIndex:
     return idx
 
 
-async def test_loot_lists_high_sec_structures_of_both_sides_nearest_first(db, graph):
+async def test_loot_lists_structures_of_both_sides_in_all_space_nearest_first(db, graph):
     NAMES.update(
         {
             35832: ("Astrahus", "inventory_type"),
@@ -191,7 +198,8 @@ async def test_loot_lists_high_sec_structures_of_both_sides_nearest_first(db, gr
     rows = res["rows"]
     assert [r["structure_id"] for r in rows][:2] in ([1, 4], [4, 1])  # both 0 jumps
     by_id = {r["structure_id"]: r for r in rows}
-    assert set(by_id) == {1, 3, 4, 5}  # low-sec Tama and the bystander are not listed
+    assert set(by_id) == {1, 2, 3, 4, 5}  # low-sec Tama is listed too; the bystander (no war) is not
+    assert by_id[2]["system"]["space"] == "low" and by_id[1]["system"]["space"] == "high"
     assert by_id[1]["sides"] == ["aggressor"] and by_id[1]["owner"] == "Flag Corp One"
     assert by_id[1]["entities"][0]["name"] == "BLACKFLAG." and by_id[1]["name"] == "Trade Hub"
     assert by_id[1]["state"] == "fighting"  # fighting wins over the pending war
@@ -200,21 +208,102 @@ async def test_loot_lists_high_sec_structures_of_both_sides_nearest_first(db, gr
     assert by_id[4]["jumps"] == 0 and by_id[4]["nearest"] == {"system": "Hek", "characters": ["Bravo", "Charlie"]}
     assert by_id[5]["jumps"] == 1 and by_id[5]["nearest"]["system"] == "Jita"
     assert by_id[3]["type"] == "Fortizar" and by_id[3]["wars"][0]["opponent"] == "BLACKFLAG."
-    assert res["facets"]["total"] == 4 and dict(res["facets"]["types"]) == {"Astrahus": 2, "Fortizar": 1, "Raitaru": 1}
+    assert res["facets"]["total"] == 5 and dict(res["facets"]["types"]) == {"Astrahus": 3, "Fortizar": 1, "Raitaru": 1}
+    assert dict(res["facets"]["spaces"]) == {"high": 4, "low": 1}
 
     def ids(**kw):
         return [r["structure_id"] for r in census.loot(sources, [], **kw)["rows"]]
 
-    assert ids(side="aggressor") == [1]
+    assert sorted(ids(side="aggressor")) == [1, 2]
     assert sorted(ids(side="defender")) == [3, 4, 5]
     assert ids(type_name="Fortizar") == [3]
     assert ids(region="Metropolis") == [4]
     assert ids(state="pending") == []
     assert sorted(ids(min_sec=0.95)) == [3, 5]  # Amarr and Perimeter (1.0)
+    assert sorted(ids(min_sec=0.5)) == [1, 3, 4, 5]  # the old high-sec list
+    assert ids(space="low") == [2] and sorted(ids(space="high")) == [1, 3, 4, 5] and ids(space="null") == []
     assert ids(sort="owner")[0] == 5  # "Allied Corp" sorts first
-    assert len(census.loot(sources, [], limit=2)["rows"]) == 2 and census.loot(sources, [], offset=3)["matched"] == 4
+    assert len(census.loot(sources, [], limit=2)["rows"]) == 2 and census.loot(sources, [], offset=3)["matched"] == 5
     nobody = census.loot({}, [])["rows"]
     assert all(r["jumps"] is None and r["nearest"] is None for r in nobody)
+
+
+DQ1, THERA = 30004759, 31000005
+
+
+def all_space_index(graph) -> StructureIndex:
+    """Structures of the two sides in every kind of space, one of them in a system the universe does not know."""
+    idx = StructureIndex(graph, "http://unused", "ua")
+    idx.index = {
+        CORP_A: [
+            Structure(1, "Jita - Trade Hub", 35832, JITA, CORP_A),
+            Structure(2, "Tama - Lowsec Base", 35833, TAMA, CORP_A),
+            Structure(3, "1DQ1-A - Keep", 35834, DQ1, CORP_A),
+            Structure(4, "J105443 - Home", 35832, THERA, CORP_A),
+            Structure(5, "Nowhere - Lost", 35832, 12345, CORP_A),  # a system that is not in the universe: dropped
+            Structure(6, "Mystery", 35832, None, CORP_A),  # no system at all: dropped
+        ],
+        DEFENDER: [Structure(7, "Amarr - Fort", 35833, AMARR, DEFENDER)],
+    }
+    idx.last_refresh = 9e18
+    return idx
+
+
+async def test_loot_lists_low_null_and_wormhole_structures_and_filters_by_space_and_security(db, graph):
+    esi = FakeEsi({709: make_war(709, NOW - timedelta(days=3))})
+    esi.alliance_members = {ALLIANCE: [CORP_A]}
+    census = census_for(db, graph, esi, all_space_index(graph))
+    await census.run()
+    sources = {graph.index[JITA]: ["Alpha"]}
+    res = census.loot(sources, [])
+    by_id = {r["structure_id"]: r for r in res["rows"]}
+    assert set(by_id) == {1, 2, 3, 4, 7}  # every structure whose system is in the graph
+    assert {i: r["system"]["space"] for i, r in by_id.items()} == {
+        1: "high",
+        2: "low",
+        3: "null",
+        4: "wormhole",
+        7: "high",
+    }
+    assert by_id[4]["jumps"] is None and by_id[4]["nearest"] is None  # J-space has no gates
+    assert by_id[1]["jumps"] == 0 and by_id[3]["jumps"] > 0
+    assert (
+        dict(res["facets"]["spaces"]) == {"high": 2, "low": 1, "null": 1, "wormhole": 1} and res["facets"]["total"] == 5
+    )
+    assert [r["structure_id"] for r in res["rows"]][-1] == 4  # no jumps: last
+
+    def ids(**kw):
+        return sorted(r["structure_id"] for r in census.loot(sources, [], **kw)["rows"])
+
+    assert ids(space="null") == [3] and ids(space="wormhole") == [4] and ids(space="low") == [2]
+    assert ids(space="high") == [1, 7] and ids(space="nonsense") == []
+    assert ids(min_sec=0.5) == [1, 7]  # the old default
+    assert ids(min_sec=0.1) == [1, 2, 7] and ids(min_sec=-1.0) == [1, 2, 3, 4, 7] and ids(min_sec=0.0) == [1, 2, 7]
+    assert ids(space="low", min_sec=0.5) == []  # both apply
+
+
+async def test_the_statistics_count_all_space_but_describe_the_high_sec_rows(db, graph):
+    NAMES.update({35832: ("Astrahus", "inventory_type"), 35833: ("Fortizar", "inventory_type")})
+    esi = FakeEsi({709: make_war(709, NOW - timedelta(days=3))})
+    esi.alliance_members = {ALLIANCE: [CORP_A]}
+    census = census_for(db, graph, esi, all_space_index(graph))
+    await census.run()
+    st = census.stats()["structures"]
+    assert st["total"] == 5 and st["highsec"] == 2  # highsec counts the high-sec rows only
+    assert st["by_space"] == {"high": 2, "low": 1, "null": 1, "wormhole": 1} and st["loaded"] is True
+    assert dict(st["by_type"]) == {"Astrahus": 1, "Fortizar": 1}  # the Jita Astrahus and the Amarr Fortizar
+    assert dict(st["by_region"]) == {"The Forge": 1, "Domain": 1}
+
+
+def test_the_wars_api_defaults_to_any_security_and_takes_a_space(tmp_path):
+    with demo(tmp_path) as c:
+        api = lambda **p: c.get("/api/wars/structures", params=p).json()  # noqa: E731
+        assert api()["matched"] == 14 == api(min_sec=-1)["matched"]
+        assert api(space="low")["matched"] == 4 and api(space="null")["matched"] == 0
+        assert api(space="high")["matched"] == 10 == api(min_sec=0.5)["matched"]
+        assert dict(api()["facets"]["spaces"]) == {"high": 10, "low": 4}
+        stats = c.get("/api/wars/stats").json()["structures"]
+        assert (stats["total"], stats["highsec"]) == (14, 10) and stats["by_space"]["low"] == 4
 
 
 async def test_loot_is_empty_until_structures_are_loaded(db, graph):
@@ -264,12 +353,15 @@ def test_stats_and_structures_api_in_demo(tmp_path):
         assert stats["totals"]["active"] == 8 and stats["census"]["complete"] is True
         assert stats["structures"]["highsec"] == 10 and stats["top_aggressors"][0]["name"] == "Crimson Ledger Syndicate"
         body = c.get("/api/wars/structures").json()
-        assert body["matched"] == 10 and body["characters"] == 9
+        assert body["matched"] == 14 and body["characters"] == 9  # all space: 10 high-sec, 4 low-sec
         jumps = [r["jumps"] for r in body["rows"]]
         assert jumps == sorted(jumps) and body["rows"][0]["nearest"]["characters"]
-        assert {r["system"]["class"] for r in body["rows"]} == {"high"}
-        assert c.get("/api/wars/structures", params={"side": "aggressor"}).json()["matched"] == 3
-        assert c.get("/api/wars/structures", params={"limit": 2, "offset": 9}).json()["rows"][0]
+        assert {r["system"]["class"] for r in body["rows"]} == {"high", "low"}
+        assert {r["system"]["space"] for r in body["rows"]} == {"high", "low"}
+        assert c.get("/api/wars/structures", params={"min_sec": 0.5}).json()["matched"] == 10  # the old list
+        assert c.get("/api/wars/structures", params={"space": "low"}).json()["matched"] == 4
+        assert c.get("/api/wars/structures", params={"side": "aggressor"}).json()["matched"] == 5
+        assert c.get("/api/wars/structures", params={"limit": 2, "offset": 13}).json()["rows"][0]
         assert c.get("/api/wars/structures", params={"min_sec": "high"}).status_code == 422
         assert c.get("/api/wars/990001").json()["war_id"] == 990001  # not shadowed by the new routes
         page = c.get("/wars").text

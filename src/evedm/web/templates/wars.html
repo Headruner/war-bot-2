@@ -5,8 +5,9 @@
       characters by jumps to it.</p>
 {% if census %}
 <p class="small">Every active war in New Eden (declared, fighting or ending), read from ESI.</p>
-<p class="small">Public high-sec structures owned by either side of an active war, nearest to your characters
-      first. A structure can be shot once its war is fighting; pick the system to rank your characters.</p>
+<p class="small">Known structures owned by either side of an active war, in all kinds of space, nearest to your
+      characters first. Only high-sec structures can be attacked because of a war; a structure can be shot once its
+      war is fighting. Pick the system to rank your characters (wormhole systems have no gates, so no jumps).</p>
 {% endif %}
 {% endblock %}
 {% block content %}
@@ -15,7 +16,7 @@
   <div class="tabs" role="tablist">
     <button class="tab" role="tab" id="tab-btn-feed" data-tab="feed" aria-controls="tab-feed">New wars</button>
     {% if census %}<button class="tab" role="tab" id="tab-btn-stats" data-tab="stats" aria-controls="tab-stats">Statistics</button>
-    <button class="tab" role="tab" id="tab-btn-loot" data-tab="loot" aria-controls="tab-loot">High-sec structures</button>{% endif %}
+    <button class="tab" role="tab" id="tab-btn-loot" data-tab="loot" aria-controls="tab-loot">Structures at war</button>{% endif %}
   </div>
   <section id="tab-feed" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-feed" hidden>
     <div class="toolbar">
@@ -58,9 +59,15 @@
       <label class="small">War
         <select id="f-state"><option value="">any state</option><option value="fighting">fighting</option>
           <option value="pending">starts soon</option><option value="ending">ending</option></select></label>
+      <label class="small">Space
+        <select id="f-space"><option value="">all</option><option value="high">high-sec</option>
+          <option value="low">low-sec</option><option value="null">null-sec</option>
+          <option value="wormhole">wormhole</option></select></label>
       <label class="small">Security ≥
-        <select id="f-sec"><option value="0.5">0.5</option><option value="0.6">0.6</option><option value="0.7">0.7</option>
-          <option value="0.8">0.8</option><option value="0.9">0.9</option><option value="1.0">1.0</option></select></label>
+        <select id="f-sec"><option value="-1">any</option><option value="0.1">0.1</option><option value="0.2">0.2</option>
+          <option value="0.3">0.3</option><option value="0.4">0.4</option><option value="0.5">0.5</option>
+          <option value="0.6">0.6</option><option value="0.7">0.7</option><option value="0.8">0.8</option>
+          <option value="0.9">0.9</option><option value="1.0">1.0</option></select></label>
       <label class="small">Sort
         <select id="f-sort"><option value="jumps">nearest first</option><option value="security">security</option>
           <option value="system">system</option><option value="type">structure type</option><option value="owner">owner</option></select></label>

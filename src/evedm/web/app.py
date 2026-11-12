@@ -1173,13 +1173,15 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         region: str = "",
         side: str = "",
         state: str = "",
-        min_sec: float = 0.5,
+        min_sec: float = -1.0,
+        space: str = "",
         sort: str = "jumps",
         limit: int = 100,
         offset: int = 0,
         refresh: int = 1,
     ) -> JSONResponse:
-        """High-sec structures of both sides of active wars, nearest to the caller's characters first."""
+        """Known structures of both sides of active wars in all space (``min_sec`` -1 is any security, ``space`` is
+        high, low, null or wormhole), nearest to the caller's characters first."""
         uid = owner(request)
         census = census_of(request)
         await census.ensure_names(timeout=3)
@@ -1193,6 +1195,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             side=side,
             state=state,
             min_sec=min_sec,
+            space=space,
             sort=sort,
             limit=max(1, min(limit, 500)),
             offset=max(0, offset),

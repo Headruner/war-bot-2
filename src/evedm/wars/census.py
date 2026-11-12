@@ -1,4 +1,4 @@
-"""War census: every active war in New Eden, for the Statistics tab and the high-sec structures list.
+"""War census: every active war in New Eden, for the Statistics tab and the structures list.
 
 The new-wars feed (service.py) only follows wars declared from now on. The census also walks back through the newest
 war IDs (paged ``/wars/?max_war_id=``), because active wars can be old: mutual wars run for months. A war is active
@@ -18,10 +18,10 @@ from typing import Any
 
 from ..activity import activity
 from ..db import Database
-from ..universe import GateGraph
+from ..universe import GateGraph, space_of
 from .config import WarsSettings
 from .esi import WarEsi, WarEsiError
-from .structures import HIGHSEC_MIN, StructureIndex
+from .structures import StructureIndex
 
 log = logging.getLogger("evedm.wars.census")
 
@@ -30,6 +30,7 @@ TOMBSTONE = "1970-01-01T00:00:00Z"  # finished time stored for IDs ESI does not 
 ALLIANCE_CORPS_TTL_S = 86400
 NAMES_COOLDOWN_S = 60  # after a failed on-demand name lookup, pages are served without asking ESI again
 STATES = ("fighting", "pending", "ending")  # order of interest for the structure list
+SPACES = ("high", "low", "null", "wormhole")
 
 
 @lru_cache(maxsize=65536)
@@ -401,9 +402,10 @@ class WarCensus:
             out.update({r[0]: r[1] for r in rows})
         return out
 
-    # -- high-sec structures of both sides ------------------------------------------------------------
+    # -- structures of both sides, in all space ---------------------------------------------------------
     def _loot_steps(self) -> Generator[None, None, list[dict[str, Any]]]:
-        """High-sec structures owned by any side of an active war (cached until census or dataset change).
+        """Known structures owned by any side of an active war, in every kind of space whose system is in the
+        universe (cached until census or dataset change).
 
         A generator: it yields every few hundred wars or thousand structures so that an async caller can give the
         event loop a turn (``_adrain``); a plain caller drains it at once (``_loot_base``).
@@ -449,11 +451,11 @@ class WarCensus:
                 work += 1 + len(owned)
                 for st in owned:
                     idx = self.g.index.get(st.system_id) if st.system_id else None
-                    if idx is None or self.g.sec[idx] < HIGHSEC_MIN:
+                    if idx is None:
                         continue
                     row = rows.get(st.structure_id)
                     if row is None:
-                        system = self.g.describe(idx)
+                        system = self.g.describe(idx) | {"space": space_of(self.g, idx)}
                         name = st.name
                         if name.startswith(f"{system['name']} - "):
                             name = name.split(" - ", 1)[1]
@@ -500,14 +502,16 @@ class WarCensus:
         region: str = "",
         side: str = "",
         state: str = "",
-        min_sec: float = 0.5,
+        min_sec: float = -1.0,
+        space: str = "",
         sort: str = "jumps",
         limit: int = 100,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """Filtered, sorted page of high-sec structures with jumps from the caller's nearest character.
+        """Filtered, sorted page of structures with jumps from the caller's nearest character.
 
-        ``sources`` maps system index -> names of the caller's characters there.
+        ``sources`` maps system index -> names of the caller's characters there. ``min_sec`` -1 (the default) is any
+        security; ``space`` is high, low, null or wormhole. A wormhole structure has no jumps.
         """
         base = self._loot_base()
         dist, origin = self.g.nearest(sources.keys(), avoid)
@@ -543,6 +547,7 @@ class WarCensus:
         facets = {
             "types": Counter(r["type"] for r in rows).most_common(),
             "regions": Counter(r["system"]["region"] for r in rows).most_common(),
+            "spaces": Counter(r["system"]["space"] for r in rows).most_common(),
             "total": len(rows),
         }
         if type_name:
@@ -553,7 +558,10 @@ class WarCensus:
             rows = [r for r in rows if side in r["sides"]]
         if state:
             rows = [r for r in rows if r["state"] == state]
-        rows = [r for r in rows if r["system"]["security"] >= min_sec]
+        if space:
+            rows = [r for r in rows if r["system"]["space"] == space]
+        if min_sec > -1.0:
+            rows = [r for r in rows if r["system"]["security"] >= min_sec]
         far = 1 << 30
         keys = {
             "jumps": lambda r: (r["jumps"] if r["jumps"] is not None else far, r["system"]["name"], r["name"]),
@@ -588,13 +596,14 @@ class WarCensus:
         }
         top_isk = sorted(rows, key=lambda r: -(r["aggressor_isk"] + r["defender_isk"]))[:10]
         loot = self._loot_base()
+        high = [r for r in loot if r["system"]["space"] == "high"]  # the type and region tables are about high-sec
         ids = (
             list(aggressors)
             + list(defenders)
             + [r["aggressor_id"] for r in top_isk]
             + [r["defender_id"] for r in top_isk]
         )
-        ids += [r["type_id"] for r in loot]
+        ids += [r["type_id"] for r in high]
         names = self.names(ids)
 
         def top(counter: Counter[int]) -> list[dict[str, Any]]:
@@ -642,11 +651,13 @@ class WarCensus:
                 if r["aggressor_isk"] + r["defender_isk"] > 0
             ],
             "structures": {
-                "highsec": len(loot),
+                "total": len(loot),  # known structures of both sides in all space
+                "highsec": len(high),
+                "by_space": {k: sum(1 for r in loot if r["system"]["space"] == k) for k in SPACES},
                 "by_type": [
-                    [label(names, t, "type"), n] for t, n in Counter(r["type_id"] for r in loot).most_common(10)
+                    [label(names, t, "type"), n] for t, n in Counter(r["type_id"] for r in high).most_common(10)
                 ],
-                "by_region": Counter(r["system"]["region"] for r in loot).most_common(10),
+                "by_region": Counter(r["system"]["region"] for r in high).most_common(10),
                 "loaded": bool(self.structures and self.structures.loaded),
             },
             "census": {

@@ -195,9 +195,11 @@ def test_wars_tabs_and_filters_survive_a_reload(server, browser):
     assert page.locator(".kpi").first.inner_text().startswith("8")
     assert "Crimson Ledger Syndicate" in page.locator("#top-aggressors").inner_text()
     page.click("#tab-btn-loot")
-    page.wait_for_function("document.querySelectorAll('#loot-rows tr').length === 10")
+    page.wait_for_function("document.querySelectorAll('#loot-rows tr').length === 14")  # any security, all space
     first = page.locator("#loot-rows tr").first.inner_text()
     assert first.split()[0] == "0"  # nearest first: a character is in that system
+    page.select_option("#f-space", "high")
+    page.wait_for_function("document.querySelectorAll('#loot-rows tr').length === 10")
     page.select_option("#f-side", "aggressor")
     page.wait_for_function("document.querySelectorAll('#loot-rows tr').length === 3")
     page.locator("#loot-rows tr .target-chip").first.click()  # rank the structure's system
@@ -205,8 +207,8 @@ def test_wars_tabs_and_filters_survive_a_reload(server, browser):
     assert "target=Jita" in page.url
     page.goto(f"{server}/wars")
     page.wait_for_function("document.querySelectorAll('#loot-rows tr').length === 3")
-    assert page.locator(".tab.active").inner_text() == "High-sec structures"
-    assert page.input_value("#f-side") == "aggressor"
+    assert page.locator(".tab.active").inner_text() == "Structures at war"
+    assert page.input_value("#f-side") == "aggressor" and page.input_value("#f-space") == "high"
     cookie = next(c for c in ctx.cookies() if c["name"] == "evedm_prefs")
     assert cookie["sameSite"] == "Lax" and cookie["path"] == "/" and not cookie["httpOnly"]
     assert cookie["expires"] - time.time() > 300 * 86400  # about a year
