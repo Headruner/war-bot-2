@@ -30,7 +30,8 @@ curl -fsS -o /dev/null "http://127.0.0.1:$PORT/"
 curl -fsS -o /dev/null "http://127.0.0.1:$PORT/wars"   # war watcher on (config/wars.yaml in the image), demo wars
 curl -fsS "http://127.0.0.1:$PORT/api/wars" | grep -q '"war_id":990001' || { echo "Wars page API has no demo wars"; exit 1; }
 curl -fsS "http://127.0.0.1:$PORT/api/wars/stats" | grep -q '"active":8' || { echo "war statistics missing"; exit 1; }
-curl -fsS "http://127.0.0.1:$PORT/api/wars/structures" | grep -q '"matched":10' || { echo "high-sec structure list missing"; exit 1; }
+curl -fsS "http://127.0.0.1:$PORT/api/wars/structures" | grep -q '"matched":14' || { echo "structures-at-war list (all space) missing"; exit 1; }
+curl -fsS "http://127.0.0.1:$PORT/api/wars/structures?space=high" | grep -q '"matched":10' || { echo "high-sec structure list missing"; exit 1; }
 curl -fsS "http://127.0.0.1:$PORT/api/structures" | grep -q '"matched":7' || { echo "Structures page API missing"; exit 1; }
 curl -fsS "http://127.0.0.1:$PORT/api/alerts?refresh=0" | grep -q '"core_drop":true' || { echo "Alerts API missing"; exit 1; }
 curl -fsS "http://127.0.0.1:$PORT/api/health" | grep -q '"journal_mode":"wal"' || { echo "SQLite is not in WAL mode"; exit 1; }
