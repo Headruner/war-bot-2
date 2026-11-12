@@ -81,7 +81,9 @@ Key mechanisms:
   **Resolve unknown** (`POST /api/structures/resolve`) starts a background job that reads what is still unresolved
   with the characters that hold assets there (those of the signed-in main first) and the main last; a 403 is kept
   per (structure, character) in `structure_refusals` and not repeated for 14 days, and the job waits out ESI's
-  error window instead of stopping (`GET /api/structures/resolve` is its state, `.../resolve/stop` cancels it).
+  error window instead of stopping (`GET /api/structures/resolve` is its state, `.../resolve/stop` cancels it). The
+  job opens with the **mail scan** (see Mail discovery) for every character with the mail scope and reports
+  `mails_read` and `mail_found`.
   **Dock search** (`StructureScout._dock_search`, shared request `esi.search_structure_ids`, also used by
   Ansiblex): live ESI matches the start of a name, so each character with the search and structures scopes is
   searched with the 3-character prefixes of all system names (`dock_prefixes`, home region first), 200 terms per due
@@ -89,13 +91,40 @@ Key mechanisms:
   `term` that found them; new IDs also to `known_structures`), per-character state to `scout_dock_search` (`cursor`,
   `passes`, `pass_started_at`, `capped`). A term below the cap drops what it no longer returns, rows age out after
   `max(30 days, 2 x a pass)`. Characters with an access row are asked first when a structure is read, the orphan purge
-  spares such rows, and the shared list shows counts only (`dock_by`). The Wars structure lists and the alert matcher
-  use all resolved structures, the notification gate and the Characters count stay on assets. `search-probe
+  spares such rows, and the shared list shows counts only (`dock_by`). The Wars structure lists (all space) and the alert matcher
+  use all resolved structures, mail finds included, the notification gate and the Characters count stay on assets. `search-probe
   --self-test` checks the prefix match on known structures.
   Structures nobody may read get historical details in `public_structure_history`, by source rank: EVE Ref
   (daily download), the local index (`structure_index.py` reads `data/structure-index.jsonl`, built offline by
   `scripts/build_structure_index.py`; read on every scout run, no network), Adam4EVE (daily). Live ESI data always
-  wins over all three.
+  wins over all three; the mail finds rank between live ESI data and the datasets (see below).
+- **Mail discovery** (`mailscan.py`, `StructureScout._mail_scan`, STR-14): for every registered character that granted
+  `esi-mail.read_mail.v1` the scout reads the mail headers (50 per page, `last_mail_id` paging, at most `mail_max_pages`)
+  and then the body of each mail it has not parsed yet (`mail_reads`, mail IDs are global, so a mail sent to several
+  characters is opened once; `scout_mail.last_mail_id` per character). The reads use `cache=False`, so a body never
+  enters the in-memory ESI cache. `mailscan.structure_finds()` is a pure parser: an `HTMLParser` that keeps only
+  `showinfo:<type>//<id>` links, a structure link (ID >= 1e12, Upwell type) followed by a corporation link (type 2)
+  is a structure with its owner; the system is read from the link text before the first " - ". Finds are upserted
+  into `structure_mail_finds` and new IDs into `known_structures`; only structure, type and corporation IDs, the link
+  text, the mail ID and its timestamp are kept, and no mail text reaches the database or the logs. The scan runs once
+  per scout run after the dock search (`mail_refresh_minutes` per character), and first in **Resolve unknown**; it
+  stops at 60 ESI errors left and on cancel, and a failure of one character never stops the others
+  (`_mail_lock` keeps the two paths apart). `StructureScout.effective()` is the single read path: it applies the
+  mail finds below live ESI data and the public datasets below the mail finds, and is cached on `scout.version`
+  (a scan that stores something bumps it); `listing()`, `index()` (the structure index of the war lists and alerts,
+  with owner and system) and `search()` all read it. The schema is v20 (`structure_mail_finds`, `mail_reads`,
+  `scout_mail`); `stats()` and `evedm structures stats` have a `mail` block.
+- **Citadel search** (`StructureScout.search`, `suggest_places`, `suggest_owners`, STR-15): the Search tab of the
+  Structures page uses two smart-search inputs (`multiselect.js`) that call `GET /api/structures/suggest` (places:
+  every system and region ranked exact, prefix, word prefix, inside; owners: `entity_names`, plus an exact-name lookup
+  through ESI `POST /universe/ids/` from three characters, cached 10 minutes, never in demo mode) and then
+  `GET /api/structures/search`. The search keeps the structures that match every filled-in group (place OR place,
+  owner OR owner) among the rows of `effective()` and the structures of the public dataset (`StructureIndex` of the
+  war watcher, EVE Ref) that no scout row stands for, and marks each row `origin` and `known`. The members of a chosen
+  alliance come from the war census (`alliance_corps`) or from ESI `/alliances/{id}/corporations/`, remembered in
+  memory for 6 hours (`alliance_cache` in `create_app`); an alliance that cannot be read is reported in
+  `unresolved_alliances`. The wars-side counterpart is `WarCensus.loot()` (all space, `space` and `min_sec` filters,
+  WAR-17).
 
 ## C4 · Code
 
@@ -120,6 +149,8 @@ Key mechanisms:
 ![Ranking through Thera / Turnur](../diagrams/seq-thera-route.svg)
 
 ![Ranking over Ansiblex jump gates](../diagrams/seq-ansiblex-route.svg)
+
+![Mail discovery of structures](../diagrams/seq-mail-discovery.svg)
 
 ## Data model
 

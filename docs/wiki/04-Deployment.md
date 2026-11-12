@@ -6,10 +6,12 @@
 2. Callback URL: the address you open the app at, plus `/sso/callback`, e.g. `http://localhost:8080/sso/callback` or
    `https://evedm.<tailnet>.ts.net/sso/callback`.
 3. Scopes: `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
-   for the Notifications page `esi-characters.read_notifications.v1`, for the Structures page `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1`, for the **Ansiblex** route mode `esi-search.search_structures.v1`, and for the **Set
-   destination** buttons `esi-ui.write_waypoint.v1`. EVE SSO refuses the sign-in (`invalid_scope`) while one of them
-   is missing on the application; `EVE_OPTIONAL_SCOPES=none` leaves the last four out. Characters signed in before
-   a scope was added grant it with **Add character** (sign in with the main first).
+   for the Notifications page `esi-characters.read_notifications.v1`, for the Structures page `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1`, for the **Ansiblex** route mode `esi-search.search_structures.v1`, for the structures
+   named in in-game mails `esi-mail.read_mail.v1`, and for the **Set destination** buttons `esi-ui.write_waypoint.v1`.
+   EVE SSO refuses the sign-in (`invalid_scope`) while one of them is missing on the application; the mail scope is
+   new after 0.8.0, so tick it **before** upgrading. `EVE_OPTIONAL_SCOPES=none` leaves the last five out; an instance
+   that sets `EVE_OPTIONAL_SCOPES` explicitly must add `esi-mail.read_mail.v1` to it. Characters signed in before a
+   scope was added grant it with **Add character** (sign in with the main first); they stay as they were until then.
 4. Put the client ID and secret into `.env` (copy `.env.example`), together with a long random `EVEDM_SECRET_KEY` and your
    character ID in `EVEDM_ALLOWED_LOGIN_CHARACTERS`.
 
@@ -96,8 +98,10 @@ At <https://developers.eveonline.com/applications> create an application with
 - callback `http://<vm-address>:<port>/sso/callback`, identical to `EVE_CALLBACK_URL` in step 6 (scheme, host, port);
 - the scopes `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
   `esi-characters.read_notifications.v1` (Notifications page), `esi-universe.read_structures.v1`,
-  `esi-assets.read_assets.v1` (Structures page), `esi-search.search_structures.v1` (Ansiblex routes) and `esi-ui.write_waypoint.v1` (Set destination). A scope missing on
-  the application makes EVE SSO answer `invalid_scope`.
+  `esi-assets.read_assets.v1` (Structures page), `esi-search.search_structures.v1` (Ansiblex routes), `esi-mail.read_mail.v1` (structures named in mails; new after
+  0.8.0, tick it before upgrading) and `esi-ui.write_waypoint.v1` (Set destination). A scope missing on
+  the application makes EVE SSO answer `invalid_scope`; characters added earlier must use **Add character** again to
+  grant the mail scope, and an explicit `EVE_OPTIONAL_SCOPES` must list it.
 
 Note the Client ID and the Secret.
 
@@ -211,7 +215,7 @@ docker compose stop evedm && cp -a data data-backup-$(date +%F) && docker compos
 | `Range of CPUs is from 0.01 to 1.00` | one vCPU: `EVEDM_CPUS=1` in `.env` (`scripts/update.sh` does it for you) |
 | `port is already allocated` | free port in `EVEDM_PUBLISH`, same port in `EVE_CALLBACK_URL` and on the EVE application |
 | SSO error about redirect / callback | callback in `.env` and on the EVE application differ (scheme, host, port) |
-| `invalid_scope` | a scope of step 5 is not ticked on the EVE application, or set `EVE_OPTIONAL_SCOPES=none` |
+| `invalid_scope` | a scope of step 5 (`esi-mail.read_mail.v1` included) is not ticked on the EVE application, or set `EVE_OPTIONAL_SCOPES=none` |
 | `bad interpreter: /bin/bash^M` | Windows line endings: `sed -i 's/\r$//' scripts/*.sh` |
 | `Permission denied` on `scripts/update.sh` | `chmod +x scripts/*.sh`, or run `bash scripts/update.sh --no-pull` |
 | container `unhealthy` or restarting | `docker compose logs --tail 50 evedm`; most often `EVEDM_SECRET_KEY` is empty |

@@ -36,6 +36,7 @@
 | An asset safety notification says "zKillboard: no <Type> kill in <System> within 5 min" | the check looked in the live feed and in the zKillboard API every minute for 5 minutes after the notification was stored. "No kill" does not prove nothing was destroyed: the owner may have **unanchored** the structure or it was **abandoned** (items go to safety without a killmail), or zKillboard never received the killmail. Look at `evedm notifications lag` under `zkb_check` (`api_errors`, `api.blocked`): errors mean the API could not be asked and only the feed decided. Settings: `notifications.zkb_check.enabled`, `types` (default `StructureItemsMovedToSafety`), `window_s` 300, `interval_s` 60, `duration_s` 300, `api_enabled` (`EVEDM_NOTIFICATIONS_ZKB_CHECK_API_ENABLED`), `api_url` (`https://zkillboard.com/api`), `min_api_gap_s` 10, `max_resolve` 3 (killmail times read from ESI per check). The three lines: "checking… (n of N)" while pending, "<Type> destroyed in <System> at HH:MM (UTC)" with the kill link, "no <Type> kill in <System> within 5 min". |
 | A notification shows Structure type "Unknown" | the notification names no type and neither the scout nor the public structure history knows the structure; a type whose name ESI could not give is asked again after an hour. Discord leaves the field out |
 | `evedm structures stats` shows `dock_search.capped` above 0, `first_pass_incomplete` stays above 0, or "can dock, no assets" looks incomplete | `capped_terms` counts terms (a full system name) that still returned `dock_search_cap` structures or more: what came back is kept but the list for that system may be cut off. A character needs about 21 runs for its first pass (`structures.dock_search_max_terms` 200 per run); `characters_searched`, `passes` and `with_errors` show progress (403/401: the scope is missing or the token was revoked, Add character again). Prefixes with punctuation (H-PA29 gives "H-P") are not verified live: run `evedm structures search-probe --self-test` and apply its `recommendation` (`dock_search_punctuated: full`) |
+| The mail scan finds nothing | the character has not granted `esi-mail.read_mail.v1` (it must be ticked on the EVE application first, then use Add character again); `evedm structures stats` shows `mail.readers` (characters with the scope), `mail.characters_scanned`, `mail.with_errors` and `mail.finds`; a mail is only used when it holds a structure link of an Upwell type with an ID of at least 1e12 and is not older than `structures.mail_max_age_days` |
 | Ansiblex mode shows no gates | the character has not granted `esi-search.search_structures.v1` (Add character again) or sees no gate in the structure search; `ansiblex.refresh_hours` (6) controls re-reading |
 | `data directory /app/data is not writable by uid 10001` | Linux host folder owned by another user: `sudo chown -R 10001:10001 data`, or use a named volume |
 
@@ -57,6 +58,36 @@
 Load with the defaults: 200 searches per character and hourly run, so 38 characters send about 7 600 calls per hour (2 per second) until the first pass is done, about 21 runs or 21 hours; afterwards one due run per day, 7 600 calls per day (about 320 per hour), and each character is fully refreshed about every 21 days. If that refresh is too slow lower `dock_search_hours` (6 gives about 5 days at 30 000 calls per day). Searches are not cached in memory and are plain 200 answers (they cost no ESI errors).
 
 `evedm structures stats` has a `dock_search` block (`terms`, `eligible_characters`, `characters_searched`, `first_pass_incomplete`, `passes`, `capped`, `capped_terms`, `with_errors`, `access_rows`, `dockable`, `dockable_without_assets`, `dockable_unresolved`). `docker exec evedm evedm structures search-probe --character ID [--term TEXT ...]` runs the given terms (default: " » ", the prefix and the full name of the character's last known system) and prints the `count`, `hit_cap` and 5 `sample` IDs per term. `evedm structures search-probe --self-test [--character ID ...] [--limit 12]` (default: up to 5 characters with the most sightings) searches resolved structures the character sights or may dock at by their 3- and 4-character system prefix and full system name, grouped by name shape (plain letters, hyphen early or late, space, leading digit, J-space), reports for each shape how often the known structure ID was found, and prints a `recommendation` and `recommended_settings` (for example `dock_search_punctuated: full`) plus an `ansiblex` section: the live " » " count for up to 3 characters with stored gates next to the gates stored for them. A miss can also mean the character lost docking there (assets do not prove access), so only shapes where the full name hits and the prefix misses count against the prefix. Nothing is stored (a token refresh may be written).
+
+## Mail scan (structures named in in-game mails)
+
+The scout opens the mails of every registered character that granted `esi-mail.read_mail.v1`, looks for a structure link
+followed by its owner corporation's link (what a pilot gets by dragging both into a mail) and adds the structure to the
+shared list with the source "named in mails". It reads the headers (`GET /characters/{id}/mail/`, 50 per page) and the
+body (`GET /characters/{id}/mail/{mail_id}/`) of each mail not parsed before, once per mail even when it went to several
+characters, and keeps only structure, type and corporation IDs, the link text, the mail ID and the mail's timestamp; no
+mail body, subject, sender or recipient is stored or logged. It runs in every scout run after the dock search for each
+character that is due, and first in **Resolve unknown** (whatever `mail_refresh_minutes` says).
+
+| Setting (`structures:`) | Default | Meaning |
+|---|---|---|
+| `mail_enabled` | true | `false` switches the scan off: no mail is read or asked for, finds already stored stay in the list |
+| `mail_refresh_minutes` | 60 | a character's mail is read again after this long |
+| `mail_max_pages` | 4 | header pages (50 mails each) read per character and run |
+| `mail_max_age_days` | 30 | older mails are never opened |
+
+There is no environment variable for these; set them in the YAML file (`config/evedm.example.yaml`, `EVEDM_CONFIG`).
+
+What an operator sees: the scout's last run (`scout.last_run` in `GET /api/structures`, the "structure scout:" log line)
+has `mail_characters` (characters read in that run), `mails_read` (bodies opened), `mail_found` (structures found) and
+`mail_errors` (characters whose read failed); the Resolve unknown state has `mails_read` and `mail_found`;
+`GET /api/structures/stats` and `docker exec evedm evedm structures stats` have a `mail` block with `enabled`,
+`readers`, `characters_scanned`, `with_errors`, `mails_parsed`, `finds`, `finds_with_owner` and `finds_read_by_esi`
+(the finds ESI has read since). The scan stops while ESI's error window has 60 or fewer errors left; a passing ESI error
+keeps the character due for the next run, a refusal (401, 403) waits the whole interval. A character without
+the scope (added before the upgrade and not added again) is never read. EVE SSO grants all requested scopes or none,
+so a player cannot decline this one alone; an operator switches the scan off for the whole instance with
+`structures.mail_enabled: false`, or by leaving `esi-mail.read_mail.v1` out of `EVE_OPTIONAL_SCOPES`.
 
 ## Local structure index (names for structures nobody here may read)
 

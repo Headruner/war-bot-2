@@ -22,6 +22,8 @@ rectangle "EVE Distance Meter" {
   usecase "UC-14 Browse the structures where any\nregistered character has assets (members only)" as UC14
   usecase "UC-15 Rank through the Thera / Turnur\nwormholes listed by EVE-Scout" as UC15
   usecase "UC-16 Rank over the Ansiblex jump gates\neach character can see" as UC16
+  usecase "UC-18 Report a structure and its owner by mail\n(drag both links into an in-game mail)" as UC18
+  usecase "UC-19 Search citadels by system or region\nand by corporation or alliance (members only)" as UC19
   usecase "UC-11 React to a structure alert\n(battleship / capital kills or > 500M ISK)" as UC11
 }
 bb --|> user
@@ -37,8 +39,12 @@ user --> UC12
 user --> UC15
 user --> UC16
 user --> UC11
+user --> UC18
 bb --> UC13
 bb --> UC14
+bb --> UC19
+UC19 .> UC14 : <<extend>>
+UC18 .> UC14 : <<extend>>
 UC5 .> UC4 : <<include>>
 UC15 .> UC4 : <<extend>>
 UC16 .> UC4 : <<extend>>
@@ -49,6 +55,7 @@ UC2 --> sso : refresh tokens
 UC4 --> esi : location, ship, online
 UC13 --> esi : /characters/{id}/notifications
 UC14 --> esi : assets, then /universe/structures/{id}
+UC18 --> esi : /characters/{id}/mail/, /characters/{id}/mail/{mail_id}/
 UC15 --> evs : /v2/public/signatures
 UC13 --> evs : closer of Thera / Turnur per notification
 UC16 --> esi : structure search as the character,\nthen /universe/structures/{id}

@@ -1,0 +1,58 @@
+@startuml seq-mail-discovery
+title UC-18 / UC-19 · Structures named in in-game mails reach the Structures page, the Search tab and the Wars lists
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+autonumber
+actor "Pilot" as pilot
+actor "Member" as user
+participant "Browser UI\n(structures.js + multiselect.js)" as ui
+participant "Routes" as web
+participant "StructureScout\n(_mail_scan, effective())" as scout
+participant "mailscan.py" as parser
+participant "CharacterService" as chars
+participant "ESI" as esi
+database "SQLite" as db
+
+pilot -> esi : in-game: drag a structure link and its owner corporation's link into a mail
+note over pilot, esi : the mail is sent to a character that granted esi-mail.read_mail.v1
+
+== hourly scout run (after the dock search) or Resolve unknown (first, forced) ==
+loop each character with the mail scope that is due (mail_refresh_minutes, 60)
+  scout -> chars : access_token(character, owner)
+  loop up to mail_max_pages (4), while the page is new and younger than mail_max_age_days (30)
+    scout -> esi : GET /characters/{id}/mail/?last_mail_id=... (cache=False)
+    esi --> scout : 50 headers (mail_id, timestamp; subject, sender and recipients are ignored)
+  end
+  scout -> db : mail_reads: skip mails already parsed (mail IDs are global); scout_mail.last_mail_id
+  loop each new mail, oldest first
+    scout -> esi : GET /characters/{id}/mail/{mail_id}/ (cache=False)
+    esi --> scout : body (HTML with showinfo links)
+    scout -> parser : structure_finds(body, is_structure_type)
+    parser --> scout : [structure_id, type_id, name, owner_id] (body dropped, nothing else kept)
+    scout -> db : structure_mail_finds (newer mail replaces, older fills gaps), known_structures (status new), mail_reads
+  end
+  scout -> db : scout_mail (checked_at, mails, found, error)
+end
+scout -> scout : a scan that stored finds bumps version (effective() and index() are rebuilt)
+note over scout, esi : passing errors (0, 420, 429, 5xx) keep the character due; 401 / 403 wait the whole interval;\nthe scan stops at 60 ESI errors left and on cancel
+
+== the structure is read with ESI as usual ==
+loop each known structure still unresolved
+  scout -> chars : token of a character that has assets there (or the main)
+  scout -> esi : GET /universe/structures/{id}
+  esi --> scout : name, owner_id, solar_system_id, type_id (403: next character, 404: gone)
+  scout -> db : UPDATE known_structures (live ESI data wins over the mail find)
+end
+
+== a member looks ==
+user -> ui : open Structures (Shared list, source "named in mails") or Search
+ui -> web : GET /api/structures?source=mail  |  GET /api/structures/suggest, /api/structures/search
+web -> scout : listing() / search() read effective()
+scout -> db : known_structures, structure_mail_finds, public_structure_history
+scout --> web : rows: live ESI > mail find > public datasets (mail: date, owner)
+web --> ui : rows with jumps, "Named in a mail" and known / unknown
+user -> ui : Wars page, Structures at war tab
+ui -> web : GET /api/wars/structures
+web -> scout : index() (structures with owner and system, mail finds included)
+web --> ui : structures of both sides of active wars in all space
+@enduml

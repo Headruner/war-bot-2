@@ -16,8 +16,10 @@ when you press **Set destination** for an online character.
   that player sees them. The sign-in lasts 90 days per browser; tokens are stored encrypted (Fernet) in SQLite.
 - **Wars page** (merged eve-war-bot-2): new war declarations from ESI with the systems of both sides' public
   structures; one click ranks your characters to such a system. Optional Discord posting. Settings in `config/wars.yaml`.
-- **War statistics and loot list**: every active war in New Eden (census), and the public high-sec structures of
-  both sides sorted by jumps from your nearest character.
+- **War statistics and structure list**: every active war in New Eden (census), and the known structures of both
+  sides in all space (high-sec, low-sec, null-sec, wormhole; filter by space and security, default any), sorted by
+  jumps from your nearest character. `GET /api/wars/structures` takes `space` and `min_sec` (default -1 = any);
+  `GET /api/wars/stats` has `structures.total`, `highsec` and `by_space`.
 - **Structures page** (structure scout, members of one alliance only): every player-owned structure in any space
   where any registered character holds an asset (ESI assets, then ESI structure info), pooled for all members,
   nearest first, owners at war marked. **Resolve unknown** reads the structures still missing a name, owner or system
@@ -25,6 +27,17 @@ when you press **Set destination** for an online character.
   what nobody here may read is filled from public data and marked *Historical details*:
   EVE Ref, then a local index built by `scripts/build_structure_index.py` (`data/structure-index.jsonl`), then
   Adam4EVE.
+- **Structures named in mails** (members only): the scout opens every in-game mail of every registered character that
+  granted `esi-mail.read_mail.v1`; a structure link followed by its owner corporation's link (drag both into a mail)
+  adds the structure to the shared list (source *named in mails*, `GET /api/structures?source=assets|dock|mail|all`)
+  and to the Wars lists. Only structure, type and corporation IDs, the link text, the mail ID and its timestamp are
+  kept; no mail body, subject, sender or recipient is stored or logged (see SECURITY.md). **Resolve unknown** runs the
+  mail scan first. Settings `structures.mail_enabled`, `mail_refresh_minutes` (60), `mail_max_pages` (4),
+  `mail_max_age_days` (30) in the YAML file; `mail_enabled: false` switches it off.
+- **Citadel search** (Search tab of the Structures page, members only): two smart-search inputs, system or region and
+  corporation or alliance, list citadels known and unknown (EVE Ref's public dataset included) that match every
+  filled-in input. `GET /api/structures/suggest?kind=place|owner&q=` and `GET /api/structures/search?systems=&regions=&corps=&alliances=&state=&sort=&limit=&offset=`;
+  alliance members come from the war census or ESI and are remembered for 6 hours.
 - **Structure alerts** (Alerts page): zKillboard's live killmail feed shows structures **destroyed** (citadels,
   engineering complexes and refineries drop their quantum core), **combat** within 1000 km of a known structure, and
   structures **firing**, in all space. Combat and firing alerts are kept only for kills with a **battleship or capital
@@ -112,8 +125,10 @@ A ready-made demo database is in [`data/demo/evedm.sqlite3`](data/demo) (key `de
 
 1. Create an application at <https://developers.eveonline.com/applications> with callback `http://<host>:8080/sso/callback`
    and scopes `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
-   `esi-characters.read_notifications.v1` (Notifications page), `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1` (Structures page), `esi-search.search_structures.v1` (Ansiblex routes) and `esi-ui.write_waypoint.v1`
-   (Set destination). Characters signed in before a scope was added: **Add character** again to grant it.
+   `esi-characters.read_notifications.v1` (Notifications page), `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1` (Structures page), `esi-search.search_structures.v1` (Ansiblex routes), `esi-mail.read_mail.v1` (structures named in mails; new after
+   0.8.0: tick it before upgrading, or sign-in fails with `invalid_scope`) and `esi-ui.write_waypoint.v1`
+   (Set destination). Characters signed in before a scope was added: **Add character** again to grant it. An instance
+   that sets `EVE_OPTIONAL_SCOPES` explicitly must add `esi-mail.read_mail.v1` there.
 2. `cp .env.example .env` and fill in `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET`, `EVEDM_SECRET_KEY`, `EVEDM_ALLOWED_LOGIN_CHARACTERS`.
 3. `docker compose pull && docker compose up -d --no-build` with `EVEDM_IMAGE=ghcr.io/headruner/war-bot-2:latest`
    (the published image, nothing is built; Linux or Windows with Docker Desktop; updates: `scripts/update.sh` on
@@ -220,8 +235,10 @@ At <https://developers.eveonline.com/applications> create an application with
 - callback `http://<vm-address>:<port>/sso/callback`, identical to `EVE_CALLBACK_URL` in step 6 (scheme, host, port);
 - the scopes `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
   `esi-characters.read_notifications.v1` (Notifications page), `esi-universe.read_structures.v1`,
-  `esi-assets.read_assets.v1` (Structures page), `esi-search.search_structures.v1` (Ansiblex routes) and `esi-ui.write_waypoint.v1` (Set destination). A scope missing on
-  the application makes EVE SSO answer `invalid_scope`.
+  `esi-assets.read_assets.v1` (Structures page), `esi-search.search_structures.v1` (Ansiblex routes), `esi-mail.read_mail.v1` (structures named in mails; new after
+  0.8.0, tick it before upgrading) and `esi-ui.write_waypoint.v1` (Set destination). A scope missing on
+  the application makes EVE SSO answer `invalid_scope`; characters added earlier must use **Add character** again to
+  grant the mail scope, and an explicit `EVE_OPTIONAL_SCOPES` must list it.
 
 Note the Client ID and the Secret.
 
@@ -341,7 +358,7 @@ docker compose stop evedm && cp -a data data-backup-$(date +%F) && docker compos
 | `Range of CPUs is from 0.01 to 1.00` | one vCPU: `EVEDM_CPUS=1` in `.env` (`scripts/update.sh` does it for you) |
 | `port is already allocated` | free port in `EVEDM_PUBLISH`, same port in `EVE_CALLBACK_URL` and on the EVE application |
 | SSO error about redirect / callback | callback in `.env` and on the EVE application differ (scheme, host, port) |
-| `invalid_scope` | a scope of step 5 is not ticked on the EVE application, or set `EVE_OPTIONAL_SCOPES=none` |
+| `invalid_scope` | a scope of step 5 (`esi-mail.read_mail.v1` included) is not ticked on the EVE application, or set `EVE_OPTIONAL_SCOPES=none` |
 | `bad interpreter: /bin/bash^M` | Windows line endings: `sed -i 's/\r$//' scripts/*.sh` |
 | `Permission denied` on `scripts/update.sh` | `chmod +x scripts/*.sh`, or run `bash scripts/update.sh --no-git` |
 | container `unhealthy` or restarting | `docker compose logs --tail 50 evedm`; most often `EVEDM_SECRET_KEY` is empty |
@@ -362,7 +379,7 @@ docker compose stop evedm && cp -a data data-backup-$(date +%F) && docker compos
 | `EVEDM_WARS_ENABLED` | `true` in `config/wars.yaml` | `0` switches the war watcher off |
 | `EVEDM_WARS_DISCORD_ENABLED`, `EVEDM_WARS_DISCORD_WEBHOOK` | `0`, empty | post new wars to a Discord channel |
 | `EVEDM_PUBLIC_URL` | from `EVE_CALLBACK_URL` | address of the site, used in Discord links to the Wars page |
-| `EVE_OPTIONAL_SCOPES` | `esi-universe.read_structures.v1 esi-assets.read_assets.v1 esi-ui.write_waypoint.v1 esi-search.search_structures.v1` | extra scopes (structure scout, Set destination); `none` = only the ranking scopes |
+| `EVE_OPTIONAL_SCOPES` | `esi-universe.read_structures.v1 esi-assets.read_assets.v1 esi-ui.write_waypoint.v1 esi-search.search_structures.v1 esi-mail.read_mail.v1` | extra scopes (structure scout, mail scan, Set destination); `none` = only the ranking scopes |
 | `EVEDM_STRUCTURES_ENABLED` | `1` | `0` switches the structure scout and the Structures page off |
 | `EVEDM_ACCESS_ALLIANCES` | `99010320` | comma-separated alliance IDs whose mains see the Notifications and Structures tabs; empty list = every signed-in main (the 0.8.0 name `EVEDM_NOTIFICATIONS_ALLIANCES` still works) |
 | `EVEDM_NOTIFICATIONS_ENABLED` | `1` | `0` switches the notification poller and the Notifications page off |
@@ -384,7 +401,9 @@ docker compose stop evedm && cp -a data data-backup-$(date +%F) && docker compos
 | `EVEDM_ESI_CONCURRENCY` | `20` | parallel ESI calls |
 | `EVEDM_REFRESH_INTERVAL_S` / `EVEDM_MAX_WAIT_AGE_S` | `5` / `30` | background refresh cadence / max age served without waiting |
 
-All settings can also go into a YAML file (`config/evedm.example.yaml`, `EVEDM_CONFIG`).
+All settings can also go into a YAML file (`config/evedm.example.yaml`, `EVEDM_CONFIG`). The four mail scan settings
+(`structures.mail_enabled`, `mail_refresh_minutes`, `mail_max_pages`, `mail_max_age_days`) exist only there; the scope
+`esi-mail.read_mail.v1` is part of the default `EVE_OPTIONAL_SCOPES`.
 
 ## Development
 
@@ -415,7 +434,7 @@ The project follows the [architecture guidelines](docs/guidelines/architecture.m
 ## Project layout
 
 ```
-src/evedm/            core + web app (universe, resolver, sso, esi, characters, bundle, ranking, scout, alerts, db,
+src/evedm/            core + web app (universe, resolver, sso, esi, characters, bundle, ranking, scout, mailscan, alerts, db,
                       logs, demo, cli, wars/, web/)
 src/evedm/data/       universe.json.gz (systems, gates, ship names from CCP static data)
 tests/                unit/, integration/ (processes + browser), perf/, fake_eve.py

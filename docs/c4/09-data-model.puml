@@ -1,5 +1,5 @@
 @startuml data-model
-title Database schema v13 (one file evedm.sqlite3, WAL, on the /app/data volume)
+title Database schema v20 (one file evedm.sqlite3, WAL, on the /app/data volume)
 skinparam shadowing false
 hide circle
 hide methods
@@ -230,6 +230,32 @@ entity scout_characters {
   structures : INTEGER
   error : TEXT
 }
+entity structure_mail_finds {
+  * structure_id : INTEGER <<PK>> (one find per structure, no FK: the row may exist before known_structures has it)
+  --
+  owner_id : INTEGER (corporation link that followed the structure link; NULL = none)
+  type_id : INTEGER
+  name : TEXT (the link text)
+  system_id : INTEGER (from the text before the first " - "; NULL = not recognised)
+  mail_id : INTEGER (newest mail that named it)
+  mail_ts : REAL (that mail's timestamp)
+  found_at : REAL
+}
+entity mail_reads {
+  * mail_id : INTEGER <<PK>> (global: a mail sent to several characters is parsed once; no text is kept)
+  --
+  read_at : REAL
+  finds : INTEGER
+}
+entity scout_mail {
+  * character_id : INTEGER <<PK>>
+  --
+  checked_at : REAL (0 = retry at the next run)
+  last_mail_id : INTEGER (mails up to this ID were seen)
+  mails : INTEGER (bodies opened by the last run)
+  found : INTEGER (finds of the last run)
+  error : TEXT
+}
 users ||--o{ characters
 characters ||--|| tokens
 known_structures ||--o{ structure_sightings
@@ -242,6 +268,9 @@ characters ||--o| notification_characters
 characters ||--o{ notification_reads
 notification_posts ||--o| notification_zkb : same event_key
 characters ||--o| scout_characters
+characters ||--o| scout_mail
+known_structures ||--o| structure_mail_finds : same structure_id
+structure_mail_finds }o..o{ mail_reads : mail_id (finds of a parsed mail)
 characters ||--o| ansiblex_characters
 characters ||--o{ ansiblex_access
 ansiblex_gates ||--o{ ansiblex_access

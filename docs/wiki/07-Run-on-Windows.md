@@ -48,9 +48,11 @@ docker run --rm -p 8080:8080 -v "${PWD}\data\demo:/app/data" `
 3. Scopes: `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`, `esi-location.read_online.v1`,
    `esi-characters.read_notifications.v1` (Notifications page), for the Structures page
    `esi-universe.read_structures.v1`, `esi-assets.read_assets.v1`, for the Ansiblex route mode
-   `esi-search.search_structures.v1`, and for **Set
+   `esi-search.search_structures.v1`, for the structures named in in-game mails `esi-mail.read_mail.v1`, and for **Set
    destination** `esi-ui.write_waypoint.v1`. EVE SSO refuses the sign-in (`invalid_scope`) while one of them is
-   missing on the application; `EVE_OPTIONAL_SCOPES=none` leaves the last four out.
+   missing on the application (the mail scope is new after 0.8.0: tick it before upgrading);
+   `EVE_OPTIONAL_SCOPES=none` leaves the last five out; if you set `EVE_OPTIONAL_SCOPES` in `.env` yourself, add
+   `esi-mail.read_mail.v1` to it.
 4. Copy the **Client ID** and **Secret Key**.
 
 ## 4. Create `.env`
@@ -152,12 +154,14 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
 - **New wars**: the watcher checks ESI for new war declarations every 15 minutes, newest first. Each war lists the
   systems of both sides' public structures and the systems with recent kills. Click one to rank your characters.
 - **Statistics**: every active war in New Eden (fighting, starting within 24 h, ending): counts, most active
-  aggressors, most war-decced corporations, most destructive wars, high-sec structures at war by type and region.
+  aggressors, most war-decced corporations, most destructive wars, structures at war (all space) and high-sec
+  structures at war by type and region.
   The first scan walks back through the newest 20,000 war IDs in the background (about 20 cycles of 15 minutes);
   the coverage line under the tables shows its progress.
-- **High-sec structures**: public high-sec structures of both sides of every active war, nearest to your own
-  characters first, with the war state (fighting, starts in …, ends in …). Filter by type, region, side, war state
-  and security; click the system to rank your characters.
+- **Structures at war** (until 0.8.0 "High-sec structures"): the known structures of both sides of every active war
+  in all space, nearest to your own characters first, with the war state (fighting, starts in …, ends in …). Filter by
+  type, region, side, war state, space (high-sec, low-sec, null-sec, wormhole) and security (default any); click the
+  system to rank your characters (wormhole systems have no gates, so no jumps and no link).
 - The chosen tab, the filters and the ranking's
   auto-refresh interval are remembered in a cookie of your browser (`evedm_prefs`, one year); nothing is stored on
   the server, so another browser starts with the defaults.
@@ -174,11 +178,13 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
   found there is then read from ESI for its name, owner, type and system. The tab is open to members of the
   configured alliance (BB) only (see the Notifications section for `access.alliance_ids`); they all see the same
   pooled list, sorted by jumps from their own nearest character; NPC stations never appear.
-- It needs two extra scopes on your EVE application: tick `esi-universe.read_structures.v1` and
-  `esi-assets.read_assets.v1` on developers.eveonline.com **before** upgrading, otherwise sign-in fails with
-  `invalid_scope` (or set `EVE_OPTIONAL_SCOPES=none` in `.env` until you have).
+- It needs extra scopes on your EVE application: tick `esi-universe.read_structures.v1` and
+  `esi-assets.read_assets.v1` on developers.eveonline.com **before** upgrading, and `esi-mail.read_mail.v1` for the
+  mail scan below, otherwise sign-in fails with `invalid_scope` (or set `EVE_OPTIONAL_SCOPES=none` in `.env` until you
+  have).
 - Characters added before need to grant them once: sign in again with the main and use **Add character** for each
-  alt. The Characters page says "structures not shared" for characters that have not.
+  alt. The Characters page says "structures not shared" for characters that have not. A character added before the
+  mail scope existed is not read for mails until it has been added again.
 - The scout runs every 60 minutes and reads each character's assets once a day. The whole list is read first and
   only then saved: a read that fails or is cut short saves nothing and keeps the earlier finds. Only items in a
   Hangar, Deliveries or AssetSafety flag count, and not when the place is one of the character's own ships or
@@ -187,11 +193,11 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
   Characters page counts drop to the real numbers). A structure stays in the database until it is destroyed or
   unanchored, even when no character can read it any more; names and owners are re-read every 30 days and refused
   ones every 14 days.
-- Structures of corporations at war (from the Wars census) are marked **at war**, and the high-sec ones also appear
-  in the Wars page's High-sec structures tab.
+- Structures of corporations at war (from the Wars census) are marked **at war**, and they also appear in the Wars
+  page's Structures at war tab (all space, not only high-sec).
 - The search box and filters are remembered in your browser like the other settings. **Source** chooses what is
-  listed: *with assets* (the default: structures where a registered character has items), *can dock, no assets* or
-  *all*. "Can dock" means ESI's character search (`esi-search.search_structures.v1`, the scope Ansiblex mode already
+  listed: *with assets* (the default: structures where a registered character has items), *can dock, no assets*,
+  *named in mails* or *all*. "Can dock" means ESI's character search (`esi-search.search_structures.v1`, the scope Ansiblex mode already
   asks for) returned the structure for at least one registered character, so that character may dock there even
   without items; the page shows only how many characters can dock, never which. ESI's search matches the start of a
   name, so each character is searched with the first three letters of every system name (its own region first,
@@ -199,7 +205,18 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
   hyphen (null-sec names such as H-PA29) are not verified live: `evedm structures search-probe --self-test` checks
   them on known structures and names the setting to use (`structures.dock_search_punctuated: full`). A result at
   the cap is split into full system names and never assumed complete (see 06 · Operations).
-- **Resolve unknown** (button on the page) starts a background job that reads every structure still missing a name,
+- **Mails**: with `esi-mail.read_mail.v1` granted, the scout opens the in-game mails of every registered character
+  once an hour and picks out a structure link followed by its owner corporation's link (drag both into a mail to
+  report a structure). The structure joins the list as *named in mails* with the owner and the mail's date; live ESI
+  data replaces it as soon as a character can read the structure. Only the structure, type and corporation IDs, the
+  link text, the mail ID and its timestamp are stored; the mail itself (body, subject, sender, recipients) is never
+  stored or logged. Switch the scan off with `structures.mail_enabled: false` in the YAML config file (`EVEDM_CONFIG`, see `config\evedm.example.yaml`); the other
+  settings are `mail_refresh_minutes` (60), `mail_max_pages` (4) and `mail_max_age_days` (30).
+- **Search tab**: finds citadels, known and unknown, by system or region and by corporation or alliance. Type two
+  letters into either box, pick a suggestion (mouse or arrow keys and Enter) and the table follows each change; a
+  structure must match every box that is filled in, and any one of several choices in a box. *Show* limits the
+  list to known or unknown citadels. Structures of EVE Ref's public dataset are listed too.
+- **Resolve unknown** (button on the page) starts a background job that first scans the mails and then reads every structure still missing a name,
   owner or system: ESI's public list first, then structures with a character that holds assets there (yours first),
   your main last (`esi-universe.read_structures.v1`). A refusal is remembered per structure and character for 14
   days. When ESI's error limit runs low the job waits for the window and goes on by itself, so one click is enough;
