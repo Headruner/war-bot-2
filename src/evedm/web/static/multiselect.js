@@ -37,7 +37,7 @@ function MultiSelect(container, { kind, placeholder = "", onChange = () => {} })
     const node = mk("span", `ms-chip ms-${item.kind}`);
     const x = mk("button", "ms-x", "×");
     x.type = "button"; x.title = `Remove ${item.name}`; x.setAttribute("aria-label", `Remove ${item.name}`);
-    x.addEventListener("click", () => { chips = chips.filter((c) => c.node !== node); render(); onChange(); });
+    x.addEventListener("click", () => { node.remove(); chips = chips.filter((c) => c.node !== node); render(); onChange(); });
     node.append(mk("span", "ms-kind", item.kind === "system" ? "system" : item.kind), document.createTextNode(` ${item.name} `), x);
     chips.push({ kind: item.kind, id: item.id, name: item.name, node });
   }
