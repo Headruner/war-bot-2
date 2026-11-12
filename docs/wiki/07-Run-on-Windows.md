@@ -228,7 +228,8 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
 - **Set destination**: for an online character the button sets the in-game autopilot destination to the alert's
   system (waypoints cleared first). It is greyed out for offline characters and for characters that have not granted
   `esi-ui.write_waypoint.v1`: tick that scope on your EVE application, then **Add character** again for each of them.
-  The same button is in the ranking's route bar ("Set destination: <target>").
+  On the Ranking page the same button ("Set destination: <target>") sits on the row of each online character;
+  offline characters have none.
 - **Notifications**: the page refreshes every 30 seconds. "Desktop notifications" asks your browser for permission
   and then shows a notice for every new alert while the page is open (in a background tab too); "sound" adds a beep.
   The filters (kinds, core drops only, space, period) and these choices are remembered in your browser.

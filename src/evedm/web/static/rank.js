@@ -172,6 +172,7 @@ function renderRow(row, n) {
   if (row.online) meta.append(el("span", "badge online", "Online"));
   else if (row.last_logout) meta.textContent = `Offline · last seen ${ago(row.last_logout)}`;
   who.append(meta);
+  if (row.online) who.append(routeButton(row, state.result.target));
 
   const jumps = el("div", "jumps");
   if (row.reachable) {
@@ -269,7 +270,7 @@ function showSelection() {
         : wh && k === wh.gates_to_entry + 1 ? sigTag(wh.exit, wh.hub) : null;
       if (sig) path.append(sig);
     });
-    bar.append(title, path, routeButton(row, r.target));
+    bar.append(title, path);
   } else {
     title.textContent = row.system
       ? `${row.name} is in ${row.system.name} (${row.system.region}): no stargate route to ${r.target.name}.`
@@ -317,17 +318,17 @@ if (hubRadios.length) {
 }
 
 /* ---------------------------------------------------------------- set the in-game destination */
+/* the button sits on the row of each online character (offline: no button) */
 function routeButton(row, target) {
   const wrap = el("div", "set-route");
+  wrap.addEventListener("click", (ev) => ev.stopPropagation());  // a click here does not select the row
   const btn = el("button", "btn small-btn", `Set destination: ${target.name}`);
   btn.type = "button";
+  btn.addEventListener("keydown", (ev) => ev.stopPropagation());  // Enter here does not select the row either
   const note = el("span", "small");
   if (!row.can_set_route) {
     btn.disabled = true;
     note.textContent = " re-authorize this character (Add character) to allow it";
-  } else if (!row.online) {
-    btn.disabled = true;
-    note.textContent = " only for an online character";
   }
   btn.addEventListener("click", async (ev) => {
     ev.stopPropagation();

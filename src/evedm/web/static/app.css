@@ -267,6 +267,7 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
 /* set destination */
 .set-route { margin-top: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .btn.small-btn { padding: 4px 10px; font-size: 13px; }
+.row .set-route { margin-top: 4px; }
 
 /* alerts page */
 .alert-destroyed { border-left: 3px solid var(--bad); }

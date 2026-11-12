@@ -32,8 +32,8 @@ when you press **Set destination** for an online character.
   *capitals* filter shows only kills with at least one capital on each side. Each alert lists your three closest characters; browser notification, sound
   and an optional Discord webhook. Attack timers themselves are not public, so these killmail signals are the hint.
   ([screenshot](docs/screenshots/alerts-desktop.png))
-- **Set destination**: one click sets the in-game autopilot destination of an online character (ranking route bar
-  and Alerts page; scope `esi-ui.write_waypoint.v1`).
+- **Set destination**: one click sets the in-game autopilot destination of an online character (its row on the
+  Ranking page, and the Alerts page; scope `esi-ui.write_waypoint.v1`).
 - **Thera / Turnur filter** (Ranking page): choose *Gates only*, *Thera* or *Turnur* next to the target box. Each
   button uses only its own hub as the mid-system, with the wormholes that [EVE-Scout](https://www.eve-scout.com/#/)
   lists for it. For each character it takes the listed system closest by gates (higher security wins a tie), the

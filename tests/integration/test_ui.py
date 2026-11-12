@@ -326,18 +326,26 @@ def test_alerts_page_filters_deep_links_and_offline_characters(server, browser):
     ctx.close()
 
 
-def test_route_bar_sets_the_destination_of_an_online_character(server, browser):
+def test_each_online_row_sets_the_destination_and_offline_rows_have_no_button(server, browser):
+    """The destination button sits on each online row, never on the route bar."""
     page, errors = open_page(browser, f"{server}/?target=Tama", viewport={"width": 1440, "height": 860})
     page.wait_for_selector(".row.selected")
-    btn = page.locator("#route-bar .set-route button")
-    assert btn.inner_text() == "Set destination: Tama" and btn.is_disabled()  # Kael Varn is offline
-    assert "only for an online character" in page.locator("#route-bar .set-route").inner_text()
-    page.locator(".row", has_text="Juno Krell").click()
-    btn = page.locator("#route-bar .set-route button")
-    assert not btn.is_disabled()
+    assert page.locator("#route-bar .set-route").count() == 0
+    assert "Set destination" not in page.inner_text("#route-bar")
+    assert page.locator("#rows .row", has_text="Kael Varn").locator(".set-route").count() == 0  # offline
+    online = page.locator("#rows .row:has(.badge.online)").count()
+    assert online >= 1
+    assert page.locator("#rows .row .set-route").count() == online
+    juno = page.locator("#rows .row", has_text="Juno Krell")
+    btn = juno.locator(".set-route button")
+    assert btn.inner_text() == "Set destination: Tama" and not btn.is_disabled()
     btn.click()
-    page.wait_for_function("document.querySelector('#route-bar .set-route').innerText.includes('demo')")
-    assert "demo: destination not sent" in page.locator("#route-bar .set-route").inner_text()
+    assert "Kael Varn" in page.locator(".row.selected").inner_text()  # the click did not select the row
+    page.wait_for_function(
+        "[...document.querySelectorAll('#rows .row')].find(r => r.innerText.includes('Juno Krell'))"
+        ".querySelector('.set-route').innerText.includes('demo')"
+    )
+    assert "demo: destination not sent" in juno.locator(".set-route").inner_text()
     assert errors == []
 
 
