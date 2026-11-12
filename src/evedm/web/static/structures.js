@@ -93,8 +93,10 @@ let source = "assets"; // the Source filter: assets | dock | all
 const DEFAULTS = { q: "", space: "", region: "", type: "", war: false, sort: "jumps", source: "assets", tab: "list" };
 const prefs = Prefs.get("structures", DEFAULTS);
 
+let loadSeq = 0;
 async function load(append = false) {
   if (!append) offset = 0;
+  const mine = ++loadSeq;
   const f = { q: $("#s-q").value.trim(), space: $("#s-space").value, region: $("#s-region").value,
     type: $("#s-type").value, war: $("#s-war").checked, sort: $("#s-sort").value, source: $("#s-source").value };
   source = f.source;
@@ -103,6 +105,7 @@ async function load(append = false) {
     source: f.source, sort: f.sort, limit: PAGE, offset });
   $("#s-info").textContent = "Loading…";
   const d = await api(`/api/structures?${qs}`);
+  if (mine !== loadSeq) return;  // a newer load is under way (typing, then the clear button)
   fillSelect($("#s-region"), d.facets.regions, f.region);
   fillSelect($("#s-type"), d.facets.types, f.type);
   const body = $("#s-rows");
@@ -134,6 +137,7 @@ if ([...$("#s-source").options].some((o) => o.value === prefs.source)) $("#s-sou
 source = $("#s-source").value;
 let typing = null;
 $("#s-q").addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => load(), 300); });
+$("#s-q").addEventListener("search", () => { clearTimeout(typing); load(); });  // the browser's own clear (x) button
 ["#s-space", "#s-region", "#s-type", "#s-war", "#s-sort", "#s-source"].forEach((id) => $(id).addEventListener("change", () => load()));
 $("#s-reload").addEventListener("click", () => load());
 // Resolve unknown is a background job on the server: the button starts it, this page polls its state every 5 s.
@@ -234,6 +238,7 @@ async function search(append = false) {
   const body = $("#q-rows");
   if (!append) body.innerHTML = "";
   if (!all.length) {
+    searchSeq++;  // a search still in flight must not bring its rows back after the last chip is removed
     $("#q-more").hidden = true;
     $("#q-info").textContent = "Choose a system, region, corporation or alliance.";
     return;
