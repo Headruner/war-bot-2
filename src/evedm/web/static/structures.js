@@ -40,7 +40,7 @@ function fillSelect(sel, facets, keep, label = (x) => x) {
   sel.value = keep || "";
 }
 
-function row(r) {
+function row(r, showSource = source) {
   const tr = el("tr");
   const jumps = el("td", "num jumps");
   jumps.append(el("b", null, r.jumps == null ? "—" : String(r.jumps)));
@@ -78,18 +78,19 @@ function row(r) {
     });
     owner.append(w);
   }
+  if (r.mail) st.append(el("div", "small", `Named in a mail · ${r.mail.date}${r.mail.owner ? " · owner from the mail" : ""}`));
   const seen = el("td", "small");
-  seen.append(el("div", null, ago(r.last_seen)));
-  if (r.seen_by || source === "assets") seen.append(el("div", null, `${r.seen_by} character${r.seen_by === 1 ? "" : "s"}`));
+  seen.append(el("div", null, r.last_seen == null ? "public dataset" : ago(r.last_seen)));
+  if (r.seen_by || showSource === "assets") seen.append(el("div", null, `${r.seen_by} character${r.seen_by === 1 ? "" : "s"}`));
   // who may dock is shown as a count only, and only when the page also lists structures without assets
-  if (r.dock_by && source !== "assets") seen.append(el("div", null, `${r.dock_by} can dock`));
+  if (r.dock_by && showSource !== "assets") seen.append(el("div", null, `${r.dock_by} can dock`));
   if (!r.access && r.status === "ok") seen.append(el("div", null, "structure details currently unavailable from ESI"));
   tr.append(jumps, sys, st, owner, seen);
   return tr;
 }
 
 let source = "assets"; // the Source filter: assets | dock | all
-const DEFAULTS = { q: "", space: "", region: "", type: "", war: false, sort: "jumps", source: "assets" };
+const DEFAULTS = { q: "", space: "", region: "", type: "", war: false, sort: "jumps", source: "assets", tab: "list" };
 const prefs = Prefs.get("structures", DEFAULTS);
 
 async function load(append = false) {
@@ -111,7 +112,8 @@ async function load(append = false) {
   $("#s-more").hidden = offset >= d.matched;
   const parts = [`${d.matched} of ${d.facets.total} structures`,
     ...(d.facets.source === "assets" ? [] : [d.facets.source === "dock" ? "that characters can dock at, without assets"
-      : `${d.facets.sources.assets} with assets, ${d.facets.sources.dock} dockable only`]),
+      : d.facets.source === "mail" ? "named in mails"
+      : `${d.facets.sources.assets} with assets, ${d.facets.sources.dock} dockable only, ${d.facets.sources.mail} named in mails`]),
     `${d.scout.contributing_characters} character${d.scout.contributing_characters === 1 ? "" : "s"} sharing`];
   if (d.scout.last_run) parts.push(`scouted ${ago(d.scout.last_run.at)}`);
   else if (d.scout.running) parts.push("first scout run in progress");
@@ -150,6 +152,7 @@ function jobLine(d) {
   if (!d.running && STOPPED[d.stopped]) text += ` Stopped: ${STOPPED[d.stopped]}.`;
   if (!d.running && d.stopped === "done") text += " Finished.";
   if (!d.running && d.remaining) text += ` ${num(d.remaining)} left.`;
+  if (d.mails_read || d.mail_found) text += ` Mails: ${num(d.mails_read)} read, ${num(d.mail_found)} structures named.`;
   const h = d.history || {}, filled = Object.values(h).reduce((a, b) => a + b, 0);
   if (filled) text += ` Public datasets matched ${filled} (${Object.entries(h).map(([k, v]) => `${k} ${v}`).join(", ")}).`;
   return text;
@@ -212,5 +215,73 @@ $("#s-resolve-stop").addEventListener("click", async () => {
   }
 });
 $("#s-more").addEventListener("click", () => load(true));
+
+// Search tab: citadels by place and owner, known and unknown. It searches on every change of a chip or a select.
+const SEARCH_DEFAULTS = { state: "all", sort: "jumps", chips: [] };
+const MAX_STORED_CHIPS = 12;  // the prefs cookie holds 3.5 KB: more chips than this would make it drop the write
+const searchPrefs = Prefs.get("structures_search", SEARCH_DEFAULTS);
+let searchOffset = 0, searchSeq = 0;
+const places = MultiSelect($("#q-places"), { kind: "place", placeholder: "Jita, The Forge, …", onChange: () => search() });
+const owners = MultiSelect($("#q-owners"), { kind: "owner", placeholder: "corporation or alliance", onChange: () => search() });
+
+function pickedIds(chips, kind) { return chips.filter((c) => c.kind === kind).map((c) => c.id).join(","); }
+
+async function search(append = false) {
+  if (!append) searchOffset = 0;
+  const p = places.value(), o = owners.value(), all = [...p, ...o];
+  const state = $("#q-state").value, sort = $("#q-sort").value;
+  Prefs.set("structures_search", { state, sort, chips: all.slice(0, MAX_STORED_CHIPS) });
+  const body = $("#q-rows");
+  if (!append) body.innerHTML = "";
+  if (!all.length) {
+    $("#q-more").hidden = true;
+    $("#q-info").textContent = "Choose a system, region, corporation or alliance.";
+    return;
+  }
+  const qs = new URLSearchParams({ systems: pickedIds(p, "system"), regions: pickedIds(p, "region"),
+    corps: pickedIds(o, "corporation"), alliances: pickedIds(o, "alliance"), state, sort, limit: PAGE, offset: searchOffset });
+  const seq = ++searchSeq;
+  $("#q-info").textContent = "Searching…";
+  let d;
+  try {
+    d = await api(`/api/structures/search?${qs}`);
+  } catch (err) {
+    if (seq === searchSeq) $("#q-info").textContent = "Search failed: " + err.message;
+    return;
+  }
+  if (seq !== searchSeq) return;  // a newer search is under way
+  d.rows.forEach((r) => body.append(row(r, "all")));
+  searchOffset += d.rows.length;
+  $("#q-more").hidden = searchOffset >= d.matched;
+  const c = d.counts || { known: 0, unknown: 0 };
+  const parts = [`${d.matched} citadel${d.matched === 1 ? "" : "s"}`, `${c.known} known, ${c.unknown} unknown`];
+  if (!d.public_loaded) parts.push("public datasets not loaded yet");
+  if ((d.unresolved_alliances || []).length) parts.push(`members of ${d.unresolved_alliances.length} alliance(s) could not be read`);
+  if (!d.characters) parts.push("add characters to see jumps");
+  $("#q-info").textContent = parts.join(" · ");
+}
+
+if ([...$("#q-state").options].some((x) => x.value === searchPrefs.state)) $("#q-state").value = searchPrefs.state;
+if ([...$("#q-sort").options].some((x) => x.value === searchPrefs.sort)) $("#q-sort").value = searchPrefs.sort;
+const stored = Array.isArray(searchPrefs.chips) ? searchPrefs.chips : [];
+places.set(stored.filter((c) => c.kind === "system" || c.kind === "region"));
+owners.set(stored.filter((c) => c.kind === "corporation" || c.kind === "alliance"));
+["#q-state", "#q-sort"].forEach((id) => $(id).addEventListener("change", () => search()));
+$("#q-more").addEventListener("click", () => search(true));
+
+const tabLoaded = new Set();
+function showTab(name, save = true) {
+  if (name !== "search") name = "list";
+  document.querySelectorAll(".tab").forEach((b) => {
+    const on = b.dataset.tab === name;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", String(on));
+  });
+  document.querySelectorAll(".tab-panel").forEach((pn) => { pn.hidden = pn.id !== `tab-${name}`; });
+  if (save) Prefs.set("structures", { tab: name });
+  if (name === "search" && !tabLoaded.has(name)) { tabLoaded.add(name); search(); }
+}
+document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
+showTab(prefs.tab, false);
 load();
 poll();  // a job that is already running (page reloaded, or started by another member) is shown at once

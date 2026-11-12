@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 19  # v14: structure_refusals; v15: scout filter_v; v16: dock search; v17: search term and passes
-# v18: notification_reads; v19: notification_zkb
+SCHEMA_VERSION = 20  # v14: structure_refusals; v15: scout filter_v; v16: dock search; v17: search term and passes
+# v18: notification_reads; v19: notification_zkb; v20: structure_mail_finds, mail_reads, scout_mail
 READS_RETENTION_DAYS = 7  # notification_reads rows are kept this long (the hourly purge)
 log = logging.getLogger("evedm.db")
 
@@ -122,6 +122,32 @@ CREATE TABLE IF NOT EXISTS scout_dock_search (
     error           TEXT,
     passes          INTEGER NOT NULL DEFAULT 0,   -- complete passes (0: the first one is still running)
     pass_started_at REAL
+);
+-- structures named in in-game mails (a structure link followed by its owner corporation's link)
+CREATE TABLE IF NOT EXISTS structure_mail_finds (
+    structure_id INTEGER PRIMARY KEY,
+    owner_id     INTEGER,            -- corporation link that followed the structure link (NULL: none)
+    type_id      INTEGER,
+    name         TEXT,               -- link text
+    system_id    INTEGER,            -- from the "System - Name" prefix of the link text (NULL: not recognised)
+    mail_id      INTEGER NOT NULL,   -- newest mail that named it
+    mail_ts      REAL NOT NULL,      -- that mail's timestamp
+    found_at     REAL NOT NULL
+);
+-- mail bodies already parsed (mail IDs are global: a mail to several characters is opened once); no text is kept
+CREATE TABLE IF NOT EXISTS mail_reads (
+    mail_id  INTEGER PRIMARY KEY,
+    read_at  REAL NOT NULL,
+    finds    INTEGER NOT NULL DEFAULT 0
+);
+-- per character: the mail scan
+CREATE TABLE IF NOT EXISTS scout_mail (
+    character_id INTEGER PRIMARY KEY,
+    checked_at   REAL NOT NULL,          -- 0 = retry at the next run
+    last_mail_id INTEGER NOT NULL DEFAULT 0,
+    mails        INTEGER NOT NULL DEFAULT 0,   -- bodies opened by the last run
+    found        INTEGER NOT NULL DEFAULT 0,   -- finds of the last run
+    error        TEXT
 );
 CREATE TABLE IF NOT EXISTS scout_characters (
     character_id INTEGER PRIMARY KEY,

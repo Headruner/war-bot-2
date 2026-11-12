@@ -583,7 +583,7 @@ def test_an_old_database_gets_the_check_table_in_place(tmp_path):
     raw.commit()
     raw.close()
     d = Database(path, "WAL")
-    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 19
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 20
     assert d.create_zkb_check(event_key="k", notification_type=MOVED, received_at=1.0, status="pending", planned=6)
     assert not d.create_zkb_check(event_key="k", notification_type=MOVED, received_at=2.0, status="pending", planned=6)
     d.close()

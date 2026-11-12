@@ -22,6 +22,7 @@ eve:
     - esi-search.search_structures.v1       # find Ansiblex gates visible to this character
     - esi-assets.read_assets.v1             # structure scout (Structures page)
     - esi-ui.write_waypoint.v1              # "Set destination" buttons (ranking route bar, Alerts page)
+    - esi-mail.read_mail.v1                 # structures named in in-game mails (Structures page)
   compatibility_date: "2025-09-30"
   user_agent: "EVE-Distance-Meter/0.7 (+https://github.com/Headruner/war-bot-2)"
   contact: "EVE character ID 196438470"     # appended to the User-Agent of every ESI request (EVEDM_ESI_CONTACT)
@@ -55,6 +56,10 @@ structures:                                 # structure scout: player-owned stru
   dock_search_cap: 500                      # a result this long counts as cut off: the prefix is split into full system names
   dock_search_max_terms: 200                # searches per character and due run; a cursor goes on at the next one
   dock_search_punctuated: prefix            # "full": systems whose prefix has punctuation (H-P...) are searched by full name
+  mail_enabled: true                        # read every registered character's in-game mails: a structure link followed by its owner corporation's link
+  mail_refresh_minutes: 60                  # a character's mail is read again after this long
+  mail_max_pages: 4                         # header pages (50 mails each) read per character and run
+  mail_max_age_days: 30                     # older mails are never opened
 
 access:                                     # who sees the members-only tabs: Notifications and Structures
   alliance_ids: [99010320]                  # only a main in one of these alliances (BB); [] = every signed-in main

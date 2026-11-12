@@ -120,6 +120,14 @@ class FakeState:
     search_log: list[tuple[int, str]] = field(default_factory=list)
     search_fail: dict[int, int] = field(default_factory=dict)
     waypoints: list[dict[str, Any]] = field(default_factory=list)  # autopilot destinations set via ESI
+    # in-game mail: per character the mails (mail_id, timestamp, from, subject, body), a forced status per
+    # character for the header list and per mail ID for the body, and a log of (kind, character, mail or paging ID)
+    mails: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
+    mail_fail: dict[int, int] = field(default_factory=dict)
+    mail_body_fail: dict[int, int] = field(default_factory=dict)
+    mail_log: list[tuple[str, int, int | None]] = field(default_factory=list)
+    alliance_names: dict[int, str] = field(default_factory=dict)  # for POST /universe/ids/ (corporations: corp_names)
+    alliance_corps: dict[int, list[int]] = field(default_factory=dict)  # member corporations of an alliance
     # killmails readable by id/hash, and zKillboard's R2Z2 feed (sequence -> package)
     killmails: dict[tuple[int, str], dict[str, Any]] = field(default_factory=dict)
     r2z2_files: dict[int, dict[str, Any]] = field(default_factory=dict)
@@ -424,6 +432,56 @@ def create_fake_app(
         body = items[(page - 1) * size : page * size]
         return Response(json.dumps(body), media_type="application/json", headers={"X-Pages": str(pages)})
 
+    @app.get("/characters/{cid}/mail/")
+    async def mail_headers(request: Request, cid: int, last_mail_id: int | None = None) -> Response:
+        """The 50 newest mail headers (older than ``last_mail_id`` when given), newest first; no body."""
+        count("mail")
+        if (err := esi_auth(request, cid, "esi-mail.read_mail.v1")) is not None:
+            return err
+        st.mail_log.append(("list", cid, last_mail_id))
+        if cid in st.mail_fail:
+            return JSONResponse({"error": "forced"}, status_code=st.mail_fail[cid])
+        mails = sorted(st.mails.get(cid, []), key=lambda m: -m["mail_id"])
+        if last_mail_id is not None:
+            mails = [m for m in mails if m["mail_id"] < last_mail_id]
+        keys = ("mail_id", "timestamp", "from", "subject", "is_read", "labels", "recipients")
+        return esi_json(request, [{k: m[k] for k in keys if k in m} for m in mails[:50]], 0)
+
+    @app.get("/characters/{cid}/mail/{mail_id}/")
+    async def mail_body(request: Request, cid: int, mail_id: int) -> Response:
+        count("mail_body")
+        if (err := esi_auth(request, cid, "esi-mail.read_mail.v1")) is not None:
+            return err
+        st.mail_log.append(("open", cid, mail_id))
+        if mail_id in st.mail_body_fail:
+            return JSONResponse({"error": "forced"}, status_code=st.mail_body_fail[mail_id])
+        mail = next((m for m in st.mails.get(cid, []) if m["mail_id"] == mail_id), None)
+        if mail is None:
+            return JSONResponse({"error": "Mail not found"}, status_code=404)
+        keys = ("body", "from", "subject", "timestamp", "labels", "recipients", "read")
+        return esi_json(request, {k: mail[k] for k in keys if k in mail}, 0)
+
+    @app.get("/alliances/{aid}/corporations/")
+    async def alliance_corporations(request: Request, aid: int) -> Response:
+        count("alliance_corporations")
+        if aid not in st.alliance_corps:
+            return JSONResponse({"error": "Alliance not found"}, status_code=404)
+        return esi_json(request, st.alliance_corps[aid], 3600)
+
+    @app.post("/universe/ids/")
+    async def universe_ids(request: Request) -> Response:
+        """Exact (case-insensitive) name -> ID for corporations and alliances, as ESI's public endpoint does."""
+        count("ids")
+        wanted = {str(n).lower() for n in await request.json()}
+        body: dict[str, Any] = {}
+        corps = [{"id": i, "name": n} for i, n in st.corp_names.items() if n.lower() in wanted]
+        alliances = [{"id": i, "name": n} for i, n in st.alliance_names.items() if n.lower() in wanted]
+        if corps:
+            body["corporations"] = corps
+        if alliances:
+            body["alliances"] = alliances
+        return JSONResponse(body)
+
     @app.get("/characters/{cid}/search/")
     async def character_search(request: Request, cid: int, search: str = "", categories: str = "") -> Response:
         """Structures whose name (or a word of it) starts with the term and that the character may dock at."""
@@ -637,6 +695,12 @@ def create_fake_app(
             st.assets[int(cid)] = items
         for oid, name in (body.get("corp_names") or {}).items():
             st.corp_names[int(oid)] = name
+        for aid, name in (body.get("alliance_names") or {}).items():
+            st.alliance_names[int(aid)] = name
+        for aid, corps in (body.get("alliance_corps") or {}).items():
+            st.alliance_corps[int(aid)] = corps
+        for cid, mails in (body.get("mails") or {}).items():
+            st.mails[int(cid)] = mails
         return {"ok": True}
 
     @app.get("/_admin/stats")

@@ -401,3 +401,24 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
   #mobile-map-controls .map-tools { position: static; margin: 8px 0; }
   #mobile-map-controls .map-tools { flex-direction: row; }
 }
+
+/* structures search (STR-15): the smart-search multi-select */
+.ms { position: relative; min-width: 260px; }
+.ms-field { display: flex; flex-direction: column; gap: 3px; }
+.ms-box { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 8px; min-height: 32px; padding: 3px 6px; cursor: text; }
+.ms-box:focus-within { border-color: var(--accent); }
+.ms-input { flex: 1 1 120px; min-width: 100px; background: none; border: 0; outline: 0; color: var(--text); font: inherit; padding: 2px; }
+.ms-chip { display: inline-flex; align-items: center; gap: 2px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; padding: 1px 4px 1px 8px; font-size: 13px; }
+.ms-kind { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .3px; margin-right: 2px; }
+.ms-x { background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; line-height: 1; padding: 0 4px; }
+.ms-x:hover { color: var(--bad); }
+.ms-list { position: absolute; z-index: 30; left: 0; right: 0; top: 100%; margin: 2px 0 0; padding: 4px 0; list-style: none;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; max-height: 280px; overflow-y: auto; }
+.ms-opt { display: flex; justify-content: space-between; gap: 10px; padding: 5px 10px; cursor: pointer; }
+.ms-opt.active, .ms-opt:hover { background: var(--panel-2); }
+.ms-opt mark { background: none; color: var(--accent); font-weight: 650; }
+.ms-detail { color: var(--muted); white-space: nowrap; }
+.ms-empty { padding: 5px 10px; color: var(--muted); }
+@media (max-width: 640px) { .ms { min-width: 100%; } .ms-field { width: 100%; } }

@@ -80,6 +80,8 @@ STRUCTURE_SCOPES = ["esi-universe.read_structures.v1", "esi-assets.read_assets.v
 WAYPOINT_SCOPE = "esi-ui.write_waypoint.v1"
 # Lets the Ranking page's Ansiblex mode find the jump gates a character may see (character structure search).
 ANSIBLEX_SCOPE = "esi-search.search_structures.v1"
+# Lets the structure scout read the in-game mails of a character for structure and corporation links (STR-14).
+MAIL_SCOPE = "esi-mail.read_mail.v1"
 
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
@@ -94,7 +96,9 @@ class EveSettings:
     client_secret: str = ""
     callback_url: str = "http://localhost:8080/sso/callback"
     required_scopes: list[str] = field(default_factory=lambda: list(DEFAULT_SCOPES))
-    optional_scopes: list[str] = field(default_factory=lambda: [*STRUCTURE_SCOPES, WAYPOINT_SCOPE, ANSIBLEX_SCOPE])
+    optional_scopes: list[str] = field(
+        default_factory=lambda: [*STRUCTURE_SCOPES, WAYPOINT_SCOPE, ANSIBLEX_SCOPE, MAIL_SCOPE]
+    )
 
     @property
     def requested_scopes(self) -> list[str]:
@@ -154,6 +158,11 @@ class StructureScoutSettings:
     dock_search_cap: int = 500  # a result this long is treated as cut off (believed ESI limit, to be verified)
     dock_search_max_terms: int = 200  # searches per character and due run; a cursor goes on, the list end ends a pass
     dock_search_punctuated: str = "prefix"  # "full": systems whose prefix has punctuation are searched by full name
+    # structures named in in-game mails: a structure link followed by its owner corporation's link (scope MAIL_SCOPE)
+    mail_enabled: bool = True
+    mail_refresh_minutes: float = 60.0  # a character's mail is read again after this long
+    mail_max_pages: int = 4  # header pages (50 mails each) read per character and run
+    mail_max_age_days: float = 30.0  # older mails are never opened
 
 
 @dataclass
@@ -359,6 +368,8 @@ class Settings:
                 )
             if sc.dock_search_punctuated not in ("prefix", "full"):
                 raise ConfigError("structures.dock_search_punctuated must be 'prefix' or 'full'")
+        if sc.mail_enabled and (sc.mail_refresh_minutes <= 0 or sc.mail_max_pages < 1 or sc.mail_max_age_days <= 0):
+            raise ConfigError("structures.mail_refresh_minutes > 0, mail_max_pages >= 1 and mail_max_age_days > 0")
         a = self.alerts
         if a.enabled and a.poll_s < 6:
             raise ConfigError("alerts.poll_s must be at least 6 (zKillboard's rule)")

@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from common import mint
 from evedm.characters import REAUTH
-from evedm.config import ANSIBLEX_SCOPE, STRUCTURE_SCOPES, WAYPOINT_SCOPE, Settings, load_settings
+from evedm.config import ANSIBLEX_SCOPE, MAIL_SCOPE, STRUCTURE_SCOPES, WAYPOINT_SCOPE, Settings, load_settings
 from evedm.esi import EsiError
 from evedm.scout import ResolveError, StructureScout
 from evedm.sso import SsoError
@@ -369,7 +369,7 @@ def test_discovered_structures_join_the_war_lists(graph):
 
 def test_optional_scopes_setting(monkeypatch, tmp_path):
     s = load_settings(tmp_path / "none.yaml")
-    assert s.eve.optional_scopes == [*STRUCTURE_SCOPES, WAYPOINT_SCOPE, ANSIBLEX_SCOPE]
+    assert s.eve.optional_scopes == [*STRUCTURE_SCOPES, WAYPOINT_SCOPE, ANSIBLEX_SCOPE, MAIL_SCOPE]
     required = len(s.eve.required_scopes)
     assert s.eve.requested_scopes[:required] == s.eve.required_scopes
     assert s.eve.requested_scopes[required:] == s.eve.optional_scopes
@@ -780,7 +780,9 @@ def test_resolve_endpoint_in_demo_is_refused(tmp_path):
         assert idle["running"] is False and idle["started_at"] is None and idle["stopped"] is None
         assert c.post("/api/structures/resolve/stop").status_code == 403  # CSRF here as well
         assert c.post("/api/structures/resolve/stop", headers={"X-EVEDM": "1"}).json()["running"] is False
-        assert c.get("/api/structures/stats").json()["unknown"] == 0
+        stats = c.get("/api/structures/stats").json()
+        assert stats["unknown"] == 2  # the two demo structures named in mails: ESI has not read them
+        assert stats["mail"]["finds"] == 2 and stats["mail"]["finds_with_owner"] == 1
 
 
 MEMBER, OUTSIDER, NO_CHARACTER = 2113000001, 2113000002, 2113000003
@@ -1923,7 +1925,12 @@ async def test_the_listing_source_filter_defaults_to_assets_and_shows_counts_onl
     d1 = by_id[D1]
     assert (d1["assets"], d1["dockable"], d1["dock_by"], d1["seen_by"]) == (False, True, 1, 0)
     assert (by_id[S_WH]["assets"], by_id[S_WH]["dockable"], by_id[S_WH]["dock_by"]) == (True, False, 0)
-    assert listing["facets"]["sources"] == {"assets": len(with_assets), "dock": 2, "all": len(with_assets) + 2}
+    assert listing["facets"]["sources"] == {
+        "assets": len(with_assets),
+        "dock": 2,
+        "mail": 0,
+        "all": len(with_assets) + 2,
+    }
     assert listing["facets"]["total"] == len(with_assets) + 2 and listing["facets"]["source"] == "all"
     assert scout.listing({}, [])["facets"]["total"] == len(with_assets)  # the header count of the default view
     text = json.dumps(listing)
@@ -1936,8 +1943,9 @@ def test_the_structures_api_takes_the_source_filter(tmp_path):
         get = lambda **p: c.get("/api/structures", params=p).json()  # noqa: E731
         base = get()
         assert base["matched"] == 7 and base["facets"]["source"] == "assets"
-        assert base["facets"]["sources"] == {"assets": 7, "dock": 0, "all": 7}
-        assert get(source="dock")["matched"] == 0 and get(source="all")["matched"] == 7
+        # the demo also seeds two structures named in mails: no assets, no ESI data (the `mail` source)
+        assert base["facets"]["sources"] == {"assets": 7, "dock": 0, "mail": 2, "all": 9}
+        assert get(source="dock")["matched"] == 0 and get(source="all")["matched"] == 9
         svc = c.app.state.svc
         sid = 1_099_000_000_001
         now = time.time()
@@ -1955,7 +1963,7 @@ def test_the_structures_api_takes_the_source_filter(tmp_path):
         assert get()["matched"] == 7  # the default view is unchanged
         dock = get(source="dock")
         assert dock["matched"] == 1 and dock["rows"][0]["dock_by"] == 2 and dock["rows"][0]["seen_by"] == 0
-        assert get(source="all")["matched"] == 8 and get(source="all")["facets"]["sources"]["dock"] == 1
+        assert get(source="all")["matched"] == 10 and get(source="all")["facets"]["sources"]["dock"] == 1
         assert "character" not in json.dumps(dock["rows"][0]).replace("characters", "")  # counts, not characters
         assert 'id="s-source"' in c.get("/structures").text and "s-source" in c.get("/static/structures.js").text
 

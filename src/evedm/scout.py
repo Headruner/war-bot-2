@@ -7,7 +7,9 @@ hangar). ESI's ``location_type`` is not used: items in a structure are typed "it
 read from ``/universe/structures/{id}`` with ``esi-universe.read_structures.v1``, using the token of a character
 with assets there first, then other scoped characters for unidentified structures. Only Upwell
 structures answer that endpoint. The result is shared by every main on the site (the Structures page) and also feeds
-the structure lists of the Wars page.
+the structure lists of the Wars page. Two more sources feed the same list: the in-game mails of every character that
+granted ``esi-mail.read_mail.v1`` (a structure link followed by its owner corporation's link, see ``mailscan``) and
+the public datasets. Live ESI data always wins over a mail find, a mail find over a public dataset.
 """
 
 from __future__ import annotations
@@ -19,24 +21,28 @@ import csv
 import io
 import json
 import logging
+import re
 import time
-from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections import Counter, OrderedDict
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
 import httpx
 
 from .activity import activity
+from .alerts import STRUCTURE_CATEGORY
 from .characters import REAUTH, CharacterService
-from .config import ANSIBLEX_SCOPE, STRUCTURE_SCOPES, Settings
+from .config import ANSIBLEX_SCOPE, MAIL_SCOPE, STRUCTURE_SCOPES, Settings
 from .crypto import redact
 from .db import Database
 from .esi import EsiClient, EsiError, search_structure_ids
+from .mailscan import UPWELL_TYPE_IDS, structure_finds, system_of
 from .sso import SsoError
 from .structure_index import index_path
 from .structure_index import lookup as lookup_index
-from .universe import GateGraph, security_class
+from .universe import WSPACE_MIN_ID, GateGraph, space_of
 
 SCOUT_ERROR_RESERVE = 60  # stop resolving structures when ESI has this few errors left in its 100-per-minute window
 STRUCTURE_MIN_ID = 1_000_000_000_000  # structures, customs offices, corporation offices and all items live above this
@@ -47,6 +53,12 @@ ASSET_FILTER_VERSION = 2  # a character read with an older rule is read again at
 ACCESS_KEEP_DAYS = 30  # a dock-search row nobody refreshed for this long is dropped
 JOB_MAX_FAILURES = 3  # the Resolve unknown job stops after this many passing ESI failures in a row
 JOB_PUBLISH_EVERY = 50  # ... and shows what it found (names, caches, Wars page) after this many resolved structures
+MAIL_PAGE_SIZE = 50  # mail headers per ESI page
+MAIL_READ_KEEP_DAYS = 7  # a parsed-mail marker is kept this long beyond mail_max_age_days
+IDS_CACHE_TTL_S = 600.0  # owner suggestions: ESI's exact-name answers (and misses) are remembered this long
+IDS_CACHE_SIZE = 500
+SEARCH_MAX_IDS = 50  # systems, regions, corporations or alliances per search
+SUGGEST_MAX_CHARS = 60
 # the structures the resolver still wants: no name, owner or system yet, not gone, not destroyed
 UNKNOWN = (
     "status IN ('new','no_access','ok') AND destroyed_at IS NULL "
@@ -57,6 +69,15 @@ log = logging.getLogger("evedm.scout")
 
 READ_STRUCTURES, READ_ASSETS = STRUCTURE_SCOPES
 SEARCH_STRUCTURES = ANSIBLEX_SCOPE  # esi-search.search_structures.v1
+INTERNAL_FIELDS = ("system_index", "position", "name_unresolved")  # kept in ``effective()`` rows, not listed
+UNKNOWN_SYSTEM = {
+    "id": None,
+    "name": "Unknown",
+    "region": "Unknown",
+    "security": -9.9,
+    "class": "unknown",
+    "space": "unknown",
+}
 
 
 class ResolveError(Exception):
@@ -114,6 +135,8 @@ class ResolveJob:
     skipped: int = 0  # nobody left to ask: not sent to ESI
     errors: int = 0
     public_first: int = 0
+    mails_read: int = 0  # mail bodies parsed by the mail scan that opens the job
+    mail_found: int = 0  # structures those mails named
     paused_until: float | None = None  # epoch seconds, while waiting for ESI's error window
     stopped: str | None = None  # done | cancelled | esi_error | reauth | failed (None while running)
     failure: str | None = None  # what went wrong when stopped is "failed"
@@ -126,7 +149,7 @@ class ResolveJob:
             k: getattr(self, k)
             for k in (
                 "running started_at finished_at started_by targets done resolved no_access gone skipped errors "
-                "public_first paused_until stopped failure history"
+                "public_first mails_read mail_found paused_until stopped failure history"
             ).split()
         }
         out["remaining"] = max(0, self.targets - self.done)
@@ -169,15 +192,7 @@ class _Read(NamedTuple):
     body: dict[str, Any] | None = None
 
 
-WSPACE_MIN_ID = 31000000
 ZKILL = "https://zkillboard.com"
-
-
-def space_of(graph: GateGraph, idx: int) -> str:
-    """high | low | null | wormhole (J-space and other systems without stargates)."""
-    if graph.ids[idx] >= WSPACE_MIN_ID:
-        return "wormhole"
-    return security_class(graph.sec[idx])
 
 
 class StructureScout:
@@ -198,8 +213,13 @@ class StructureScout:
         self._task: asyncio.Task[None] | None = None
         self._unresolved: tuple[int, list[dict[str, Any]]] | None = None
         self._rows: tuple[int, list[dict[str, Any]]] | None = None
+        self._effective: tuple[int, list[dict[str, Any]]] | None = None
+        self._owner_ids: tuple[int, dict[int, set[int]]] | None = None  # owner -> structure IDs of effective()
+        self._places: list[tuple[str, str, int, str]] | None = None  # (lower name, kind, id, name) for suggestions
+        self._exact_owners: OrderedDict[str, tuple[float, list[dict[str, Any]]]] = OrderedDict()  # /universe/ids/
         self._main_lock = asyncio.Lock()  # ESI reads of unresolved structures: the job or the hourly step, not both
         self._history_lock = asyncio.Lock()  # one public dataset download at a time
+        self._mail_lock = asyncio.Lock()  # one mail scan at a time (the hourly step or the Resolve unknown job)
         self._job: ResolveJob | None = None
         self._own_hits: set[int] = set()  # stored IDs that turned out to be a character's own items: purged next
         self._job_task: asyncio.Task[None] | None = None
@@ -256,6 +276,10 @@ class StructureScout:
             "dock_passes": 0,
             "dock_errors": 0,
             "dock_found": 0,
+            "mail_characters": 0,
+            "mails_read": 0,
+            "mail_found": 0,
+            "mail_errors": 0,
         }
         contributors = self.contributors()
         linked = {c for c, _, _ in contributors}
@@ -341,7 +365,9 @@ class StructureScout:
             "DELETE FROM structure_refusals WHERE character_id NOT IN (SELECT character_id FROM characters)"
         )
         await self._dock_search(stats)
+        await self._mail_scan(stats)
         self._prune_access()
+        self._prune_mail()
         # a structure stays until ESI answers 404 (destroyed or unanchored), then it is kept as status 'gone' (not
         # listed, not asked again). Only what is no structure at all is purged: a character's own items, and finds that
         # nobody sights any more once every character has been read with the current filter
@@ -618,6 +644,222 @@ class StructureScout:
         keep = max(ACCESS_KEEP_DAYS * 86400.0, 2 * self.dock_pass_seconds())
         self.db.execute("DELETE FROM structure_access WHERE seen_at < ?", (time.time() - keep,))
 
+    # -- structures named in in-game mails (STR-14): the owners' links come after the structure's link ------
+    # Only the structure ID, its type, the link text, the owner corporation's ID, the mail ID and the mail's timestamp
+    # are kept. The body, the subject, the sender and the recipients are read from ESI, parsed in memory and dropped:
+    # they are not stored, not cached (``cache=False``) and not logged.
+    def mail_readers(self) -> list[tuple[int, int, list[str]]]:
+        """Characters that granted the mail scope (one link per character)."""
+        return self.contributors(MAIL_SCOPE)
+
+    def _structure_types(self) -> Callable[[int], bool]:
+        """Upwell structure types: the well-known IDs and every type the ``type_groups`` table puts in category 65."""
+        rows = self.db.query("SELECT type_id FROM type_groups WHERE category_id=?", (STRUCTURE_CATEGORY,))
+        known = {r[0] for r in rows}
+        return lambda type_id: type_id in UPWELL_TYPE_IDS or type_id in known
+
+    def _mail_stop(self, cancel: asyncio.Event | None) -> bool:
+        """True when the scan must stop: cancelled, or ESI's error window is low."""
+        return (cancel is not None and cancel.is_set()) or self.esi.blocked_for(reserve=SCOUT_ERROR_RESERVE) > 0
+
+    async def _mail_scan(
+        self, stats: dict[str, int], *, force: bool = False, cancel: asyncio.Event | None = None
+    ) -> None:
+        """One run per due character (see ``_mail_one``); inside the scout step, after the dock search.
+
+        Due: no row yet, the last run is more than ``mail_refresh_minutes`` ago, or ``force`` (the Resolve unknown job).
+        """
+        if not self.s.mail_enabled:
+            return
+        async with self._mail_lock:
+            state = {r["character_id"]: r for r in self.db.query("SELECT * FROM scout_mail")}
+            now = time.time()
+            wait = self.s.mail_refresh_minutes * 60
+            due = [
+                c
+                for c in self.mail_readers()
+                if force or c[0] not in state or now - state[c[0]]["checked_at"] > wait
+            ]
+            is_structure = self._structure_types()
+            before = stats["mail_found"]
+            sem = asyncio.Semaphore(self.s.concurrency)
+            claims: dict[int, asyncio.Event] = {}  # mails being opened right now, whoever of the characters got there
+
+            async def one(item: tuple[int, int, list[str]]) -> None:
+                async with sem:
+                    await self._mail_one(item, state.get(item[0]), stats, cancel, is_structure, claims)
+
+            await asyncio.gather(*(one(c) for c in due))
+            if stats["mail_found"] > before:
+                self.version += 1  # the callers notify
+
+    @staticmethod
+    def _mail_time(stamp: Any) -> float:
+        """A mail header's ISO timestamp as epoch seconds (now when ESI sent none we can read)."""
+        try:
+            return datetime.fromisoformat(str(stamp)).timestamp()
+        except ValueError:
+            return time.time()
+
+    async def _mail_headers(self, cid: int, token: str, last: int, cutoff: float) -> list[tuple[int, float]]:
+        """(mail_id, timestamp) of the newest mails: more pages while a whole page is new and young enough.
+
+        A page is 50 headers; the next one is asked with ``?last_mail_id=<smallest ID of the page>``, up to
+        ``mail_max_pages`` pages. Nothing is cached: ESI's 30 s cache would give a stale first page.
+        """
+        headers: list[tuple[int, float]] = []
+        path = f"/characters/{cid}/mail/"
+        for _ in range(self.s.mail_max_pages):
+            page = await self.esi.get(path, token, cache=False)
+            rows = [(int(h["mail_id"]), self._mail_time(h.get("timestamp"))) for h in page if "mail_id" in h]
+            headers += rows
+            if not rows or any(mail_id <= last or ts < cutoff for mail_id, ts in rows):
+                break
+            path = f"/characters/{cid}/mail/?last_mail_id={min(mail_id for mail_id, _ in rows)}"
+        return headers
+
+    @staticmethod
+    def _newer_than(column: str) -> str:
+        """SQL for the find upsert: a newer mail replaces what it knows, an older one only fills what is missing."""
+        return (
+            f"{column}=CASE WHEN excluded.mail_ts > mail_ts THEN COALESCE(excluded.{column}, {column}) "
+            f"ELSE COALESCE({column}, excluded.{column}) END"
+        )
+
+    def _save_mail(self, mail_id: int, mail_ts: float, finds: list[Any]) -> None:
+        """Mark a mail as parsed and keep what it named, with the known_structures rows (one transaction).
+
+        A structure that is ``gone`` is not touched in known_structures (its mail find is stored all the same).
+        """
+        now = time.time()
+        upsert = (
+            "INSERT INTO structure_mail_finds(structure_id, owner_id, type_id, name, system_id, mail_id, mail_ts, "
+            "found_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(structure_id) DO UPDATE SET "
+            + ", ".join(self._newer_than(c) for c in ("owner_id", "type_id", "name", "system_id"))
+            + ", mail_id=CASE WHEN excluded.mail_ts > mail_ts THEN excluded.mail_id ELSE mail_id END"
+            + ", mail_ts=CASE WHEN excluded.mail_ts > mail_ts THEN excluded.mail_ts ELSE mail_ts END"
+        )
+        with self.db.tx() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO mail_reads(mail_id, read_at, finds) VALUES(?,?,?)", (mail_id, now, len(finds))
+            )
+            c.executemany(
+                upsert,
+                [
+                    (f.structure_id, f.owner_id, f.type_id, f.name, system_of(f.name, self.g), mail_id, mail_ts, now)
+                    for f in finds
+                ],
+            )
+            c.executemany(
+                "INSERT INTO known_structures(structure_id, first_seen, last_seen) VALUES(?,?,?) "
+                "ON CONFLICT(structure_id) DO UPDATE SET last_seen=excluded.last_seen "
+                "WHERE known_structures.status != 'gone'",
+                [(f.structure_id, now, now) for f in finds],
+            )
+
+    async def _mail_one(
+        self,
+        item: tuple[int, int, list[str]],
+        prev: Any,
+        stats: dict[str, int],
+        cancel: asyncio.Event | None,
+        is_structure: Callable[[int], bool],
+        claims: dict[int, asyncio.Event],
+    ) -> None:
+        """Read the new mails of one character, oldest first, and keep the structures they name.
+
+        Wanted: newer than the stored ``last_mail_id``, not older than ``mail_max_age_days``, not parsed before (a mail
+        sent to several characters is opened once). The stored mail ID moves to the newest mail dealt with without
+        error. A passing ESI trouble (420, 429, 5xx, network, error window low, cancelled) keeps the progress and
+        leaves the character due at the next run; 401/403 or a token that is not accepted records the error and waits
+        the whole interval.
+        """
+        cid, owner, _ = item
+        last = newest = int(prev["last_mail_id"]) if prev else 0
+        cutoff = time.time() - self.s.mail_max_age_days * 86400
+        opened = found = 0
+        error: str | None = None
+        passing = False
+        try:
+            if self._mail_stop(cancel):
+                return  # nothing recorded: the character is read again next run
+            token = await self.chars.access_token(cid, owner)
+            headers = await self._mail_headers(cid, token, last, cutoff)
+            for mail_id, mail_ts in sorted((i, ts) for i, ts in headers if i > last and ts >= cutoff):
+                if self._mail_stop(cancel):
+                    passing = True
+                    if cancel is None or not cancel.is_set():
+                        error = "paused: ESI error window low, continues next run"
+                    break
+                finds = await self._mail_deal(cid, token, mail_id, mail_ts, is_structure, claims)
+                if finds is not None:
+                    opened += 1
+                    found += len(finds)
+                newest = mail_id
+        except (EsiError, SsoError) as exc:
+            passing = isinstance(exc, EsiError) and (exc.status in (0, 420, 429) or exc.status >= 500)
+            error = redact(str(exc))[:200]
+        except ValueError:  # an answer that is not JSON: no detail is kept, it could hold a piece of a mail
+            error = "ESI answered with something unreadable"
+        self.db.execute(
+            "INSERT INTO scout_mail(character_id, checked_at, last_mail_id, mails, found, error) VALUES(?,?,?,?,?,?) "
+            "ON CONFLICT(character_id) DO UPDATE SET checked_at=excluded.checked_at, "
+            "last_mail_id=excluded.last_mail_id, mails=excluded.mails, found=excluded.found, error=excluded.error",
+            (cid, 0.0 if passing else time.time(), newest, opened, found, error),
+        )
+        stats["mail_characters"] += 1
+        stats["mails_read"] += opened
+        stats["mail_found"] += found
+        if error:
+            stats["mail_errors"] += 1
+            log.warning("structure scout: mail scan for character %s: %s", cid, error)
+        log.info("structure scout: character %s mail scan: %s mails opened, %s structures named", cid, opened, found)
+
+    async def _mail_deal(
+        self,
+        cid: int,
+        token: str,
+        mail_id: int,
+        mail_ts: float,
+        is_structure: Callable[[int], bool],
+        claims: dict[int, asyncio.Event],
+    ) -> list[Any] | None:
+        """Parse one mail and store what it names; None when it was parsed before or a deleted mail (404).
+
+        Mail IDs are global: with another character on the same mail, one of them opens it and the others wait for
+        that and then find it parsed.
+        """
+        while mail_id in claims:
+            await claims[mail_id].wait()
+        if self.db.query("SELECT 1 FROM mail_reads WHERE mail_id=?", (mail_id,)):
+            return None
+        claims[mail_id] = done = asyncio.Event()
+        try:
+            finds = await self._mail_open(cid, token, mail_id, is_structure)
+            self._save_mail(mail_id, mail_ts, finds or [])
+        finally:
+            del claims[mail_id]
+            done.set()
+        return finds
+
+    async def _mail_open(
+        self, cid: int, token: str, mail_id: int, is_structure: Callable[[int], bool]
+    ) -> list[Any] | None:
+        """The structures one mail names; None when ESI says the mail is gone (404). The body is not kept."""
+        try:
+            mail = await self.esi.get(f"/characters/{cid}/mail/{mail_id}/", token, cache=False)
+        except EsiError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        return structure_finds(str((mail or {}).get("body") or ""), is_structure)
+
+    def _prune_mail(self) -> None:
+        """Mail scan rows of characters that no longer exist, and parsed-mail markers no scan can meet again."""
+        self.db.execute("DELETE FROM scout_mail WHERE character_id NOT IN (SELECT character_id FROM characters)")
+        keep = (self.s.mail_max_age_days + MAIL_READ_KEEP_DAYS) * 86400
+        self.db.execute("DELETE FROM mail_reads WHERE read_at < ?", (time.time() - keep,))
+
     def _stored_among(self, item_ids: set[int]) -> set[int]:
         """The IDs among ``item_ids`` that known_structures holds (a character's own items stored as structures)."""
         hits: set[int] = set()
@@ -676,7 +918,8 @@ class StructureScout:
                     "AND destroyed_at IS NULL "
                     "AND NOT EXISTS (SELECT 1 FROM structure_sightings s WHERE s.structure_id=k.structure_id) "
                     "AND NOT EXISTS (SELECT 1 FROM structure_access a WHERE a.structure_id=k.structure_id) "
-                    "AND NOT EXISTS (SELECT 1 FROM public_structure_history h WHERE h.structure_id=k.structure_id)"
+                    "AND NOT EXISTS (SELECT 1 FROM public_structure_history h WHERE h.structure_id=k.structure_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM structure_mail_finds m WHERE m.structure_id=k.structure_id)"
                 )
                 c.execute(f"DELETE FROM structure_refusals WHERE structure_id IN ({orphan})")  # noqa: S608
                 orphans = c.execute(f"DELETE FROM known_structures WHERE structure_id IN ({orphan})").rowcount  # noqa: S608
@@ -898,8 +1141,23 @@ class StructureScout:
             await self._sleep(wait + 1.0, job.cancel)
             job.paused_until = None
 
+    async def _work_mail(self, job: ResolveJob) -> None:
+        """The mail scan with every reader's token (forced, cancellable): what the mails name is resolved below."""
+        stats: Counter[str] = Counter()
+        try:
+            await self._mail_scan(stats, force=True, cancel=job.cancel)
+        except Exception as exc:  # a failed mail scan must not fail the job
+            log.warning("structure resolver: mail scan failed (%s); going on", redact(repr(exc))[:200])
+        job.mails_read, job.mail_found = stats["mails_read"], stats["mail_found"]
+        if stats["mail_found"]:
+            await self._publish(job)  # the page shows the structures the mails named at once
+
     async def _work(self, job: ResolveJob, main_id: int) -> None:
-        # public datasets first, so the page shows the historical matches at once; forced at most every 10 minutes
+        await self._work_mail(job)
+        if job.cancel.is_set():  # Stop pressed during the mail scan
+            job.stopped = "cancelled"
+            return
+        # public datasets next, so the page shows the historical matches at once; forced at most every 10 minutes
         force = time.monotonic() - self._history_forced > 600
         if force:
             self._history_forced = time.monotonic()
@@ -1073,6 +1331,7 @@ class StructureScout:
             matches[source] = count
         return {
             "dock_search": self._dock_stats(unknown),
+            "mail": self._mail_stats(),
             "by_status": {r[0]: r[1] for r in q("SELECT status, COUNT(*) FROM known_structures GROUP BY status")},
             "readers": len(readers),
             "unknown": total,
@@ -1136,6 +1395,33 @@ class StructureScout:
             out["dockable_unresolved"] = q(
                 f"SELECT COUNT(DISTINCT structure_id) FROM structure_access WHERE structure_id IN ({unknown})"  # noqa: S608
             )[0][0]
+        return out
+
+    def _mail_stats(self) -> dict[str, Any]:
+        """The ``mail`` block of ``stats()``: what the mail scan did and found, from the database."""
+        q = self.db.query
+        have = {r[0] for r in q("SELECT name FROM sqlite_master WHERE type='table'")}  # not migrated yet: no tables
+        out: dict[str, Any] = {
+            "enabled": self.s.mail_enabled,
+            "readers": len(self.mail_readers()),  # characters that granted the mail scope
+            "characters_scanned": 0,
+            "with_errors": 0,
+            "mails_parsed": 0,
+            "finds": 0,
+            "finds_with_owner": 0,
+            "finds_read_by_esi": 0,  # structures a mail named that ESI has since read (status ok)
+        }
+        if "scout_mail" in have:
+            row = q("SELECT COALESCE(SUM(checked_at > 0), 0), COALESCE(SUM(error IS NOT NULL), 0) FROM scout_mail")[0]
+            out["characters_scanned"], out["with_errors"] = row[0], row[1]
+        if "mail_reads" in have:
+            out["mails_parsed"] = q("SELECT COUNT(*) FROM mail_reads")[0][0]
+        if "structure_mail_finds" in have:
+            row = q(
+                "SELECT COUNT(*), COALESCE(SUM(m.owner_id IS NOT NULL), 0), COALESCE(SUM(k.status = 'ok'), 0) "
+                "FROM structure_mail_finds m LEFT JOIN known_structures k ON k.structure_id=m.structure_id"
+            )[0]
+            out["finds"], out["finds_with_owner"], out["finds_read_by_esi"] = row[0], row[1], row[2]
         return out
 
     # historical details: public datasets, kept apart from live ESI records (EVE Ref > local index > Adam4EVE)
@@ -1318,8 +1604,11 @@ class StructureScout:
         return matches
 
     async def _names(self) -> None:
-        ids = {r[0] for r in self.db.query("SELECT DISTINCT owner_id FROM known_structures WHERE owner_id IS NOT NULL")}
-        ids |= {r[0] for r in self.db.query("SELECT DISTINCT type_id FROM known_structures WHERE type_id IS NOT NULL")}
+        ids: set[int] = set()
+        for table in ("known_structures", "structure_mail_finds"):
+            for column in ("owner_id", "type_id"):
+                sql = f"SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL"  # noqa: S608
+                ids |= {r[0] for r in self.db.query(sql)}
         if not ids:
             return
         known: set[int] = set()
@@ -1398,14 +1687,6 @@ class StructureScout:
             "(SELECT COUNT(*) FROM structure_access a WHERE a.structure_id=k.structure_id) AS dock_by "
             "FROM known_structures k WHERE k.solar_system_id IS NULL AND k.status IN ('new','ok','no_access')"
         )
-        unknown = {
-            "id": None,
-            "name": "Unknown",
-            "region": "Unknown",
-            "security": -9.9,
-            "class": "unknown",
-            "space": "unknown",
-        }
         out = [
             {
                 "structure_id": r["structure_id"],
@@ -1416,7 +1697,7 @@ class StructureScout:
                 "owner_id": r["owner_id"],
                 "owner": "Unknown",
                 "owner_zkill": None,
-                "system": unknown,
+                "system": UNKNOWN_SYSTEM,
                 "system_index": None,
                 "seen_by": r["seen_by"],
                 "assets": r["seen_by"] > 0,
@@ -1435,13 +1716,97 @@ class StructureScout:
         self._unresolved = (self.version, out)
         return out
 
+    def _entity_names(self, ids: Iterable[int]) -> dict[int, str]:
+        """Names the database holds for these IDs (entity_names), chunked for SQLite's variable limit."""
+        ordered = sorted(set(ids))
+        out: dict[int, str] = {}
+        for start in range(0, len(ordered), 900):
+            chunk = ordered[start : start + 900]
+            sql = f"SELECT entity_id, name FROM entity_names WHERE entity_id IN ({','.join('?' * len(chunk))})"  # noqa: S608
+            out.update({r[0]: r[1] for r in self.db.query(sql, tuple(chunk))})
+        return out
+
+    def _apply_mail(self, item: dict[str, Any], mail: Any) -> None:
+        """Fill what a row still lacks from the structure's mail find (name, owner, system, type); marks the row."""
+        used = owner_used = False
+        if mail["name"] and item["name_unresolved"]:
+            item["name"], item["name_unresolved"], used = mail["name"], False, True
+        if not item["owner_id"] and mail["owner_id"]:
+            oid = int(mail["owner_id"])
+            item["owner_id"], item["owner_zkill"] = oid, f"{ZKILL}/corporation/{oid}/"
+            item["owner"] = mail["owner_name"] or f"Corporation {oid}"
+            used = owner_used = True
+        idx = self.g.index.get(mail["system_id"]) if item["system_index"] is None and mail["system_id"] else None
+        if idx is not None:
+            item["system"] = self.g.describe(idx) | {"space": space_of(self.g, idx)}
+            item["system_index"], used = idx, True
+        if not item["type_id"] and mail["type_id"]:
+            item["type_id"], item["type"] = mail["type_id"], mail["type_name"] or f"Type {mail['type_id']}"
+            used = True
+        if used:
+            date = datetime.fromtimestamp(mail["mail_ts"], UTC).strftime("%Y-%m-%d")
+            item["mail"] = {"date": date, "owner": owner_used}
+
+    def _apply_history(self, item: dict[str, Any], record: Any) -> None:
+        """Fill what a row still lacks from the public datasets (historical details)."""
+        used = False
+        if record["name"] and item["name_unresolved"]:
+            item["name"], item["name_unresolved"], used = record["name"], False, True
+        if not item["owner_id"] and record["owner_id"]:
+            oid = record["owner_id"]
+            item["owner_id"], item["owner"] = oid, record["owner_name"] or f"Corporation {oid}"
+            item["owner_zkill"] = f"{ZKILL}/corporation/{oid}/"
+            used = True
+        if item["system_index"] is None and record["system_id"] in self.g.index:
+            i = self.g.index[record["system_id"]]
+            item["system"] = self.g.describe(i) | {"space": space_of(self.g, i)}
+            item["system_index"], used = i, True
+        if not item["type_id"] and record["type_id"]:
+            item["type_id"], item["type"] = record["type_id"], record["type_name"] or f"Type {record['type_id']}"
+            used = True
+        if used:
+            item["historical_source"] = record["source"] or "Adam4EVE"
+            item["historical_date"] = record["observed"]
+
+    def effective(self) -> list[dict[str, Any]]:
+        """``structures() + unresolved()`` with the mail finds and then the public datasets applied (cached).
+
+        Live ESI data always wins: a mail find fills what ESI did not give (name, owner, system, type), the public
+        datasets what is still missing after that. Every row has ``mailed`` (a mail names the structure); a row that
+        used a mail find has ``mail`` ({date, owner}), one that used a dataset ``historical_source`` and
+        ``historical_date``. The internal fields (``system_index``, ``position``, ``name_unresolved``) are kept.
+        """
+        if self._effective is not None and self._effective[0] == self.version:
+            return self._effective[1]
+        mails = {
+            r["structure_id"]: r
+            for r in self.db.query(
+                "SELECT m.*, o.name AS owner_name, t.name AS type_name FROM structure_mail_finds m "
+                "LEFT JOIN entity_names o ON o.entity_id=m.owner_id LEFT JOIN entity_names t ON t.entity_id=m.type_id"
+            )
+        }
+        history = {r["structure_id"]: r for r in self.db.query("SELECT * FROM public_structure_history")}
+        out = []
+        for r in self.structures() + self.unresolved():
+            item = dict(r)
+            mail, record = mails.get(r["structure_id"]), history.get(r["structure_id"])
+            item["mailed"] = mail is not None
+            if r["destroyed_at"] is None:
+                if mail is not None:
+                    self._apply_mail(item, mail)
+                if record is not None:
+                    self._apply_history(item, record)
+            out.append(item)
+        self._effective = (self.version, out)
+        return out
+
     def index(self) -> dict[int, list[Any]]:
-        """owner corporation -> Structure, for the war structure lists."""
+        """owner corporation -> Structure, for the war structure lists (owner and system known, mail finds included)."""
         from .wars.structures import Structure
 
         idx: dict[int, list[Any]] = {}
-        for r in self.structures():
-            if r["owner_id"]:
+        for r in self.effective():
+            if r["owner_id"] and r["system_index"] is not None:
                 idx.setdefault(int(r["owner_id"]), []).append(
                     Structure(
                         r["structure_id"],
@@ -1461,6 +1826,37 @@ class StructureScout:
         for callback in self.on_change:
             callback(idx)
 
+    def _present(
+        self,
+        r: dict[str, Any],
+        dist: Any,
+        origin: Any,
+        sources: dict[int, list[str]],
+        at_war: dict[int, list[int]],
+    ) -> dict[str, Any]:
+        """One row as the API shows it: without the internal fields, with jumps from the nearest character."""
+        item = {k: v for k, v in r.items() if k not in INTERNAL_FIELDS}
+        i = r["system_index"]
+        o = origin[i] if i is not None else -1
+        item["jumps"] = dist[i] if i is not None and dist[i] >= 0 else None
+        item["nearest"] = None if o < 0 else {"system": self.g.names[o], "characters": sources.get(o, [])}
+        item["wars"] = at_war.get(int(r["owner_id"] or 0), [])
+        return item
+
+    @staticmethod
+    def _sorted(rows: list[dict[str, Any]], sort: str) -> list[dict[str, Any]]:
+        far = 1 << 30
+        keys = {
+            "jumps": lambda r: (r["jumps"] if r["jumps"] is not None else far, r["system"]["name"], r["name"]),
+            "system": lambda r: (r["system"]["name"], r["name"]),
+            "name": lambda r: (r["name"].lower(),),
+            "type": lambda r: (r["type"], r["system"]["name"]),
+            "owner": lambda r: (r["owner"].lower(), r["system"]["name"]),
+            "security": lambda r: (-r["system"]["security"], r["system"]["name"]),
+            "seen": lambda r: (-(r["last_seen"] or 0),),  # a public dataset row has no last_seen: last
+        }
+        return sorted(rows, key=keys.get(sort, keys["jumps"]))
+
     def listing(
         self,
         sources: dict[int, list[str]],
@@ -1477,54 +1873,27 @@ class StructureScout:
         limit: int = 100,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """``source``: assets (default, a character has assets there), dock (may be docked at, no assets) or all."""
-        everything = self.structures() + self.unresolved()
+        """``source``: assets (default, a character has assets there), dock (may be docked at, no assets), mail
+        (a mail names it) or all."""
+        everything = self.effective()
         by_source = {
             "assets": sum(1 for r in everything if r["assets"]),
             "dock": sum(1 for r in everything if r["dockable"] and not r["assets"]),
+            "mail": sum(1 for r in everything if r["mailed"]),
             "all": len(everything),
         }
         if source == "all":
             base = everything
         elif source == "dock":
             base = [r for r in everything if r["dockable"] and not r["assets"]]
+        elif source == "mail":
+            base = [r for r in everything if r["mailed"]]
         else:
             source = "assets"
             base = [r for r in everything if r["assets"]]
-        history = {r["structure_id"]: r for r in self.db.query("SELECT * FROM public_structure_history")}
         dist, origin = self.g.nearest(sources.keys(), avoid)
         at_war = at_war or {}
-        rows = []
-        for r in base:
-            i = r["system_index"]
-            item = {k: v for k, v in r.items() if k not in ("system_index", "position", "name_unresolved")}
-            record = history.get(r["structure_id"])
-            if record and r["destroyed_at"] is None:
-                used = False
-                if record["name"] and r["name_unresolved"]:
-                    item["name"] = record["name"]
-                    used = True
-                if not r["owner_id"] and record["owner_id"]:
-                    item["owner_id"] = record["owner_id"]
-                    item["owner"] = record["owner_name"] or f"Corporation {record['owner_id']}"
-                    item["owner_zkill"] = f"{ZKILL}/corporation/{record['owner_id']}/"
-                    used = True
-                if i is None and record["system_id"] in self.g.index:
-                    i = self.g.index[record["system_id"]]
-                    item["system"] = self.g.describe(i) | {"space": space_of(self.g, i)}
-                    used = True
-                if not r["type_id"] and record["type_id"]:
-                    item["type_id"] = record["type_id"]
-                    item["type"] = record["type_name"] or f"Type {record['type_id']}"
-                    used = True
-                if used:
-                    item["historical_source"] = record["source"] or "Adam4EVE"
-                    item["historical_date"] = record["observed"]
-            o = origin[i] if i is not None else -1
-            item["jumps"] = dist[i] if i is not None and dist[i] >= 0 else None
-            item["nearest"] = None if o < 0 else {"system": self.g.names[o], "characters": sources.get(o, [])}
-            item["wars"] = at_war.get(int(r["owner_id"] or 0), [])
-            rows.append(item)
+        rows = [self._present(r, dist, origin, sources, at_war) for r in base]
         facets = {
             "types": Counter(r["type"] for r in rows).most_common(),
             "regions": Counter(r["system"]["region"] for r in rows).most_common(),
@@ -1544,17 +1913,7 @@ class StructureScout:
             rows = [r for r in rows if r["system"]["space"] == space]
         if war_only:
             rows = [r for r in rows if r["wars"]]
-        far = 1 << 30
-        keys = {
-            "jumps": lambda r: (r["jumps"] if r["jumps"] is not None else far, r["system"]["name"], r["name"]),
-            "system": lambda r: (r["system"]["name"], r["name"]),
-            "name": lambda r: (r["name"].lower(),),
-            "type": lambda r: (r["type"], r["system"]["name"]),
-            "owner": lambda r: (r["owner"].lower(), r["system"]["name"]),
-            "security": lambda r: (-r["system"]["security"], r["system"]["name"]),
-            "seen": lambda r: (-r["last_seen"],),
-        }
-        rows.sort(key=keys.get(sort, keys["jumps"]))
+        rows = self._sorted(rows, sort)
         contributors = self.db.query("SELECT COUNT(*), COALESCE(SUM(structures),0) FROM scout_characters")[0]
         return {
             "rows": rows[offset : offset + limit],
@@ -1566,6 +1925,226 @@ class StructureScout:
                 "last_run": self.state["last_run"],
                 "running": self.state["running"],
             },
+        }
+
+    # -- citadel search (STR-15): suggestions for the two inputs and the search itself --------------------------------
+    @staticmethod
+    def _rank(needle: str, name: str) -> int | None:
+        """0 exact, 1 prefix, 2 prefix of a later word, 3 anywhere inside (both lower case); None: no match."""
+        if name == needle:
+            return 0
+        if name.startswith(needle):
+            return 1
+        if any(w.startswith(needle) for w in re.split(r"\W+", name) if w):
+            return 2
+        return 3 if needle in name else None
+
+    def _place_names(self) -> list[tuple[str, str, int, str]]:
+        """(lower case name, kind, ID, name) of every solar system and region of the universe, built once."""
+        if self._places is None:
+            regions = self._region_systems()
+            places = [(name.lower(), "system", self.g.ids[i], name) for i, name in enumerate(self.g.names)]
+            places += [(name.lower(), "region", rid, name) for rid, name in self.g.regions.items() if rid in regions]
+            self._places = places
+        return self._places
+
+    def suggest_places(self, q: str, limit: int = 12) -> list[dict[str, Any]]:
+        """Solar systems and regions whose name matches ``q`` (2+ characters): exact, prefix, word prefix, inside.
+
+        A region goes before a system only inside the prefix rank; inside a rank the order is alphabetical.
+        """
+        needle = q.strip().lower()[:SUGGEST_MAX_CHARS]
+        if len(needle) < 2:
+            return []
+        hits = []
+        for lower, kind, pid, name in self._place_names():
+            rank = self._rank(needle, lower)
+            if rank is not None:
+                hits.append((rank, 0 if rank == 1 and kind == "region" else 1, lower, kind, pid, name))
+        out = []
+        for _, _, _, kind, pid, name in sorted(hits)[:limit]:
+            if kind == "system":
+                d = self.g.describe(self.g.index[pid])
+                out.append({"kind": kind, "id": pid, "name": name, "detail": f"{d['region']} · {d['security']:.1f}"})
+            else:
+                n = len(self._region_systems()[pid])
+                out.append({"kind": kind, "id": pid, "name": name, "detail": f"region · {n} system{'s' * (n != 1)}"})
+        return out
+
+    def _owner_structures(self) -> dict[int, set[int]]:
+        """owner corporation -> IDs of its structures in ``effective()`` (cached with the version)."""
+        if self._owner_ids is None or self._owner_ids[0] != self.version:
+            owned: dict[int, set[int]] = {}
+            for r in self.effective():
+                if r["owner_id"]:
+                    owned.setdefault(int(r["owner_id"]), set()).add(r["structure_id"])
+            self._owner_ids = (self.version, owned)
+        return self._owner_ids[1]
+
+    def _local_owners(self, needle: str) -> list[tuple[int, str, str]]:
+        """(ID, kind, name) of the corporations and alliances the database holds a name for (owners of known
+        structures, every war party), best match first."""
+        like = "%" + needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        rows = self.db.query(
+            "SELECT entity_id, name, category FROM entity_names WHERE category IN ('corporation','alliance') "
+            "AND name LIKE ? ESCAPE '\\'",
+            (like,),
+        )
+        hits = []
+        for r in rows:
+            rank = self._rank(needle, r["name"].lower())
+            if rank is not None:
+                hits.append((rank, r["name"].lower(), r["entity_id"], r["category"], r["name"]))
+        return [(eid, kind, name) for _, _, eid, kind, name in sorted(hits)]
+
+    async def _exact_owners_by_esi(self, q: str) -> list[dict[str, Any]]:
+        """Corporations and alliances ESI knows by exactly this name (``POST /universe/ids/``, public), cached.
+
+        Answers and misses are remembered for ``IDS_CACHE_TTL_S`` (at most ``IDS_CACHE_SIZE`` of them); an ESI
+        failure is not cached and gives nothing. Never asked in demo mode. What ESI finds is stored in entity_names.
+        """
+        key, now = q.lower(), time.monotonic()
+        cached = self._exact_owners.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        if self.settings.demo or self.esi is None or self.esi.blocked_for(reserve=SCOUT_ERROR_RESERVE) > 0:
+            return []
+        try:
+            found = await self.esi.post("/universe/ids/", [q])
+        except EsiError as exc:
+            log.info("structure search: ESI name lookup failed (%s); local names only", exc)
+            return []
+        items = [
+            {"kind": kind, "id": int(r["id"]), "name": str(r["name"])}
+            for kind, rows in (("corporation", found.get("corporations")), ("alliance", found.get("alliances")))
+            for r in rows or []
+        ]
+        if items:
+            with self.db.tx() as c:
+                c.executemany(
+                    "INSERT OR REPLACE INTO entity_names(entity_id, name, category, updated_at) VALUES(?,?,?,?)",
+                    [(i["id"], i["name"], i["kind"], time.time()) for i in items],
+                )
+        self._exact_owners[key] = (now + IDS_CACHE_TTL_S, items)
+        self._exact_owners.move_to_end(key)
+        while len(self._exact_owners) > IDS_CACHE_SIZE:
+            self._exact_owners.popitem(last=False)
+        return items
+
+    async def suggest_owners(
+        self, q: str, limit: int = 12, public: dict[int, list[Any]] | None = None
+    ) -> list[dict[str, Any]]:
+        """Corporations and alliances matching ``q`` (2+ characters): the local names ranked like the places, and with
+        3+ characters the one ESI knows by exactly that name on top. ``public``: owner -> Structure, for the counts."""
+        text = q.strip()[:SUGGEST_MAX_CHARS]
+        if len(text) < 2:
+            return []
+        picked: dict[int, dict[str, Any]] = {}
+        if len(text) >= 3:
+            for item in await self._exact_owners_by_esi(text):
+                picked.setdefault(item["id"], item)
+        for eid, kind, name in self._local_owners(text.lower()):
+            picked.setdefault(eid, {"kind": kind, "id": eid, "name": name})
+        owned = self._owner_structures()
+        out = []
+        for item in list(picked.values())[:limit]:
+            detail = ""
+            if item["kind"] == "corporation":
+                known = owned.get(item["id"], set()) | {s.structure_id for s in (public or {}).get(item["id"], ())}
+                detail = f"{len(known)} known structure{'s' * (len(known) != 1)}"
+            out.append(item | {"detail": detail})
+        return out
+
+    def _public_row(self, st: Any, idx: int | None, names: dict[int, str]) -> dict[str, Any]:
+        """A structure of the public dataset (EVE Ref) as an ``effective()`` row nobody here has read."""
+        system = UNKNOWN_SYSTEM if idx is None else self.g.describe(idx) | {"space": space_of(self.g, idx)}
+        return {
+            "structure_id": st.structure_id,
+            "name_unresolved": False,
+            "name": st.name,
+            "type_id": st.type_id,
+            "type": names.get(st.type_id) or f"Type {st.type_id}",
+            "owner_id": st.owner_id,
+            "owner": names.get(st.owner_id) or f"Corporation {st.owner_id}",
+            "owner_zkill": f"{ZKILL}/corporation/{st.owner_id}/",
+            "system": system,
+            "system_index": idx,
+            "seen_by": 0,
+            "assets": False,
+            "dock_by": 0,
+            "dockable": False,
+            "mailed": False,
+            "first_seen": None,
+            "last_seen": None,
+            "checked_at": None,
+            "access": False,
+            "status": "public",
+            "position": st.position,
+            "destroyed_at": None,
+        }
+
+    def search(
+        self,
+        sources: dict[int, list[str]],
+        avoid: list[int],
+        at_war: dict[int, list[int]] | None = None,
+        *,
+        systems: Iterable[int] = (),
+        regions: Iterable[int] = (),
+        owners: set[int] | None = None,
+        public: dict[int, list[Any]] | None = None,
+        state: str = "all",
+        sort: str = "jumps",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Citadels in the chosen places (a system OR a region) owned by the chosen owners (a corporation OR a member
+        of a chosen alliance): a structure must satisfy every group that is used.
+
+        ``owners`` is the resolved set of corporation IDs, None when no owner is chosen (an empty set matches nothing).
+        The candidates are ``effective()`` (assets, dock search, mails, datasets) plus the structures of ``public`` (the
+        EVE Ref dataset, owner -> Structure) that no scout row stands for. ``state``: known (ESI read it, or it is in
+        the public dataset), unknown (everything else) or all; the counts are taken before it is applied.
+        """
+        wanted_systems, wanted_regions = set(systems), set(regions)
+        places = bool(wanted_systems or wanted_regions)
+        if not places and owners is None:
+            return {"rows": [], "matched": 0, "hint": "choose a system, region, corporation or alliance"}
+
+        def where(idx: int | None) -> bool:
+            return not places or (
+                idx is not None and (self.g.ids[idx] in wanted_systems or self.g.region_of[idx] in wanted_regions)
+            )
+
+        scouted = self.effective()
+        rows = [
+            r | {"origin": "scout", "known": r["status"] == "ok"}
+            for r in scouted
+            if where(r["system_index"]) and (owners is None or r["owner_id"] in owners)
+        ]
+        taken = {r["structure_id"] for r in scouted}
+        extra = []
+        for owner, items in (public or {}).items():
+            if owners is None or owner in owners:
+                for st in items:
+                    idx = self.g.index.get(st.system_id) if st.system_id else None
+                    if st.structure_id not in taken and where(idx):
+                        extra.append((st, idx))
+        names = self._entity_names({st.owner_id for st, _ in extra} | {st.type_id for st, _ in extra})
+        rows += [self._public_row(st, idx, names) | {"origin": "public", "known": True} for st, idx in extra]
+        dist, origin = self.g.nearest(sources.keys(), avoid)
+        at_war = at_war or {}
+        rows = [self._present(r, dist, origin, sources, at_war) for r in rows]
+        counts = {"known": sum(1 for r in rows if r["known"]), "unknown": sum(1 for r in rows if not r["known"])}
+        if state in ("known", "unknown"):
+            rows = [r for r in rows if r["known"] == (state == "known")]
+        rows = self._sorted(rows, sort)
+        return {
+            "rows": rows[offset : offset + limit],
+            "matched": len(rows),
+            "counts": counts,
+            "characters": sum(len(v) for v in sources.values()),
+            "public_loaded": public is not None,
         }
 
     # -- background ---------------------------------------------------------------------------------
@@ -1625,6 +2204,10 @@ DEMO_KNOWN: list[tuple[str, str, str, str]] = [  # (system, name, type, owner): 
     ("1DQ1-A", "Northern Bastion", "Keepstar", "Frostline Compact"),
     ("Thera", "Drifter Watch", "Astrahus", "Frostline Compact"),
 ]
+DEMO_MAILED: list[tuple[str, str, str, str | None]] = [  # (system, name, type, owner): named in a mail, ESI has no data
+    ("Dodixie", "Mail Annex", "Fortizar", "Frostline Compact"),  # a structure link followed by its owner link
+    ("Hek", "Lone Anchor", "Astrahus", None),  # a lone structure link
+]
 DEMO_TYPES = {
     "Astrahus": 35832,
     "Fortizar": 35833,
@@ -1674,4 +2257,25 @@ def seed_demo_structures(db: Database, graph: GateGraph, corp_ids: dict[str, int
             "INSERT OR IGNORE INTO structure_sightings(structure_id, character_id, seen_at) VALUES(?,?,?)",
             [(r[0], 3900000001 + k % 3, now) for k, r in enumerate(rows)],
         )
-    return len(rows)
+    seed_demo_mail_finds(db, graph, corp_ids, now)
+    return len(rows)  # the mail finds are extra: they have no ESI data and no assets
+
+
+def seed_demo_mail_finds(db: Database, graph: GateGraph, corp_ids: dict[str, int], now: float) -> None:
+    """Two structures 'named in mails': known_structures rows ESI has not read, with the mail find as the only data."""
+    for n, (system, name, stype, owner) in enumerate(DEMO_MAILED):
+        idx = graph.find(system)
+        if idx is None:
+            continue
+        sid, stamp = 1_200_000_000_100 + n, now - 86400 * (n + 2)
+        with db.tx() as c:
+            c.execute(
+                "INSERT OR IGNORE INTO known_structures(structure_id, first_seen, last_seen) VALUES(?,?,?)",
+                (sid, stamp, stamp),
+            )
+            c.execute(
+                "INSERT OR IGNORE INTO structure_mail_finds(structure_id, owner_id, type_id, name, system_id, mail_id, "
+                "mail_ts, found_at) VALUES(?,?,?,?,?,?,?,?)",
+                (sid, corp_ids.get(owner or ""), DEMO_TYPES[stype], f"{system} - {name}", graph.ids[idx], 900 + n)
+                + (stamp, now),
+            )

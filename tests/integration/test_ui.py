@@ -290,6 +290,26 @@ def test_structures_page_lists_every_space_and_remembers_filters(server, browser
     ctx.close()
 
 
+def test_structures_search_tab_suggests_a_system_and_lists_its_citadels(server, browser):
+    page, errors = open_page(browser, f"{server}/structures", viewport={"width": 1280, "height": 900})
+    page.click("#tab-btn-search")
+    assert "Choose a system" in page.locator("#q-info").inner_text()
+    page.fill("#q-places .ms-input", "jit")
+    page.wait_for_selector("#q-places .ms-opt")
+    assert page.locator("#q-places .ms-opt").first.inner_text().startswith("Jita")
+    page.keyboard.press("Enter")  # the first suggestion is active
+    page.wait_for_function("document.querySelectorAll('#q-rows tr').length === 1")
+    assert "Jita" in page.locator("#q-places .ms-chip").inner_text()
+    info = page.locator("#q-info").inner_text()
+    assert "1 citadel" in info and "1 known, 0 unknown" in info
+    page.reload()  # the chip and the tab are remembered
+    page.wait_for_function("document.querySelectorAll('#q-rows tr').length === 1")
+    assert page.locator(".tab.active").inner_text() == "Search"
+    page.click("#q-places .ms-x")
+    page.wait_for_function("document.querySelectorAll('#q-rows tr').length === 0")
+    assert errors == []
+
+
 def test_alerts_page_filters_deep_links_and_offline_characters(server, browser):
     ctx = browser.new_context(viewport={"width": 1280, "height": 900})
     page = ctx.new_page()

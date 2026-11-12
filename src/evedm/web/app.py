@@ -38,7 +38,7 @@ from ..notifications import NotificationService
 from ..ranking import DemoProvider, LiveProvider, RankingService
 from ..resolver import TargetResolver
 from ..roster import RosterRejected, RosterService
-from ..scout import ResolveError, StructureScout, seed_demo_structures
+from ..scout import SEARCH_MAX_IDS, SUGGEST_MAX_CHARS, ResolveError, StructureScout, seed_demo_structures
 from ..selfcheck import check
 from ..sso import AuthService, SsoError
 from ..universe import GateGraph
@@ -65,6 +65,7 @@ def _asset_version() -> str:
 
 
 ASSET_V = _asset_version()
+ALLIANCE_CACHE_S = 6 * 3600  # member corporations of an alliance, as the Search tab read them from ESI
 
 
 @dataclass
@@ -249,6 +250,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
     setup_logging(settings)
     log.info("resolved paths: %s", startup.paths)
     holder: dict[str, Any] = {}
+    alliance_cache: dict[int, tuple[float, list[int]]] = {}  # alliance -> (valid until, member corporations)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # noqa: ANN202
@@ -958,6 +960,104 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             offset=max(0, offset),
         )
         result["wars_known"] = svc.wars is not None and svc.wars.census is not None
+        return JSONResponse(result)
+
+    def public_structures_of(svc: Services) -> dict[int, list[Any]] | None:
+        """The public dataset's structures (owner -> Structure) once it is loaded; None before that."""
+        structures = svc.wars.structures if svc.wars is not None else None
+        return structures.public if structures is not None else None
+
+    @app.get("/api/structures/suggest")
+    async def suggest_structures(request: Request, kind: str = "place", q: str = "", limit: int = 12) -> JSONResponse:
+        """Autocomplete for the Search tab: ``kind=place`` (solar systems and regions) or ``owner`` (corporations and
+        alliances). Fewer than two characters give no items."""
+        scout = await scout_of(request)
+        if kind not in ("place", "owner"):
+            raise HTTPException(status_code=400, detail="kind must be place or owner")
+        text = q.strip()[:SUGGEST_MAX_CHARS]
+        if len(text) < 2:
+            return JSONResponse({"items": []})
+        limit = max(1, min(limit, 50))
+        if kind == "place":
+            items = scout.suggest_places(text, limit)
+        else:
+            items = await scout.suggest_owners(text, limit, public_structures_of(svc_of(request)))
+        return JSONResponse({"items": items, "q": text})
+
+    def id_list(text: str, name: str) -> list[int]:
+        """Comma-separated numeric IDs (at most SEARCH_MAX_IDS); anything else is a 400."""
+        parts = [p.strip() for p in text.split(",") if p.strip()]
+        if len(parts) > SEARCH_MAX_IDS:
+            raise HTTPException(status_code=400, detail=f"{name}: at most {SEARCH_MAX_IDS} IDs")
+        if not all(p.isascii() and p.isdecimal() for p in parts):
+            raise HTTPException(status_code=400, detail=f"{name}: comma-separated numeric IDs expected")
+        return [int(p) for p in parts]
+
+    async def alliance_members(svc: Services, alliance_ids: list[int]) -> tuple[set[int], list[int]]:
+        """Member corporations of the alliances (census first, then public ESI, remembered 6 hours) and the IDs of the
+        alliances whose members could not be read."""
+        census = svc.wars.census if svc.wars is not None else None
+        known = census.alliance_corps() if census is not None else {}
+        members: set[int] = set()
+        unresolved: list[int] = []
+        for aid in alliance_ids:
+            cached = alliance_cache.get(aid)
+            if aid in known:
+                members.update(known[aid])
+            elif cached is not None and cached[0] > time.monotonic():
+                members.update(cached[1])
+            elif svc.esi is None:  # demo mode: no ESI
+                unresolved.append(aid)
+            else:
+                try:
+                    corps = [int(c) for c in await svc.esi.get(f"/alliances/{aid}/corporations/") or []]
+                except EsiError as exc:
+                    log.info("alliance %s: members unavailable (%s)", aid, exc)
+                    unresolved.append(aid)
+                    continue
+                alliance_cache[aid] = (time.monotonic() + ALLIANCE_CACHE_S, corps)
+                members.update(corps)
+        return members, unresolved
+
+    @app.get("/api/structures/search")
+    async def search_structures(
+        request: Request,
+        systems: str = "",
+        regions: str = "",
+        corps: str = "",
+        alliances: str = "",
+        state: str = "all",
+        sort: str = "jumps",
+        limit: int = 100,
+        offset: int = 0,
+        refresh: int = 1,
+    ) -> JSONResponse:
+        """Citadels, known and unknown, in chosen systems or regions owned by chosen corporations or alliances (a
+        structure must satisfy every group that is filled in; inside a group any choice counts)."""
+        uid = owner(request)
+        scout = await scout_of(request)
+        svc = svc_of(request)
+        given = (("systems", systems), ("regions", regions), ("corps", corps), ("alliances", alliances))
+        wanted = {name: id_list(value, name) for name, value in given}
+        if not any(wanted.values()):
+            return JSONResponse({"rows": [], "matched": 0, "hint": "choose a system, region, corporation or alliance"})
+        members, unresolved = await alliance_members(svc, wanted["alliances"])
+        sources = await character_sources(svc, uid, refresh)
+        wars = svc.wars.census.corps_at_war() if svc.wars is not None and svc.wars.census is not None else {}
+        result = scout.search(
+            sources,
+            svc.ranking.avoid,
+            wars,
+            systems=wanted["systems"],
+            regions=wanted["regions"],
+            owners=set(wanted["corps"]) | members if wanted["corps"] or wanted["alliances"] else None,
+            public=public_structures_of(svc),
+            state=state,
+            sort=sort,
+            limit=max(1, min(limit, 500)),
+            offset=max(0, offset),
+        )
+        result["unresolved_alliances"] = unresolved
         return JSONResponse(result)
 
     @app.post("/api/structures/resolve")
