@@ -49,6 +49,8 @@ rows marked 0.5.0 cover the war census, the high-sec structure list and the brow
 | Roster | name equal to a linked character | badged "also linked", left out of the alert card | test_closest_static_characters_for_an_alert |
 | Roster | export, clear, import | pool restored unchanged | test_export_import_round_trip |
 | Roster | Roster tab in the browser | ranked list, Static badge, route on the map, no Set destination | test_roster_tab_ranks_static_characters_and_draws_a_route |
+| Ranking layout | ranking row, route bar, list of 9 characters | ship type next to the name, no ship name / docked state, transparent system chip, only the 3 closest until Show all, route names ≤ 7 symbols without chips, no legend, map options or Refresh button | test_ranking_row_layout_and_trimmed_route_names |
+| Set destination | online row in the browser | light-green button under the jumps, right-aligned, no confirmation after the click | test_each_online_row_sets_the_destination_and_offline_rows_have_no_button |
 | Roster | Roster page in the browser | filter survives a reload, a suggestion fixes an unresolved entry | test_roster_page_fixes_an_unresolved_entry |
 | Notifications | a character's ESI notifications | stored once, parsed for system and structure | test_poll_stores_new_notifications_once |
 | Notifications | second poll inside the 600 s cache window | nothing read, nothing stored | test_poll_stores_new_notifications_once |
@@ -96,7 +98,7 @@ rows marked 0.5.0 cover the war census, the high-sec structure list and the brow
 | Structures | historical details: EVE Ref, local index, Adam4EVE; missing or broken index | ranked EVE Ref > local index > Adam4EVE; nothing changes without the file | test_resolver_also_matches_the_public_datasets, test_the_local_index_fills_unresolved_structures_and_ranks_between_the_datasets, test_a_missing_or_broken_local_index_changes_nothing |
 | Structure index builder | timestamps, merge, folder listing, resumable and conditional downloads, empty build, reader, a dropped-in latest file | newest observation wins field by field; finished files never fetched again | test_structure_index.py (8 tests) |
 | Notifications | Sound ticked; an item already seen or outside the filters | one chime for a new matching item only | test_notification_sound_only_chimes_for_new_matching_items |
-| Phone layout | ranking on a phone; moving between pages | map first, controls under the gear, route bar above the list; page links keep their scroll position | test_phone_map_above_inline_settings_and_ranked_characters, test_navigation_position_across_pages |
+| Phone layout | ranking on a phone; moving between pages | map first, controls under the gear, route bar above the list; page links in two rows, same place on every page | test_phone_map_above_inline_settings_and_ranked_characters, test_navigation_position_across_pages, test_phone_navigation_fits_two_rows |
 | Notifications | retention | notifications older than retention_days are purged | test_old_notifications_are_purged |
 | Thera / Turnur | listed systems closest to character and target | route gate, wormhole, gate; used only when strictly shorter; same entry and exit skipped | test_via_uses_closest_listed_system_each_side, test_same_entry_and_exit_is_skipped |
 | Thera / Turnur | equal distance | higher security wins | test_equal_distance_prefers_higher_security |
@@ -106,7 +108,7 @@ rows marked 0.5.0 cover the war census, the high-sec structure list and the brow
 | Thera / Turnur | default refresh, custom URL without a hub | 900 s cache; the missing hub is fetched by name | test_default_refresh_is_fifteen_minutes, test_missing_hub_is_fetched_by_name |
 | ESI limits | HTTP 420, scout reserve | requests paused until the window resets; scout stops at 60 errors left | test_sso_esi, test_scout |
 | Thera / Turnur | real process + fake EVE-Scout | thera=0 vs thera=1, legs, Perimeter to Rens through Turnur | test_thera_route_replaces_the_gate_route_only_when_shorter, test_closest_listed_system_and_security_tie_break_follow_the_list |
-| Thera / Turnur | radio buttons in the browser | badge, route bar note, wormhole hop, legend, cookie | test_thera_filter_draws_a_two_leg_route_and_is_remembered |
+| Thera / Turnur | radio buttons in the browser | badge, route bar note, wormhole hop, no EVE-Scout status line, cookie | test_thera_filter_draws_a_two_leg_route_and_is_remembered |
 | Upgrade | legacy main signs in | takes over the legacy characters and recent targets (*fix*: they were hidden) | test_upgrade_from_single_user…, test_upgrade_from_a_single_user_database |
 | Upgrade | other main signs in first / demo characters | gets nothing / demo stays local | test_upgrade_from_single_user…, test_adopting_skips_demo… |
 | Config | `${VAR:-default}` with VAR empty in `.env` | default applies (*fix*) | test_env_defaults_apply_to_empty_variables, test_more_config_cases |
@@ -150,7 +152,7 @@ rows marked 0.5.0 cover the war census, the high-sec structure list and the brow
 | Structures probe | candidates per bucket and by database status | the probe applies the scout's rule | test_probe_counts_the_candidates_the_scout_would_take |
 | Structures page | every space, wormholes unreachable last, search, filters, sort, paging, at-war owners, shared between mains, disabled | as stated | test_structures_page_and_api_in_demo, test_structures_off, test_structures_found_through_assets_are_shared, browser test |
 | Scopes | sign-in asks for the structure scopes; EVE SSO `invalid_scope`; `EVE_OPTIONAL_SCOPES=none`; bad values in the main config | hint shown; serve exits 2 with a message | test_sign_in_asks…, test_optional_scopes_setting, test_bad_values_in_the_main_config_are_reported |
-| Browser settings | tab, filters, map options, auto-refresh survive a reload; other browser has defaults; broken cookie | remembered / defaults / defaults without errors | test_wars_tabs_and_filters_survive_a_reload, test_map_options_and_auto_refresh_are_remembered, test_broken_prefs_cookie… |
+| Browser settings | tab, filters, auto-refresh survive a reload; other browser has defaults; broken cookie | remembered / defaults / defaults without errors | test_wars_tabs_and_filters_survive_a_reload, test_auto_refresh_is_remembered_and_map_has_no_option_boxes, test_broken_prefs_cookie… |
 | Alert feed (0.7.0) | first start, resume, new process, trailing slash in the URL | starts at the pointer, continues from the stored position, User-Agent sent | test_feed_starts_at_the_pointer_resumes_and_sends_a_user_agent |
 | Alert feed | missing file below the pointer; caught up; more files than `max_per_poll` | skipped / stops / rest next poll | test_feed_skips_gaps…, test_feed_limits_each_poll… |
 | Alert feed | 429 or 403 on a file or on the pointer; 500; network down; position older than 20 h | 10 min pause without requests, file read afterwards / error counted / restart at the pointer | test_feed_limits_each_poll…, test_feed_restarts_at_the_pointer… |

@@ -28,7 +28,7 @@ war watcher, the structure scout, the notification poller and the alert service.
 Key mechanisms:
 
 - **Single-flight refresh + stale-while-revalidate** (`RankingService`): concurrent rankings share one ESI round; answers come
-  from snapshots younger than 30 s while a background round runs every 5 s at most. The Refresh button waits for fresh data.
+  from snapshots younger than 30 s while a background round runs every 5 s at most. `refresh=2` (no button on the page) waits for fresh data.
 - **ESI client**: Expires/ETag cache, identical in-flight requests coalesced, 20 parallel calls, 429 Retry-After. On 420 it reads `X-Esi-Error-Limit-Remain/Reset`, **stops sending until the window resets** and fails fast (`blocked_for()`); paged reads are an async generator (`iter_pages`).
 - **GateGraph**: CSR adjacency arrays; one BFS per target (cached) gives every character's route through parent pointers.
 - **Tokens**: Fernet-encrypted in SQLite; refreshed when less than 60 s remain; `invalid_grant` marks the character REAUTH.

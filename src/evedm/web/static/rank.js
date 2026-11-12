@@ -17,10 +17,21 @@ async function api(url, opts = {}) {
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
-function secChip(security) {
-  const chip = el("span", "sec", secText(security));
-  chip.style.background = secColor(security);
+/* ghost: no background, only the coloured figure, so the system status does not draw attention */
+function secChip(security, ghost = false) {
+  const chip = el("span", ghost ? "sec ghost" : "sec", secText(security));
+  if (ghost) chip.style.color = secColor(security);
+  else chip.style.background = secColor(security);
   return chip;
+}
+
+/* system names on the route are cut to 7 symbols; the full name stays in the tooltip */
+const HOP_NAME_LEN = 7;
+const shortName = (name) => (name.length > HOP_NAME_LEN ? name.slice(0, HOP_NAME_LEN) : name);
+function hopChip(name) {
+  const hop = el("span", "hop", shortName(name));
+  if (name.length > HOP_NAME_LEN) hop.title = name;
+  return hop;
 }
 
 function ago(iso) {
@@ -71,7 +82,9 @@ function sigTag(end, hub) {
   return tag;
 }
 
-const state = { target: null, result: null, selected: null, timer: null, busy: false, tab: "live",
+const SHOWN_CLOSEST = 3;  // the list shows the 3 closest characters; the rest sits under "Show all"
+const RECENT_SHOWN = 5;   // quick access keeps the last 5 targets
+const state = { target: null, result: null, selected: null, timer: null, busy: false, tab: "live", showAll: false,
   hub: $("#hub-toggle") ? String(Prefs.get("rank", { hub: "" }).hub || "") : "" };  // "" = gates only
 const main = document.querySelector("main.split");
 const autoRefresh = Number(main.dataset.autoRefresh || 0);
@@ -119,6 +132,7 @@ function render() {
   const list = $("#rows");
   list.innerHTML = "";
   r.rows.forEach((row, n) => list.append(renderRow(row, n + 1)));
+  applyShowAll();
 
   renderThera(r);
   const ex = $("#excluded");
@@ -136,6 +150,7 @@ function renderRow(row, n) {
 
   const who = el("div", "who");
   const name = el("div", "name", row.name);
+  if (row.ship_type) name.append(el("span", "ship-type", row.ship_type));  // the hull sits next to the name
   if (row.recommended) name.append(el("span", "badge closest", "Closest"));
   if (row.in_pod) name.append(el("span", "badge pod", "In pod"));
   if (row.status === "LIMITED") name.append(el("span", "badge limited", "Limited"));
@@ -150,19 +165,9 @@ function renderRow(row, n) {
   if (axNote) name.append(axNote);
   who.append(name);
 
-  const ship = el("div", "ship");
-  if (row.ship_type) {
-    ship.append(el("b", null, row.ship_type));
-    if (row.ship_name) ship.append(document.createTextNode(` · ${row.ship_name}`));
-  } else {
-    ship.textContent = "Ship: n/a";
-  }
-  who.append(ship);
-
   const where = el("div", "where");
   if (row.system) {
-    where.append(secChip(row.system.security), el("span", null, `${row.system.name} · ${row.system.region}`),
-      el("span", null, row.docked ? "· Docked" : "· In space"));
+    where.append(secChip(row.system.security, true), el("span", null, `${row.system.name} · ${row.system.region}`));
   } else {
     where.textContent = "Location unknown";
   }
@@ -172,7 +177,6 @@ function renderRow(row, n) {
   if (row.online) meta.append(el("span", "badge online", "Online"));
   else if (row.last_logout) meta.textContent = `Offline · last seen ${ago(row.last_logout)}`;
   who.append(meta);
-  if (row.online) who.append(routeButton(row, state.result.target));
 
   const jumps = el("div", "jumps");
   if (row.reachable) {
@@ -180,8 +184,10 @@ function renderRow(row, n) {
     if (row.wormhole && row.wormhole.used) jumps.append(el("span", "badge wh", `via ${row.wormhole.hub}`));
     if (row.ansiblex && row.ansiblex.used) jumps.append(el("span", "badge ax", "via Ansiblex"));
   } else jumps.append(el("b", null, "No gate route"));
+  if (row.online) jumps.append(routeButton(row, state.result.target));  // under the jumps, right-aligned
 
   li.append(el("div", "rank", String(n)), who, jumps);
+  if (n > SHOWN_CLOSEST) li.classList.add("beyond");
   li.addEventListener("click", () => select(row.character_id));
   li.addEventListener("keydown", (ev) => { if (ev.key === "Enter") select(row.character_id); });
   return li;
@@ -206,6 +212,22 @@ function select(id) {
   showSelection();
 }
 
+/* only the 3 closest characters are listed until "Show all" is pressed */
+function applyShowAll() {
+  const extra = document.querySelectorAll("#rows .row.beyond");
+  extra.forEach((li) => { li.hidden = !state.showAll; });
+  const btn = $("#show-all");
+  btn.hidden = extra.length === 0;
+  btn.textContent = state.showAll ? "Show fewer" : `Show all (${extra.length + SHOWN_CLOSEST})`;
+  btn.setAttribute("aria-expanded", String(state.showAll));
+}
+$("#show-all").addEventListener("click", () => {
+  state.showAll = !state.showAll;
+  applyShowAll();
+  const hidden = document.querySelector("#rows .row.selected[hidden]");
+  if (hidden && state.result.rows.length) select(state.result.rows[0].character_id);  // the route never belongs to a hidden row
+});
+
 function showSelection() {
   if (state.tab !== "live") return;
   const r = state.result;
@@ -216,8 +238,6 @@ function showSelection() {
   const ax = row && row.ansiblex && row.ansiblex.used ? row.ansiblex : null;  // gate legs joined by Ansiblex jumps
   map.setScene({ targetId: r.target.id, routeIds: row && row.route, originName: row && row.name, markers,
     legs: wh || ax ? row.route_legs : null });
-  $("#legend-wh").hidden = !wh;
-  $("#legend-ax").hidden = !ax;
   const bar = $("#route-bar");
   bar.innerHTML = "";
   if (!row) { bar.hidden = true; return; }
@@ -262,9 +282,7 @@ function showSelection() {
         hop.title = `${map.names[map.indexOf(row.route[k - 1])]} » ${map.names[i]}`;
         path.append(hop, el("span", "arrow", "›"));
       }
-      const hop = el("span", "hop");
-      hop.append(secChip(map.sec[i]), el("span", null, map.names[i]));
-      path.append(hop);
+      path.append(hopChip(map.names[i]));
       // the systems next to the hub: where to find the wormhole (InSig) and its other end (OutSig)
       const sig = wh && k === wh.gates_to_entry ? sigTag(wh.entry, wh.hub)
         : wh && k === wh.gates_to_entry + 1 ? sigTag(wh.exit, wh.hub) : null;
@@ -291,16 +309,9 @@ function renderThera(r) {
       (a.reading ? " · reading the gates your characters can use…" : "") + (a.error ? ` · last read failed (${a.error})` : "");
     return;
   }
-  info.hidden = !e;
-  if (!e) return;
-  const shown = Object.entries(e.hubs).filter(([name]) => !e.selected || e.selected.includes(name));
-  const hubs = shown.map(([name, n]) => `${name} ${n}`).join(" · ");
-  const total = shown.reduce((sum, [, n]) => sum + n, 0);
-  const when = e.fetched_at ? new Date(e.fetched_at * 1000).toLocaleTimeString() : "never";
-  info.textContent = total
-    ? `EVE-Scout: ${total} listed systems (${hubs}), read ${when}` + (e.demo ? " · demo sample" : "")
-    : `EVE-Scout: no connections listed${e.selected ? ` for ${e.selected.join(", ")}` : ""}`;
-  if (e.error) info.textContent += ` · last read failed (${e.error})`;
+  // the "EVE-Scout: n listed systems ..." status line is gone; only a failed read is still reported
+  info.hidden = !(e && e.error);
+  info.textContent = e && e.error ? `EVE-Scout: last read failed (${e.error})` : "";
 }
 
 const hubRadios = document.querySelectorAll('#hub-toggle input[name="hub"]');
@@ -322,23 +333,25 @@ if (hubRadios.length) {
 function routeButton(row, target) {
   const wrap = el("div", "set-route");
   wrap.addEventListener("click", (ev) => ev.stopPropagation());  // a click here does not select the row
-  const btn = el("button", "btn small-btn", `Set destination: ${target.name}`);
+  const btn = el("button", "btn small-btn set-dest", "Set destination");
   btn.type = "button";
+  btn.title = `Set the autopilot destination to ${target.name}`;
   btn.addEventListener("keydown", (ev) => ev.stopPropagation());  // Enter here does not select the row either
   const note = el("span", "small");
   if (!row.can_set_route) {
     btn.disabled = true;
-    note.textContent = " re-authorize this character (Add character) to allow it";
+    note.textContent = "re-authorize to allow";
+    note.title = "Re-authorize this character (Add character) to grant esi-ui.write_waypoint.v1";
   }
   btn.addEventListener("click", async (ev) => {
     ev.stopPropagation();
     btn.disabled = true;
     try {
-      const res = await api(`/api/characters/${row.character_id}/destination`,
+      await api(`/api/characters/${row.character_id}/destination`,
         { method: "POST", body: JSON.stringify({ destination_id: target.id }) });
-      note.textContent = res.simulated ? " demo: destination not sent" : ` autopilot destination set to ${res.destination}`;
+      note.textContent = "";  // no confirmation when the destination is set
     } catch (err) {
-      note.textContent = ` ${err.message}`;
+      note.textContent = err.message;  // a refusal is still shown
     } finally {
       btn.disabled = false;
     }
@@ -353,7 +366,7 @@ async function loadRecent() {
     const items = await api("/api/targets/recent");
     const box = $("#recent");
     box.innerHTML = "";
-    items.slice(0, 12).forEach((t) => {
+    items.slice(0, RECENT_SHOWN).forEach((t) => {
       const chip = el("button", "chip", t.name);
       chip.type = "button";
       chip.addEventListener("click", () => rank(t.name));
@@ -403,7 +416,6 @@ $("#target-form").addEventListener("submit", (ev) => {
   suggest.hidden = true;
   if (input.value.trim()) rank(input.value.trim());
 });
-$("#refresh-btn").addEventListener("click", () => state.target && rank(state.target.name, { refresh: 2, keepSelection: true }));
 
 /* ---------------------------------------------------------------- paste text (INP-02, INP-03) */
 const dlg = $("#paste-dialog");
@@ -430,23 +442,7 @@ $("#zoom-in").addEventListener("click", () => map.zoomBy(1.6));
 $("#zoom-out").addEventListener("click", () => map.zoomBy(1 / 1.6));
 $("#zoom-fit").addEventListener("click", () => map.fitScene());
 
-/* map options and auto-refresh, remembered in this browser (prefs cookie) */
-const mapPrefs = Prefs.get("map", { labels: true, chars: true, gates: true });
-Object.assign(map.opts, mapPrefs);
-document.querySelectorAll("#map-opts input[data-opt]").forEach((box) => {
-  box.checked = Boolean(map.opts[box.dataset.opt]);
-  box.addEventListener("change", () => {
-    map.opts[box.dataset.opt] = box.checked;
-    Prefs.set("map", { [box.dataset.opt]: box.checked });
-    map.draw();
-  });
-});
-$("#map-opts-btn").addEventListener("click", () => {
-  const panel = $("#map-opts");
-  panel.hidden = !panel.hidden;
-  $("#map-opts-btn").setAttribute("aria-expanded", String(!panel.hidden));
-});
-
+/* the map always draws names, other characters and stargate links (no options); auto-refresh is remembered in the prefs cookie */
 const refreshPrefs = Prefs.get("rank", { every: autoRefresh });
 let refreshTimer = null;
 function setAutoRefresh(seconds) {
@@ -552,7 +548,7 @@ function renderRosterRow(row, n) {
 
   const where = el("div", "where");
   if (row.system) {
-    where.append(secChip(row.system.security), el("span", null, `${row.system.name} · ${row.system.region}`));
+    where.append(secChip(row.system.security, true), el("span", null, `${row.system.name} · ${row.system.region}`));
   } else {
     where.append(el("span", null, `"${row.system_name}" — ${row.reason}`));
     if (row.suggestions && row.suggestions.length) {
@@ -602,9 +598,7 @@ function showRosterSelection() {
     row.route.forEach((id, k) => {
       const i = map.indexOf(id);
       if (k) path.append(el("span", "arrow", "›"));
-      const hop = el("span", "hop");
-      hop.append(secChip(map.sec[i]), el("span", null, map.names[i]));
-      path.append(hop);
+      path.append(hopChip(map.names[i]));
     });
     // no Set destination: a static entry has no token (D10)
     bar.append(title, path, el("div", "small", "Roster entry: jumps only, no ship, online state or destination."));
@@ -641,7 +635,7 @@ function setupMobileControls() {
   const mobile = window.matchMedia("(max-width: 820px)");
   const panel = $("#mobile-map-controls");
   const gear = $("#mobile-map-menu");
-  const sections = ["#target-form", ".map-tools", "#map-opts", ".auto-refresh", "#route-bar"]
+  const sections = ["#target-form", ".map-tools", ".auto-refresh", "#route-bar"]
     .map(selector => $(selector)).filter(Boolean)
     .map(node => {
       const slot = document.createComment("desktop position");

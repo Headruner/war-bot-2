@@ -32,8 +32,8 @@ when you press **Set destination** for an online character.
   *capitals* filter shows only kills with at least one capital on each side. Each alert lists your three closest characters; browser notification, sound
   and an optional Discord webhook. Attack timers themselves are not public, so these killmail signals are the hint.
   ([screenshot](docs/screenshots/alerts-desktop.png))
-- **Set destination**: one click sets the in-game autopilot destination of an online character (its row on the
-  Ranking page, and the Alerts page; scope `esi-ui.write_waypoint.v1`).
+- **Set destination**: one click sets the in-game autopilot destination of an online character (light-green button under the jumps
+  on each online row of the Ranking page, and the Alerts page; scope `esi-ui.write_waypoint.v1`).
 - **Thera / Turnur filter** (Ranking page): choose *Gates only*, *Thera* or *Turnur* next to the target box. Each
   button uses only its own hub as the mid-system, with the wormholes that [EVE-Scout](https://www.eve-scout.com/#/)
   lists for it. For each character it takes the listed system closest by gates (higher security wins a tie), the
@@ -49,7 +49,7 @@ when you press **Set destination** for an online character.
   gate the character finds in the search is treated as usable. Characters must re-authorize once for the new scope;
   the first run reads the gates in the background (`ansiblex.*`).
 - **Remembered per browser** (cookie): Alerts filters and notification choice, Wars tab and filters, Structures
-  filters, map options, ranking auto-refresh.
+  filters, ranking auto-refresh.
 - **Notifications** (Notifications page, members of one alliance only): the ESI notifications of **every registered
   character with a valid token**, whoever linked it - assets moved to **asset safety**, structures **under attack**,
   fuel and state - read once per ESI cache window (600 s per character, at ESI's own expiry), each with the character (and its main),
@@ -69,9 +69,8 @@ when you press **Set destination** for an online character.
   matching your filters arrives while the page is open (tick it again after a reload: browsers only allow sound after
   a click). Needs `esi-characters.read_notifications.v1`.
 - **Page help and phones**: the explanations of each page sit behind the **i** button in the top bar. On a phone
-  the ranking opens on a full-width map; the gear button on the map opens the target box, route options and
-  auto-refresh, the route bar sits above the ranked characters, and the page links scroll sideways and keep their
-  position from page to page.
+  the ranking opens on a full-width map; the gear button on the map opens the target box, zoom buttons and
+  auto-refresh, the route bar sits above the ranked characters, and the page links wrap into two rows that fit one screen.
 - **Members-only tabs**: Notifications and Structures are visible only when the main that signed in belongs to the
   configured alliance (BB, `access.alliance_ids`, default 99010320; read from ESI at sign-in and every 6 h). For any
   other character both links are hidden and the pages answer 404.
@@ -81,7 +80,7 @@ when you press **Set destination** for an online character.
   under the live ones on the Alerts page.
 - **JSON import/export** of characters with refresh and access tokens (schema `evedm-characters` v1), with a per-character report.
 - Target by **autocomplete** or by **pasting text**: Dotlan links, in-game `showinfo` links, zKillboard links and plain names.
-- Ranking by jumps (unreachable J-space / Pochven last), ship, docked / in space, online / last seen, **Closest** badge.
+- Ranking by jumps (unreachable J-space / Pochven last), ship type next to the name, online / last seen, **Closest** badge; the 3 closest are listed, **Show all** reveals the rest; the last 5 targets are one tap away.
 - 2D **star map** (canvas): zoom, pan, pinch, route with security colours, all characters marked; phone layout puts the map on top.
 - Runs comfortably on **2 vCPU / 1 GB RAM**: ~74 MB idle, ~78 MB peak, 420 req/s in a container limited to 2 CPUs / 1 GB
   ([measurements](docs/wiki/05-Performance.md)).

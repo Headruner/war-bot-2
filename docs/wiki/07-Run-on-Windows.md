@@ -158,7 +158,7 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
 - **High-sec structures**: public high-sec structures of both sides of every active war, nearest to your own
   characters first, with the war state (fighting, starts in …, ends in …). Filter by type, region, side, war state
   and security; click the system to rank your characters.
-- The chosen tab, the filters, the map options (names, other characters, stargate links) and the ranking's
+- The chosen tab, the filters and the ranking's
   auto-refresh interval are remembered in a cookie of your browser (`evedm_prefs`, one year); nothing is stored on
   the server, so another browser starts with the defaults.
 - Settings: `config\wars.yaml` (its own file). Switch it off with `EVEDM_WARS_ENABLED=0` in `.env`.
@@ -228,8 +228,8 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
 - **Set destination**: for an online character the button sets the in-game autopilot destination to the alert's
   system (waypoints cleared first). It is greyed out for offline characters and for characters that have not granted
   `esi-ui.write_waypoint.v1`: tick that scope on your EVE application, then **Add character** again for each of them.
-  On the Ranking page the same button ("Set destination: <target>") sits on the row of each online character;
-  offline characters have none.
+  On the Ranking page the same light-green button sits on the row of each online character, under the number of
+  jumps and aligned right (nothing is shown when it succeeds; a refusal is); offline characters have none.
 - **Notifications**: the page refreshes every 30 seconds. "Desktop notifications" asks your browser for permission
   and then shows a notice for every new alert while the page is open (in a background tab too); "sound" adds a beep.
   The filters (kinds, core drops only, space, period) and these choices are remembered in your browser.
@@ -303,7 +303,7 @@ the listed system closest to the target*. Among equally close listed systems the
 route is shown only when it is shorter than the gate route (a wormhole counts as two jumps); the route bar then reads "via
 Thera: ..." and the map draws a dashed purple leg between two gold gate legs. Connections marked *End Of Life* on the EVE-Scout
 site are kept; J-space exits are skipped because they have no gates. If EVE-Scout cannot be reached the last list is kept and
-the error is shown. Switch it off with `EVEDM_EVESCOUT_ENABLED=0`; change the cache time with `EVEDM_EVESCOUT_REFRESH_S`. The
+the error is shown above the list (the Ranking page has no "EVE-Scout: n listed systems" line). Switch it off with `EVEDM_EVESCOUT_ENABLED=0`; change the cache time with `EVEDM_EVESCOUT_REFRESH_S`. The
 Roster tab is not affected.
 
 The route bar shows **InSig / OutSig** (the signature IDs at the k-space system and at the hub) next to the entry and exit
@@ -325,9 +325,17 @@ selected. The Characters page no longer shows tokens.
 ## Page help and phones
 
 Each page's explanation sits behind the **i** button at the right of the top bar (Escape or a tap outside closes
-it). On a phone the ranking opens on a full-width map: the gear button on the map shows the target box, the route
-options and auto-refresh; the route bar sits above the ranked characters; the page links scroll sideways and keep
-their position when you move between pages.
+it). On a phone the ranking opens on a full-width map: the gear button on the map shows the target box, the zoom
+buttons and auto-refresh; the route bar sits above the ranked characters; the page links wrap into two rows so all of
+them fit one screen.
+
+## Ranking page: list and route
+
+Each character row shows the name with the ship type next to it, the system (security as a coloured figure without a
+background) and online / last seen, with the number of jumps and the green **Set destination** button on the right. The
+list shows the **3 closest** characters; **Show all** reveals the others. The last **5** targets are kept as quick-access
+chips. The route bar lists system names only, cut to 7 symbols (hover for the full name). The page has no Refresh button
+(use auto-refresh), no map legend and no map check-boxes.
 
 ## ESI error limit (`esi:420`)
 

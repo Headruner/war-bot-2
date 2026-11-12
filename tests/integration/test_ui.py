@@ -67,6 +67,8 @@ def test_ranking_list_and_map(server, browser):
     assert "CLOSEST" in rows.nth(0).inner_text().upper() and "Kael Varn" in rows.nth(0).inner_text()
     assert "Kael Varn: Jita → Tama · 4 jumps" in page.locator("#route-bar").inner_text()
     assert canvas_has_pixels(page)
+    assert page.locator(".row:visible").count() == 3  # the 3 closest; the rest is under "Show all"
+    page.click("#show-all")
     rows.nth(4).click()  # Vex Aldane, 8 jumps
     assert "selected" in (rows.nth(4).get_attribute("class") or "")
     assert "Vex Aldane: Dodixie → Tama · 8 jumps" in page.locator("#route-bar").inner_text()
@@ -115,7 +117,7 @@ def test_phone_map_above_inline_settings_and_ranked_characters(server, browser):
     assert row.bounding_box()["y"] >= box["y"] + box["height"]
     assert page.locator("#target").input_value() == "Tama"
     page.get_by_role("button", name="Zoom in").click()
-    page.locator("#map-opts input").first.click()
+    assert page.locator("#map-opts, #map-opts-btn, #refresh-btn").count() == 0
     assert panel.evaluate("el => el.scrollWidth <= el.clientWidth")
     gear.click()
     assert panel.is_hidden() and row.bounding_box()["y"] < 844
@@ -212,7 +214,7 @@ def test_wars_tabs_and_filters_survive_a_reload(server, browser):
     ctx.close()
 
 
-def test_map_options_and_auto_refresh_are_remembered(server, browser):
+def test_auto_refresh_is_remembered_and_map_has_no_option_boxes(server, browser):
     ctx = browser.new_context(viewport={"width": 1280, "height": 860})
     page = ctx.new_page()
     errors: list[str] = []
@@ -220,17 +222,13 @@ def test_map_options_and_auto_refresh_are_remembered(server, browser):
     page.goto(f"{server}/?target=Tama")
     page.wait_for_selector(".row.selected")
     assert page.input_value("#auto-refresh") == "30"  # server default until changed
-    page.click("#map-opts-btn")
-    assert page.is_visible("#map-opts")
-    page.uncheck("[data-opt=gates]")
-    page.uncheck("[data-opt=labels]")
+    # no map check-boxes, legend or refresh button
+    assert page.locator("#map-opts, #map-opts-btn, .legend, #refresh-btn").count() == 0
     page.select_option("#auto-refresh", "0")
     page.reload()
     page.wait_for_selector(".row.selected")
     assert page.input_value("#auto-refresh") == "0"
-    assert page.evaluate("[map.opts.gates, map.opts.labels, map.opts.chars]") == [False, False, True]
-    page.click("#map-opts-btn")
-    assert not page.is_checked("[data-opt=gates]") and page.is_checked("[data-opt=chars]")
+    assert page.evaluate("[map.opts.gates, map.opts.labels, map.opts.chars]") == [True, True, True]
     assert canvas_has_pixels(page)  # the map still draws (systems, route)
     other = browser.new_page()  # another browser profile: defaults
     other.goto(f"{server}/?target=Tama")
@@ -332,20 +330,54 @@ def test_each_online_row_sets_the_destination_and_offline_rows_have_no_button(se
     page.wait_for_selector(".row.selected")
     assert page.locator("#route-bar .set-route").count() == 0
     assert "Set destination" not in page.inner_text("#route-bar")
+    page.click("#show-all")  # every character, not only the 3 closest
     assert page.locator("#rows .row", has_text="Kael Varn").locator(".set-route").count() == 0  # offline
     online = page.locator("#rows .row:has(.badge.online)").count()
     assert online >= 1
     assert page.locator("#rows .row .set-route").count() == online
     juno = page.locator("#rows .row", has_text="Juno Krell")
     btn = juno.locator(".set-route button")
-    assert btn.inner_text() == "Set destination: Tama" and not btn.is_disabled()
-    btn.click()
-    assert "Kael Varn" in page.locator(".row.selected").inner_text()  # the click did not select the row
-    page.wait_for_function(
-        "[...document.querySelectorAll('#rows .row')].find(r => r.innerText.includes('Juno Krell'))"
-        ".querySelector('.set-route').innerText.includes('demo')"
-    )
-    assert "demo: destination not sent" in juno.locator(".set-route").inner_text()
+    assert btn.inner_text() == "Set destination" and not btn.is_disabled()
+    assert btn.evaluate("b => getComputedStyle(b).backgroundColor") == "rgb(155, 231, 166)"  # light green
+    jumps = juno.locator(".jumps")
+    assert jumps.locator(".set-route button").count() == 1  # the button sits under the number of jumps
+    box_j, box_b = jumps.locator("b").first.bounding_box(), btn.bounding_box()
+    assert box_b["y"] > box_j["y"] + box_j["height"] - 1
+    row_box = juno.bounding_box()
+    assert row_box["x"] + row_box["width"] - (box_b["x"] + box_b["width"]) < 24  # aligned right
+    selected = page.locator(".row.selected").inner_text()
+    with page.expect_response(lambda r: r.url.endswith("/destination") and r.request.method == "POST"):
+        btn.click()
+    assert page.locator(".row.selected").inner_text() == selected  # the click did not select the row
+    page.wait_for_function("![...document.querySelectorAll('.set-route button')].some((b) => b.disabled)")
+    assert juno.locator(".set-route .small").inner_text() == ""  # no confirmation when the destination is set
+    assert errors == []
+
+
+def test_ranking_row_layout_and_trimmed_route_names(server, browser):
+    """Ship next to the name, no ship name or docked state, ghost system chip, 3 closest + Show all, 7-symbol route."""
+    page, errors = open_page(browser, f"{server}/?target=Tama", viewport={"width": 1440, "height": 860})
+    page.wait_for_selector(".row.selected")
+    rows = page.locator("#rows .row")
+    total = rows.count()
+    assert total > 3
+    assert page.locator("#rows .row:visible").count() == 3  # only the 3 closest
+    assert page.locator("#show-all").inner_text() == f"Show all ({total})"
+    first = rows.first
+    assert first.locator(".name .ship-type").count() == 1  # the hull is next to the character name
+    text = first.inner_text()
+    assert "Docked" not in text and "In space" not in text and "Ship:" not in text
+    chip = first.locator(".where .sec")
+    assert chip.evaluate("c => getComputedStyle(c).backgroundColor") == "rgba(0, 0, 0, 0)"  # transparent
+    page.click("#show-all")
+    assert page.locator("#rows .row:visible").count() == total
+    page.click("#show-all")
+    assert page.locator("#rows .row:visible").count() == 3
+    # route bar: names only, at most 7 symbols, no security chips
+    assert page.locator("#route-bar .path .sec").count() == 0
+    hops = page.locator("#route-bar .path .hop:not(.wh):not(.ax)").all_inner_texts()
+    assert hops and all(len(h) <= 7 for h in hops)
+    assert page.locator("#thera-info").is_hidden()
     assert errors == []
 
 
@@ -475,22 +507,32 @@ def test_thera_filter_draws_a_two_leg_route_and_is_remembered(server, browser):
     assert page.locator('#hub-toggle input[value=""]').is_checked()
     page.locator('#hub-toggle input[value="thera"]').check()
     page.wait_for_selector(".badge.wh")
-    info = page.locator("#thera-info").inner_text()
-    assert "EVE-Scout:" in info and "Thera" in info and "Turnur" not in info  # only the chosen hub counts
+    assert page.locator("#thera-info").is_hidden()  # the "EVE-Scout: n listed systems" line is gone
     page.locator(".row", has=page.locator(".badge.wh")).first.click()
     bar = page.locator("#route-bar").inner_text()
     assert "via Thera" in bar and "wormhole in and out" in bar
     assert page.locator("#route-bar .hop.wh").count() == 1
-    assert page.locator("#legend-wh").is_visible()
+    assert page.locator(".legend").count() == 0
     assert canvas_has_pixels(page)
     page.reload()
     page.wait_for_selector(".row.selected")
     assert page.locator('#hub-toggle input[value="thera"]').is_checked()  # the choice lives in the evedm_prefs cookie
     page.wait_for_selector(".badge.wh")
     page.locator('#hub-toggle input[value="turnur"]').check()  # switching hubs re-ranks through the other mid-system
-    page.wait_for_function("document.querySelector('#thera-info').textContent.includes('Turnur')")
-    assert "Thera" not in page.locator("#thera-info").inner_text()
+    page.wait_for_function("state.hub === 'turnur' && !state.busy")
+    assert page.locator("#thera-info").is_hidden()
     page.locator('#hub-toggle input[value=""]').check()
     page.wait_for_function("!document.querySelector('.badge.wh')")
-    assert page.locator("#legend-wh").is_hidden()
+    assert errors == []
+
+
+def test_phone_navigation_fits_two_rows(server, browser):
+    page, errors = open_page(browser, f"{server}/?target=Tama", viewport={"width": 360, "height": 800}, is_mobile=True)
+    page.wait_for_selector(".row.selected", state="attached")
+    nav = page.get_by_role("navigation", name="Main navigation")
+    links = nav.locator("a, button")
+    tops = {round(links.nth(i).bounding_box()["y"]) for i in range(links.count())}
+    assert len(tops) <= 2  # two rows at most
+    assert nav.evaluate("n => n.scrollWidth <= n.clientWidth")  # nothing to scroll sideways
+    assert page.evaluate("document.documentElement.scrollWidth") <= 360
     assert errors == []

@@ -24,7 +24,7 @@ Memory stays under 8 % of 1 GB, and the container serves 400+ requests per secon
 | --- | --- | --- |
 | Baseline | every ranking refreshed every character | 5.7 req/s, p95 9.4 s, ESI thundering herd |
 | 1 | single-flight refresh round shared by concurrent rankings; ESI request coalescing; one DB transaction per round; `synchronous=NORMAL`; target history written at most once a minute | 185 req/s, p95 134 ms |
-| 2 | stale-while-revalidate: answer from snapshots < 30 s old, refresh in the background every ≥ 5 s; Refresh button waits for fresh data | p99 1.3 s → 150 ms (cold start measured separately) |
+| 2 | stale-while-revalidate: answer from snapshots < 30 s old, refresh in the background every ≥ 5 s; `refresh=2` waits for fresh data | p99 1.3 s → 150 ms (cold start measured separately) |
 | 3 | ESI concurrency 10 → 20, HTTP pool 32 | cold ranking 725 → 464 ms |
 | 4 | CSR adjacency arrays, `malloc_trim` after start, map payload pre-built and gzip-cached with ETag | idle RSS −2 MB, map served in < 1 ms |
 | 5 | SQLite WAL (architecture guidelines) with `synchronous=NORMAL`, checkpoint on shutdown | container 246 → 422 req/s, p95 134 → 83 ms |

@@ -109,7 +109,7 @@ requirement to the code and to the automated tests in this repository (0.3.0, ex
 | INP-01 | The system shall autocomplete solar system names (case-insensitive, from 2 characters). | M | done | test_resolver::test_autocomplete_*, test_ui |
 | INP-02 | The system shall extract candidate systems from pasted text: Dotlan links, in-game `showinfo:5//` links, zKillboard system links, whole-word names including multi-word names. | M | done | test_resolver::* |
 | INP-03 | With one candidate the system shall rank immediately; with several it shall offer a choice; with none it shall say so. | M | done | test_ui::test_autocomplete_and_paste |
-| INP-04 | The system shall keep the last 20 targets for one-tap reuse. | S | done | test_recent_targets_keeps_last_20 |
+| INP-04 | The system shall keep the last 20 targets and show the last 5 as quick-access chips on the Ranking page. | S | done (chips: 5) | test_recent_targets_keeps_last_20, test_ranking_row_layout_and_trimmed_route_names |
 | INP-05 | Where the instance is the Web UI, the system shall accept `?target=<name>` and keep it in the address bar. | S | done | test_ui (url check) |
 
 ### Routing
@@ -122,7 +122,7 @@ requirement to the code and to the automated tests in this repository (0.3.0, ex
 | RTE-04 | The system shall not route through systems in `avoid_systems` (default Zarzakh); they stay valid origins/targets. | S | done | test_avoided_system_is_not_used_for_transit… |
 | RTE-05 | The system shall load the universe from CCP static data and rebuild it with `evedm universe fetch`. | M | done (manual command) | test_build_from_current_sde_jsonl |
 | RTE-07 | The system shall offer Safer / LessSecure routes through ESI `POST /route`. | C | planned | — |
-| RTE-08 | When the user presses **Set destination** for a character, the system shall call ESI `POST /ui/autopilot/waypoint` with `destination_id` (the target system), `clear_other_waypoints=true`, `add_to_beginning=false`, using that character's token. On the Ranking page the button sits on the row of each online character and an offline character has no button (the route bar has none); on the Alerts page it is disabled for offline characters. A character without `esi-ui.write_waypoint.v1` gets a disabled button with the reason shown. Only the signed-in main's own characters can be steered (404 otherwise); ESI refusal → 502 "is the character online?", token problem → 409; demo mode answers "simulated". | S | done (0.7.0) | test_destination_requires_the_scope…, test_set_destination_in_demo_and_bad_input, test_esi_post_auth_sets_the_waypoint_in_the_fake, test_alerts_e2e, test_each_online_row_sets_the_destination_and_offline_rows_have_no_button |
+| RTE-08 | When the user presses **Set destination** for a character, the system shall call ESI `POST /ui/autopilot/waypoint` with `destination_id` (the target system), `clear_other_waypoints=true`, `add_to_beginning=false`, using that character's token. On the Ranking page the light-green button (label "Set destination", the target name in its tooltip) sits on the row of each online character, under the number of jumps and aligned right, and an offline character has no button (the route bar has none); no confirmation is shown when the destination is set (a refusal still is); on the Alerts page it is disabled for offline characters. A character without `esi-ui.write_waypoint.v1` gets a disabled button with the reason shown. Only the signed-in main's own characters can be steered (404 otherwise); ESI refusal → 502 "is the character online?", token problem → 409; demo mode answers "simulated". | S | done (0.7.0) | test_destination_requires_the_scope…, test_set_destination_in_demo_and_bad_input, test_esi_post_auth_sets_the_waypoint_in_the_fake, test_alerts_e2e, test_each_online_row_sets_the_destination_and_offline_rows_have_no_button |
 
 ### Ranking and star map (UC-04)
 
@@ -130,12 +130,14 @@ requirement to the code and to the automated tests in this repository (0.3.0, ex
 | --- | --- | --- | --- | --- |
 | RNK-01 | When a target is set, the system shall fetch location, ship and online state for all enabled characters in parallel and show the ranked list. | M | done | test_ranking_order_route_and_flags |
 | RNK-02 | Rows shall be sorted: reachable first, then jumps, then online before offline, then name. | M | done | same |
-| RNK-03 | Each row shall show rank, name, jumps, system (security, region), docked / in space, ship type and name, online / last seen. | M | done | test_ui |
+| RNK-03 | Each row shall show rank, name with the ship type next to it, jumps, system (region; security as a coloured figure on a transparent background) and online / last seen. The ship name and the docked / in space state are not shown. | M | done (changed 0.8.x) | test_ranking_row_layout_and_trimmed_route_names |
 | RNK-04 | The system shall mark the first reachable character as Closest (jumps only; v0.3). | M | done | test_ranking_order… |
 | RNK-05 | The system shall mark a character in a capsule as In pod. | S | done | test_ranking_order… |
 | RNK-06 | If data is older than `stale_after_s`, then the row shall show Stale. | S | done | ranking.py |
 | RNK-07 | If ESI fails for a character, then the system shall keep its last known data with an error badge. | M | done | test_ranking_keeps_last_known_data_on_esi_error |
-| RNK-08 | The system shall provide Refresh (waits for fresh data) and auto-refresh every 30 s while visible; the interval selector is in the header of the Characters / Roster tabs and stays visible with a target selected. | M | done | rank.js |
+| RNK-08 | The system shall auto-refresh every 30 s while visible (there is no Refresh button on the Ranking page; `GET /api/rank?refresh=2` still waits for fresh data); the interval selector is in the header of the Characters / Roster tabs and stays visible with a target selected. | M | done | rank.js |
+| RNK-09 | The Characters list shall show only the 3 closest characters; **Show all (n)** shows the rest and **Show fewer** hides them again. If the selected character is hidden the closest one is selected. | S | done (0.8.x) | test_ranking_row_layout_and_trimmed_route_names, test_ranking_list_and_map |
+| RNK-10 | The EVE-Scout status line ("EVE-Scout: n listed systems …, read hh:mm:ss") shall not be shown on the Ranking page; only a failed read is reported. | S | done (0.8.x) | test_thera_filter_draws_a_two_leg_route_and_is_remembered |
 | RNK-10 | The system shall reuse ESI responses until Expires (lifetime measured against ESI's own `Date` header, so a host clock that is off neither delays nor hurries a re-read) and revalidate with ETag. | M | done | test_esi_cache_then_etag_revalidation, test_e2e step 8 |
 | MAP-01 | The ranking view shall show the character list on the left and a 2D star map on the right; on phones the map is above the list. | M | done | test_ui::test_phone_layout… |
 | MAP-02 | The map shall draw all k-space systems at their SDE positions (north up), coloured by security, with gate links. | M | done | test_ui (canvas pixels), screenshots |
@@ -144,7 +146,7 @@ requirement to the code and to the automated tests in this repository (0.3.0, ex
 | MAP-05 | The map shall support wheel / pinch zoom, drag pan, and +, −, fit buttons. | M | done | map.js |
 | MAP-06 | Hovering a system shall show its name, security, region and characters there. | S | done | map.js |
 | MAP-07 | The map shall mark every character's current system. | S | done | map.js (diamonds) |
-| MAP-08 | A route bar shall list the route system by system with security, and count high / low / null systems. | M | done | test_ui (route bar text) |
+| MAP-08 | A route bar shall list the route system by system as names only (no security chip), each cut to 7 symbols with the full name in its tooltip, and count high / low / null systems. | M | done (changed 0.8.x) | test_ui (route bar text), test_ranking_row_layout_and_trimmed_route_names |
 
 ### Characters and Web UI
 
@@ -158,8 +160,9 @@ requirement to the code and to the automated tests in this repository (0.3.0, ex
 | WEB-04 | The Web UI shall ship as one Docker image (multi-stage, non-root user 10001) with a one-file SQLite database in WAL mode and logs on a volume mounted at `/app/data` (`data/` on the host). | M | done | scripts/docker-smoke.sh |
 | ARC-01 | The system shall pin every runtime dependency to a stable release in `requirements.txt` and verify imports against it. | M | done | tests/unit/test_dependencies.py |
 | ARC-02 | At start-up and at image build, the system shall resolve every resource path to an absolute path, verify it exists (data dir writable) and log it. | M | done | test_selfcheck_*, `evedm check` |
-| WEB-06 | Every page shall keep its explanation behind an **i** button in the top bar (a native popover: keyboard, Escape and outside click close it); on screens up to 820 px the page links shall scroll sideways and keep their position across page loads, and touch targets shall be at least 44 px. | S | done | test_navigation_position_across_pages, browser checks |
-| MAP-09 | On screens up to 820 px the ranking shall open on a full-width map; a gear button on the map shows the target box, route options and auto-refresh in a panel, and the route bar sits above the ranked characters. | S | done | test_phone_map_above_inline_settings_and_ranked_characters |
+| WEB-06 | Every page shall keep its explanation behind an **i** button in the top bar (a native popover: keyboard, Escape and outside click close it); on screens up to 820 px the page links shall wrap into two rows of four so that all of them fit one screen, in the same place on every page, and touch targets shall be at least 44 px. | S | done | test_navigation_position_across_pages, browser checks |
+| MAP-09 | On screens up to 820 px the ranking shall open on a full-width map; a gear button on the map shows the target box, zoom buttons and auto-refresh in a panel, and the route bar sits above the ranked characters. | S | done | test_phone_map_above_inline_settings_and_ranked_characters |
+| MAP-10 | The map shall have no legend and no option check-boxes: names, other characters and stargate links are always drawn. | S | done (0.8.x) | test_auto_refresh_is_remembered_and_map_has_no_option_boxes |
 | WEB-05 | The Web UI shall refuse to start without `EVEDM_SECRET_KEY`, `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET` (demo mode needs only the key). | M | done | test_validate_for_serve_requires_secrets |
 | LOG-01 | Every launch shall be recorded in the `launches` table and in `logs/launches.jsonl` (start and stop, RSS, requests). | M | done | test_launch_is_recorded, test_restart_keeps_data… |
 
@@ -346,7 +349,7 @@ shown by default; every other type is one tick away in the filters.
 
 | ID | Requirement | P | Status | Verified by |
 | --- | --- | --- | --- | --- |
-| PRF-01 | The browser shall remember the Wars tab and filters, the Structures and Alerts filters, the Alerts notification and sound choice, the map options (names, other characters, stargate links), the ranking auto-refresh interval, the ranking tab (Characters or Roster), the Roster page filters and the Notifications types and period in one first-party cookie (`evedm_prefs`, one year, SameSite=Lax); nothing is stored on the server; an unreadable cookie means defaults. | S | done (0.5.0) | test_wars_tabs_and_filters_survive_a_reload, test_map_options_and_auto_refresh_are_remembered, test_broken_prefs_cookie… |
+| PRF-01 | The browser shall remember the Wars tab and filters, the Structures and Alerts filters, the Alerts notification and sound choice, the ranking auto-refresh interval, the ranking tab (Characters or Roster), the Roster page filters and the Notifications types and period in one first-party cookie (`evedm_prefs`, one year, SameSite=Lax); nothing is stored on the server; an unreadable cookie means defaults. | S | done (0.5.0) | test_wars_tabs_and_filters_survive_a_reload, test_auto_refresh_is_remembered_and_map_has_no_option_boxes, test_broken_prefs_cookie… |
 
 ## Non-functional requirements
 
