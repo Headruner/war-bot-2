@@ -100,6 +100,7 @@ _STRUCTURE_TYPE_KEYS = ("structureTypeID", "structureTypeId", "structure_type_id
 _SHOWINFO = re.compile(r"showinfo:(\d+)//(\d+)")
 TYPE_ID_GROUPS = ("tower", "other_attacks")  # ``typeID`` is the structure itself only in these (towers, orbitals...)
 TYPE_NAME_RETRY_S = 3600.0  # a type ESI could not name is not asked again for this long
+DISCORD_MARK = "\U0001f7e3"  # purple circle: Discord cannot colour embed text, so the key values get a marker and bold
 
 
 def _first(body: dict[str, Any], keys: tuple[str, ...]) -> int | None:
@@ -431,18 +432,25 @@ class NotificationService:
             return 0.0
 
     def embed_payload(self, row: Any, characters: list[str]) -> dict[str, Any]:
-        """The Discord message of one event: title as in game, system, nearest hub, who received it."""
+        """The Discord message of one event: title as in game, system, nearest hub, who received it.
+
+        The system, structure type and kill link are marked and bold; a found kill is linked under the title."""
         d = self.describe(row)
         system = d["system"]
         fields: list[dict[str, Any]] = []
         if d["structure_type"]:  # unknown: no field (the page says "Unknown")
-            fields.append({"name": "Structure type", "value": d["structure_type"][:1000], "inline": True})
+            fields.append(
+                {"name": "Structure type", "value": f"{DISCORD_MARK} **{d['structure_type'][:900]}**", "inline": True}
+            )
         if system:
             link = f"https://evemaps.dotlan.net/system/{system['name'].replace(' ', '_')}"
             fields.append(
                 {
                     "name": "System",
-                    "value": f"[{system['name']}]({link}) ({system.get('security')}) · {system.get('region', '')}",
+                    "value": (
+                        f"{DISCORD_MARK} **[{system['name']}]({link})** ({system.get('security')})"
+                        f" · {system.get('region', '')}"
+                    ),
                     "inline": True,
                 }
             )
@@ -461,7 +469,8 @@ class NotificationService:
                 )
         zkb = d["zkb"]
         if zkb:
-            value = zkb["text"] + (f" — [zkillboard.com]({zkb['url']})" if zkb["url"] else "")
+            label = zkb["url"].removeprefix("https://").rstrip("/") if zkb["url"] else ""
+            value = zkb["text"] + (f" — {DISCORD_MARK} **[{label}]({zkb['url']})**" if zkb["url"] else "")
             fields.append({"name": "Kill check", "value": value[:1000]})
         who = ", ".join(characters)
         fields.append({"name": "Received by", "value": (who[:1000] + "…") if len(who) > 1000 else who or "?"})
@@ -476,6 +485,8 @@ class NotificationService:
         }
         if self.page_url:
             embed["url"] = self.page_url
+        if zkb and zkb["url"]:
+            embed["description"] = f"\U0001f4a5 **[Killmail on zKillboard]({zkb['url']})**"
         if row["timestamp"]:
             embed["timestamp"] = row["timestamp"]
         payload: dict[str, Any] = {"embeds": [embed]}

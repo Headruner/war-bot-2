@@ -15,6 +15,7 @@
   --high: #4acff3;
   --low: #de6a0c;
   --null: #b1325f;
+  --fuchsia: #ff00ff;
   --radius: 10px;
   font-family: "Segoe UI", Inter, system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
   color-scheme: dark;
@@ -314,6 +315,8 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
 .card.ntf .where-line { flex-wrap: wrap; }
 .zkb-line { font-size: 0.9em; margin-bottom: 6px; color: var(--muted, inherit); }
 .zkb-found { color: var(--ok, #2e7d32); }
+/* system name, structure type and zKillboard link stand out on every notification (NTF-34) */
+.card.ntf .ntf-hl { color: var(--fuchsia); font-weight: 600; }
 
 /* Thera / Turnur filter (UC-15) */
 .hub-toggle { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; white-space: nowrap; border: 0; margin: 0; padding: 0;

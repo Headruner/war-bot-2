@@ -158,7 +158,7 @@ function card(n) {
   const where = el("div", "where-line");
   where.append(el("b", null, "System"));
   if (n.system) {
-    where.append(secChip(n.system.security), el("span", null, n.system.name),
+    where.append(secChip(n.system.security), el("span", "ntf-hl", n.system.name),
       el("span", "small", `· ${n.system.region}`));
     const route = window.findRoute(n.system.name, n.system.space);
     if (route) where.append(route);
@@ -169,14 +169,14 @@ function card(n) {
   li.append(where);
   if (n.show_structure_type) {  // a notification that names no structure has no such line
     const kind = el("div", "where-line struct-type");
-    kind.append(el("b", null, "Structure type"), el("span", n.structure_type ? null : "small", n.structure_type || "Unknown"));
+    kind.append(el("b", null, "Structure type"), el("span", n.structure_type ? "ntf-hl" : "small", n.structure_type || "Unknown"));
     li.append(kind);
   }
   if (n.zkb) {  // asset safety only: the same wording as the Discord post
     const z = el("div", `zkb-line zkb-${n.zkb.status}`);
     z.append(el("span", null, n.zkb.text));
     if (n.zkb.url && /^https:\/\//.test(n.zkb.url)) {
-      const a = el("a", null, "zkillboard.com");
+      const a = el("a", "ntf-hl", "zkillboard.com");
       a.href = n.zkb.url;
       a.target = "_blank";
       a.rel = "noopener noreferrer";

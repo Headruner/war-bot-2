@@ -12,7 +12,7 @@ from test_notifications import A, B, FakeNotifier, item, push, stamp
 from common import AMARR, JITA, add_character
 from evedm.cli import main
 from evedm.db import SCHEMA_VERSION, Database
-from evedm.notifications import NotificationService, parse_body, structure_of
+from evedm.notifications import DISCORD_MARK, NotificationService, parse_body, structure_of
 from evedm.zkb_check import ZkbApi
 from fake_eve import FakeZkbApi
 
@@ -148,7 +148,7 @@ async def test_discord_names_the_structure_type(ns, services, http):
     await add_character(services, A)
     row = await moved(ns, services, http, 1, ntype="StructureUnderAttack")
     fields = {f["name"]: f["value"] for f in ns.embed_payload(row, ["Alpha"])["embeds"][0]["fields"]}
-    assert fields["Structure type"] == "Astrahus"
+    assert fields["Structure type"] == f"{DISCORD_MARK} **Astrahus**"
 
 
 async def test_unknown_type_names_are_asked_from_esi_in_one_batch(ns, services, http):
@@ -418,7 +418,9 @@ async def test_discord_is_posted_at_once_and_edited_when_the_check_ends(ns, serv
     row = await moved(ns, services, http, when=when)
     assert await ns.post_discord() == 1
     first = {f["name"]: f["value"] for f in ns.notifier.sent[0]["embeds"][0]["fields"]}
-    assert first["Kill check"] == "zKillboard: checking… (0 of 6)" and first["Structure type"] == "Astrahus"
+    assert first["Kill check"] == "zKillboard: checking… (0 of 6)"
+    assert first["Structure type"] == f"{DISCORD_MARK} **Astrahus**"
+    assert "description" not in ns.notifier.sent[0]["embeds"][0]
     t0 = check_of(ns, row)["received_at"]
     await ns.zkb_step(now=t0)  # nothing yet: the message is not touched
     assert ns.notifier.edits == []
@@ -429,9 +431,19 @@ async def test_discord_is_posted_at_once_and_edited_when_the_check_ends(ns, serv
     value = {f["name"]: f["value"] for f in payload["embeds"][0]["fields"]}["Kill check"]
     assert mid == "m1" and value == (
         f"zKillboard: Astrahus destroyed in Amarr at {time.strftime('%H:%M', time.gmtime(epoch(when) + 61))}"
-        " — [zkillboard.com](https://zkillboard.com/kill/51/)"
+        f" — {DISCORD_MARK} **[zkillboard.com/kill/51](https://zkillboard.com/kill/51/)**"
     )
+    assert payload["embeds"][0]["description"] == "\U0001f4a5 **[Killmail on zKillboard](https://zkillboard.com/kill/51/)**"
     assert "content" not in payload  # the asset safety group pings nobody, and an edit pings nobody again
+
+
+async def test_the_system_is_marked_and_bold_in_discord(ns, services, http, zkb):
+    await add_character(services, A)
+    ns.notifier = FakeNotifier()
+    await moved(ns, services, http)
+    assert await ns.post_discord() == 1
+    system = {f["name"]: f["value"] for f in ns.notifier.sent[0]["embeds"][0]["fields"]}["System"]
+    assert system.startswith(f"{DISCORD_MARK} **[Amarr](https://evemaps.dotlan.net/system/Amarr)**")
 
 
 async def test_a_check_that_finds_nothing_edits_the_message_with_the_closing_line(ns, services, http, zkb):
@@ -445,6 +457,7 @@ async def test_a_check_that_finds_nothing_edits_the_message_with_the_closing_lin
     assert len(ns.notifier.sent) == 1 and len(ns.notifier.edits) == 1
     value = {f["name"]: f["value"] for f in ns.notifier.edits[0][1]["embeds"][0]["fields"]}["Kill check"]
     assert value == "zKillboard: no Astrahus kill in Amarr within 5 min"
+    assert "description" not in ns.notifier.edits[0][1]["embeds"][0]
 
 
 async def test_the_result_is_in_the_first_post_when_the_check_ended_before_discord_posted(ns, services, http, zkb):
@@ -457,6 +470,7 @@ async def test_the_result_is_in_the_first_post_when_the_check_ended_before_disco
     await ns.post_discord()
     value = {f["name"]: f["value"] for f in ns.notifier.sent[0]["embeds"][0]["fields"]}["Kill check"]
     assert value.startswith("zKillboard: Astrahus destroyed in Amarr at ") and ns.notifier.edits == []
+    assert "https://zkillboard.com/kill/52/" in ns.notifier.sent[0]["embeds"][0]["description"]
 
 
 async def test_a_failed_discord_edit_is_tried_again(ns, services, http, zkb):
