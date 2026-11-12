@@ -658,6 +658,36 @@ def create_fake_app(
     return app
 
 
+class FakeZkbApi:
+    """zKillboard's kill list API (``/kills/systemID/{s}/shipTypeID/{t}/pastSeconds/{n}/``) behind an httpx mock
+    transport: ``kills`` is what the list answers, ``status`` forces an HTTP status, ``broken`` a network error;
+    every request is recorded with the time it was made."""
+
+    def __init__(self) -> None:
+        import httpx
+
+        self._httpx = httpx
+        self.kills: list[dict[str, Any]] = []
+        self.status = 200
+        self.broken = False
+        self.body: Any = None  # replaces the list when set (an odd answer)
+        self.requests: list[Any] = []
+        self.at: list[float] = []
+
+    def handler(self, request: Any) -> Any:
+        self.requests.append(request)
+        self.at.append(time.time())
+        if self.broken:
+            raise self._httpx.ConnectError("no route to zkillboard")
+        if self.status != 200:
+            return self._httpx.Response(self.status, text="slow down")
+        return self._httpx.Response(200, json=self.kills if self.body is None else self.body)
+
+    @property
+    def transport(self) -> Any:
+        return self._httpx.MockTransport(self.handler)
+
+
 def main() -> None:
     import uvicorn
 

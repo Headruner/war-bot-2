@@ -77,6 +77,15 @@ notifications:                              # notifications of every registered 
     mention_role_id: ${EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID:-}   # pinged on "structure attacked" only
     groups: []                              # groups to post; [] = the groups shown by default (below)
     max_age_min: 60                         # older notifications are never posted (no history flood)
+  zkb_check:                                # asset safety notifications: was a structure of that type killed in that system (zKillboard)?
+    enabled: true
+    types: [StructureItemsMovedToSafety]    # only this ESI notification type is checked (not the abandonment warning, not delivered items)
+    window_s: 300                           # the kill must be within +- this of the notification's timestamp
+    interval_s: 60                          # sequential check: first when stored, then every interval (killmails appear late)
+    duration_s: 300                         # ... until this long after the notification was received; then "not found"
+    api_enabled: true                       # fall back to zKillboard's API when the live feed has no match (fails soft)
+    api_url: https://zkillboard.com/api
+    min_api_gap_s: 10                       # at most one API request per this many seconds, over all checks
   # which groups are shown without a filter: asset_safety, structure_attack, structure_state, tower,
   # other_attacks, sovereignty (every other type ESI sends appears under "Other notifications")
   groups: [asset_safety, structure_attack, structure_state, tower]

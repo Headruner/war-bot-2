@@ -16,7 +16,7 @@ import logging
 import re
 import time
 from bisect import bisect_right
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import yaml
@@ -29,6 +29,8 @@ from .db import Database
 from .esi import EsiClient, EsiError
 from .sso import SsoError
 from .universe import GateGraph
+from .zkb_check import ZkbApi, ZkbError, kill_url, listed, match_feed, parse_time
+from .zkb_check import line as zkb_line
 
 log = logging.getLogger("evedm.notifications")
 # libyaml's safe loader parses a notification body several times faster than the pure Python one
@@ -93,8 +95,11 @@ TITLES = {
 _CAMEL = re.compile(r"(?<!^)(?=[A-Z])")
 _SYSTEM_KEYS = ("solarsystemID", "solarSystemID", "solarsystemid", "systemID", "solar_system_id")
 _STRUCTURE_KEYS = ("structureID", "structureId", "structure_id")
-_TYPE_KEYS = ("structureTypeID", "structureTypeId", "typeID", "structure_type_id")
 _MOON_KEYS = ("moonID", "moonId")
+_STRUCTURE_TYPE_KEYS = ("structureTypeID", "structureTypeId", "structure_type_id")
+_SHOWINFO = re.compile(r"showinfo:(\d+)//(\d+)")
+TYPE_ID_GROUPS = ("tower", "other_attacks")  # ``typeID`` is the structure itself only in these (towers, orbitals...)
+TYPE_NAME_RETRY_S = 3600.0  # a type ESI could not name is not asked again for this long
 
 
 def _first(body: dict[str, Any], keys: tuple[str, ...]) -> int | None:
@@ -107,6 +112,47 @@ def _first(body: dict[str, Any], keys: tuple[str, ...]) -> int | None:
         if isinstance(value, str) and value.strip().lstrip("-").isdigit():
             return int(value)
     return None
+
+
+def _int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value)
+    return None
+
+
+def structure_of(ntype: str, body: dict[str, Any]) -> tuple[int | None, int | None]:
+    """(structure_id, structure type ID) of a notification body. The type is read where the game puts it:
+    ``structureShowInfoData`` ([showinfo, typeID, structureID]), ``structureTypeID``, the ``showinfo:type//id`` of
+    ``structureLink`` and, for towers and the other group of attacked orbitals, ``typeID``."""
+    structure_id = _first(body, _STRUCTURE_KEYS)
+    type_id: int | None = None
+    info = body.get("structureShowInfoData")
+    if isinstance(info, (list, tuple)) and len(info) >= 2:
+        type_id = _int(info[1])
+        if structure_id is None and len(info) >= 3:
+            structure_id = _int(info[2])
+    if type_id is None:
+        type_id = _first(body, _STRUCTURE_TYPE_KEYS)
+    if type_id is None or structure_id is None:
+        link = _SHOWINFO.search(str(body.get("structureLink") or ""))
+        if link:
+            type_id = type_id if type_id is not None else int(link.group(1))
+            structure_id = structure_id if structure_id is not None else int(link.group(2))
+    if type_id is None and GROUP_OF.get(ntype) in TYPE_ID_GROUPS:
+        type_id = _first(body, ("typeID",))
+    return structure_id, type_id
+
+
+def _f(row: Any, key: str) -> Any:
+    """A field of a database row or a plain dict; None when the row has no such column."""
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
 
 
 def parse_body(text: str) -> dict[str, Any]:
@@ -164,6 +210,15 @@ class NotificationService:
         self._meta: dict[int, Any] = {}  # character_id -> ResponseMeta of the read in progress
         self._max_delay: dict[int, float | None] = {}
         self._post_lock = asyncio.Lock()
+        self.zkb: ZkbApi | None = None  # zKillboard's API, attached by the app (the live feed comes from the database)
+        self._zkb_task: asyncio.Task[None] | None = None
+        self._zkb_wake = asyncio.Event()
+        self._zkb_running = False
+        self._zkb_unedited: set[str] = set()  # events whose Discord message still shows an old zKillboard line
+        self._type_wanted: set[int] = set()  # structure types seen on a view whose name is not known yet
+        self._type_failed: dict[int, float] = {}
+        self._type_retry_at = 0.0
+        self._body_types: dict[tuple[int, int], int | None] = {}
         self._post_retry_at = 0.0
         self._eligible_n: int | None = None
         self._lag_cache: tuple[float, dict[str, Any]] | None = None
@@ -264,6 +319,8 @@ class NotificationService:
             if int(item["notification_id"]) in known:
                 continue
             body = parse_body(str(item.get("text") or ""))
+            ntype = str(item.get("type") or "Unknown")
+            structure_id, structure_type_id = structure_of(ntype, body)
             system_id = _first(body, _SYSTEM_KEYS)
             if system_id is None:
                 moon_id = _first(body, _MOON_KEYS)
@@ -279,11 +336,13 @@ class NotificationService:
                     "timestamp": str(item.get("timestamp") or ""),
                     "body": str(item.get("text") or "")[:4000],
                     "solar_system_id": system_id,
-                    "structure_id": _first(body, _STRUCTURE_KEYS),
-                    "structure_type_id": _first(body, _TYPE_KEYS),
+                    "structure_id": structure_id,
+                    "structure_type_id": structure_type_id,
                 }
             )
         new = self.db.save_notifications(rows) if rows else 0
+        if new:
+            self._start_zkb_checks(rows)
         known.update(r["notification_id"] for r in rows)
         self._max_delay[character_id] = max((self._age_s(r["timestamp"]) for r in rows), default=None)
         self.state["read"] += len(items or [])
@@ -376,6 +435,8 @@ class NotificationService:
         d = self.describe(row)
         system = d["system"]
         fields: list[dict[str, Any]] = []
+        if d["structure_type"]:  # unknown: no field (the page says "Unknown")
+            fields.append({"name": "Structure type", "value": d["structure_type"][:1000], "inline": True})
         if system:
             link = f"https://evemaps.dotlan.net/system/{system['name'].replace(' ', '_')}"
             fields.append(
@@ -398,6 +459,10 @@ class NotificationService:
                         "inline": True,
                     }
                 )
+        zkb = d["zkb"]
+        if zkb:
+            value = zkb["text"] + (f" — [zkillboard.com]({zkb['url']})" if zkb["url"] else "")
+            fields.append({"name": "Kill check", "value": value[:1000]})
         who = ", ".join(characters)
         fields.append({"name": "Received by", "value": (who[:1000] + "…") if len(who) > 1000 else who or "?"})
         if self.page_url:
@@ -525,6 +590,221 @@ class NotificationService:
             self.state["last_error"] = redact(repr(exc))
             log.exception("notification post failed")
 
+    # -- structure type names ------------------------------------------------------------------------------
+    async def resolve_type_names(self) -> int:
+        """Name the structure types the views asked for and the database does not know: one batched ESI call for
+        all of them (never one per notification), kept in ``type_names``. A failure is retried after ``retry_s``."""
+        if not self._type_wanted or self.esi is None or self.demo or time.time() < self._type_retry_at:
+            return 0
+        ids = sorted(self._type_wanted)[:200]
+        now = time.time()
+        try:
+            named = await self.esi.names(ids)
+        except Exception as exc:
+            if isinstance(exc, EsiError) and exc.status == 404:  # an ID ESI does not know: not asked for a while
+                self._type_failed.update({t: now + TYPE_NAME_RETRY_S for t in ids})
+                self._type_wanted.difference_update(ids)
+            else:
+                self._type_retry_at = now + self.s.retry_s
+            log.warning("structure type names could not be read: %s", redact(repr(exc)))
+            return 0
+        found = {i: n for i, n in named.items() if n}
+        if found:
+            self.db.save_type_names(found)
+            self._bump()  # the page shows the names at once
+        self._type_wanted.difference_update(ids)
+        self._type_failed.update({t: now + TYPE_NAME_RETRY_S for t in ids if t not in found})
+        return len(found)
+
+    # -- zKillboard check of asset safety notifications (NTF-27..NTF-33) ---------------------------------------
+    def _start_zkb_checks(self, rows: list[dict[str, Any]]) -> None:
+        """One check per event for the notifications just stored: the same event reaches several characters, and
+        the first copy starts it. A notification that cannot be checked is recorded as skipped."""
+        z = self.s.zkb_check
+        if not z.enabled or not z.types:
+            return
+        started = False
+        now = time.time()
+        for r in rows:
+            if r["type"] not in z.types:
+                continue
+            key = self.event_key(r)
+            if self.db.zkb_check(key) is not None:
+                continue
+            type_id = self.view_context([r])["types"].get((r["character_id"], r["notification_id"]))
+            event_at = parse_time(r["timestamp"])
+            skip = None
+            if not r.get("solar_system_id"):
+                skip = "no solar system in the notification"
+            elif not type_id:
+                skip = "structure type unknown"
+            elif event_at is None:
+                skip = "no notification time"
+            elif now - event_at > z.window_s + z.duration_s:
+                skip = "history: older than the check window"  # the first read of a long-lived list
+            self.db.create_zkb_check(
+                event_key=key,
+                notification_type=r["type"],
+                solar_system_id=r.get("solar_system_id"),
+                structure_type_id=type_id,
+                event_at=event_at,
+                received_at=now,
+                status="skipped" if skip else "pending",
+                planned=int(z.duration_s // z.interval_s) + 1,
+                next_check_at=None if skip else now,
+                deadline_at=now + z.duration_s,
+                error=skip,
+                character_id=r["character_id"],
+                notification_id=r["notification_id"],
+            )
+            started = started or not skip
+        if started:
+            self._zkb_wake.set()
+        self.zkb_refresh_counts()
+
+    def zkb_report(self, since: float) -> dict[str, Any]:
+        """The zKillboard checks of the period for ``lag`` and ``evedm notifications lag``: counts by outcome,
+        the checks that met an API problem and the API's own counters (None when this process has no API)."""
+        z = self.s.zkb_check
+        counts: dict[str, Any] = self.db.zkb_counts(since)
+        counts["enabled"] = z.enabled
+        counts["types"] = list(z.types)
+        counts["api"] = dict(self.zkb.stats) if self.zkb is not None else None
+        return counts
+
+    def zkb_refresh_counts(self) -> dict[str, Any]:
+        """Counts of the last day's checks, kept in ``state`` for the page and the health output."""
+        counts: dict[str, Any] = self.db.zkb_counts(time.time() - 86400)
+        counts["api"] = dict(self.zkb.stats) if self.zkb is not None else None
+        self.state["zkb_check"] = counts
+        return counts
+
+    def zkb_wait(self, now: float | None = None) -> float | None:
+        """Seconds until the next pending check is due (0 or less: due now); None when nothing is pending."""
+        now = time.time() if now is None else now
+        due = [c["next_check_at"] for c in self.db.pending_zkb_checks() if c["next_check_at"] is not None]
+        return min(due) - now if due else None
+
+    async def zkb_step(self, now: float | None = None) -> int:
+        """Make every check that is due; returns how many. Expired ones (the service was down past their
+        deadline) close as not found."""
+        z = self.s.zkb_check
+        if not z.enabled:
+            return 0
+        done = 0
+        for key in sorted(self._zkb_unedited):  # a Discord edit that failed is tried again
+            await self._zkb_edit_discord(key)
+        for c in self.db.pending_zkb_checks():
+            at = time.time() if now is None else now
+            if c["next_check_at"] is not None and c["next_check_at"] > at:
+                continue
+            await self._zkb_check_one(c, at)
+            done += 1
+        self.zkb_refresh_counts()
+        return done
+
+    async def _zkb_check_one(self, c: Any, now: float) -> None:
+        z = self.s.zkb_check
+        key = c["event_key"]
+        if now > (c["deadline_at"] or 0) + z.interval_s:  # due long ago: the service was not running
+            self.db.update_zkb_check(key, status="not_found", next_check_at=None, error=c["error"] or "expired")
+            await self._zkb_closed(key)
+            return
+        hit: tuple[int, str, str] | None = None
+        error: str | None = None
+        rows = self.db.destroyed_structures(c["solar_system_id"], c["structure_type_id"])
+        feed = match_feed(rows, c["event_at"], z.window_s)
+        if feed is not None:
+            hit = (feed["killmail_id"], feed["killmail_time"], "feed")
+        elif self.zkb is not None and z.api_enabled and self.zkb.ready_in(now) <= 0:
+            try:
+                hit, error = await self._zkb_api(c, now)
+            except ZkbError as exc:
+                error = redact(str(exc))[:200]
+                log.warning("zKillboard check %s: %s (the feed alone decides this round)", key, error)
+        fields: dict[str, Any] = {"checks": c["checks"] + 1}
+        if error:
+            fields["error"] = error
+        if hit is not None:
+            kid, ktime, source = hit
+            fields.update(status="found", next_check_at=None, killmail_id=kid, killmail_time=ktime,
+                          zkb_url=kill_url(kid), source=source)
+        elif now >= (c["deadline_at"] or 0):
+            fields.update(status="not_found", next_check_at=None)
+        else:
+            fields["next_check_at"] = min(now + z.interval_s, c["deadline_at"])
+        self.db.update_zkb_check(key, **fields)
+        self._bump()  # the page shows the progress
+        if "status" in fields:
+            await self._zkb_closed(key)
+
+    async def _zkb_api(self, c: Any, now: float) -> tuple[tuple[int, str, str] | None, str | None]:
+        """Ask zKillboard's API for kills of the type in the system; a killmail whose list entry has no time is
+        read from ESI (at most ``max_resolve`` per check). Returns (hit, soft error)."""
+        z = self.s.zkb_check
+        assert self.zkb is not None
+        window_start = c["event_at"] - z.window_s
+        kills = await self.zkb.kills(c["solar_system_id"], c["structure_type_id"], now - window_start + 1, now)
+        best: tuple[float, tuple[int, str, str]] | None = None
+        error: str | None = None
+        resolved = 0
+        for kill in kills[:50]:
+            kid, khash, ktime, vtype, vsystem = listed(kill)
+            if kid is None or (vtype is not None and vtype != c["structure_type_id"]):
+                continue
+            if vsystem is not None and vsystem != c["solar_system_id"]:
+                continue
+            if ktime is None:
+                if not khash or resolved >= z.max_resolve or self.esi is None:
+                    continue
+                resolved += 1
+                try:
+                    km = await self.esi.get(f"/killmails/{kid}/{khash}")
+                except EsiError as exc:
+                    error = f"ESI killmail {kid}: HTTP {exc.status}"
+                    continue
+                ktime = parse_time((km or {}).get("killmail_time"))
+                victim = (km or {}).get("victim") or {}
+                if ktime is None or victim.get("ship_type_id") != c["structure_type_id"]:
+                    continue
+                if (km or {}).get("solar_system_id") != c["solar_system_id"]:
+                    continue
+            gap = abs(ktime - c["event_at"])
+            if gap <= z.window_s and (best is None or gap < best[0]):
+                stamp = datetime.fromtimestamp(ktime, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+                best = (gap, (kid, stamp, "api"))
+        return (best[1] if best else None), error
+
+    async def _zkb_closed(self, key: str) -> None:
+        self._zkb_unedited.add(key)
+        await self._zkb_edit_discord(key)
+
+    async def _zkb_edit_discord(self, key: str) -> None:
+        """The Discord message of the event shows the final zKillboard line: the existing message is edited, no
+        message is sent and nobody is pinged again. Nothing posted (Discord off, or not yet): the post made later
+        is built from the final state."""
+        from .wars.discord import NotifyError, WebhookInvalid
+
+        if self.notifier is None:
+            self._zkb_unedited.discard(key)
+            return
+        async with self._post_lock:
+            post = self.db.notification_post(key)
+            check = self.db.zkb_check(key)
+            if post is None or not post["message_id"] or check is None:
+                self._zkb_unedited.discard(key)
+                return
+            row = self.db.notification_row(check["character_id"], check["notification_id"])
+            if row is None:
+                self._zkb_unedited.discard(key)
+                return
+            try:
+                await self.notifier.edit(post["message_id"], self.embed_payload(row, json.loads(post["characters"])))
+            except (NotifyError, WebhookInvalid) as exc:  # tried again with the next step
+                log.warning("zKillboard line could not be edited into Discord: %s", redact(str(exc)))
+                return
+            self._zkb_unedited.discard(key)
+
     async def poll_once(self, post: bool = False) -> int:
         """One round: every character whose cached copy has expired (NTF-03). With ``post`` the new notifications
         of each character go to Discord the moment that character has been read."""
@@ -588,11 +868,16 @@ class NotificationService:
         """How long the loop may sleep: until the next character is due (one that was never read is due now), at
         most ``poll_s`` so that new or changed characters are noticed."""
         eligible = self.eligible()
-        if not eligible:
-            return self.s.poll_s
-        checks = self.db.notification_checks()
         now = time.time()
+        zkb = self.zkb_wait(now) if self.s.zkb_check.enabled else None
+        if zkb is not None and self._zkb_running:
+            zkb = max(zkb, MIN_REARM_S)  # the check in flight is on its own task: no spinning until it is stored
+        if not eligible:
+            return min(self.s.poll_s, max(MIN_SLEEP_S, zkb)) if zkb is not None else self.s.poll_s
+        checks = self.db.notification_checks()
         wait = min((checks[c]["next_check_at"] if c in checks else 0.0) for c in eligible) - now
+        if zkb is not None:
+            wait = min(wait, zkb)  # a pending zKillboard check is due then
         if self.notifier is not None and self._post_pending and self._post_retry_at > now:
             wait = min(wait, self._post_retry_at - now)  # a failed Discord post is tried again when it is due
         return min(self.s.poll_s, max(MIN_SLEEP_S, wait))
@@ -745,6 +1030,7 @@ class NotificationService:
                 "not_read_last_hour": sorted(c for c in eligible if c not in recent),
             },
             "reading": {"dominant": dominant, "text": text, "thresholds": thresholds},
+            "zkb_check": self.zkb_report(now - hours * 3600),
         }
 
     def lag_brief(self, hours: float = 24.0) -> dict[str, Any]:
@@ -769,6 +1055,7 @@ class NotificationService:
             "excluded_by_gate": len(full["characters"]["excluded_by_gate"]),
             "not_read_last_hour": len(full["characters"]["not_read_last_hour"]),
             "reading": full["reading"]["dominant"],
+            "zkb_check": full["zkb_check"],
         }
         self._lag_cache = (now, brief)
         return brief
@@ -805,10 +1092,66 @@ class NotificationService:
             )
         return groups
 
-    def describe(self, row: Any, names: dict[int, str] | None = None) -> dict[str, Any]:
+    def _body_type(self, row: Any) -> int | None:
+        """The structure type in the stored body of a row that has none in its column (stored before the type was
+        read from this body shape): derived when viewed, never written back."""
+        key = (row["character_id"], row["notification_id"])
+        if key not in self._body_types:
+            if len(self._body_types) > 5000:
+                self._body_types.clear()
+            body = _f(row, "body")
+            self._body_types[key] = structure_of(row["type"], parse_body(body))[1] if body else None
+        return self._body_types[key]
+
+    def view_context(self, rows: list[Any]) -> dict[str, Any]:
+        """What the views of ``rows`` need beyond the rows: the structure type of each (body, then the scout's
+        structure, then the public structure history), the type names the app already knows and the state of the
+        zKillboard checks. Database only; a name not known yet is queued for ``resolve_type_names``."""
+        types: dict[tuple[int, int], int | None] = {}
+        for r in rows:
+            types[(r["character_id"], r["notification_id"])] = _f(r, "structure_type_id") or self._body_type(r)
+        lookup = {
+            r["structure_id"]
+            for r in rows
+            if _f(r, "structure_id") and not types[(r["character_id"], r["notification_id"])]
+        }
+        by_structure = self.db.structure_types(sorted(lookup)) if lookup else {}
+        for r in rows:
+            key = (r["character_id"], r["notification_id"])
+            if not types[key] and _f(r, "structure_id"):
+                types[key] = by_structure.get(r["structure_id"])
+        ids = sorted({t for t in types.values() if t})
+        names = self.db.structure_type_names(ids) if ids else {}
+        now = time.time()
+        self._type_wanted |= {t for t in ids if t not in names and self._type_failed.get(t, 0.0) <= now}
+        wanted = set(self.s.zkb_check.types) if self.s.zkb_check.enabled else set()
+        keys = [self.event_key(r) for r in rows if r["type"] in wanted]
+        return {"types": types, "names": names, "zkb": self.db.zkb_checks(keys) if keys else {}}
+
+    def _zkb_view(
+        self, row: Any, ctx: dict[str, Any], system: dict[str, Any] | None, type_name: str
+    ) -> dict[str, Any] | None:
+        check = ctx["zkb"].get(self.event_key(row)) if row["type"] in self.s.zkb_check.types else None
+        if check is None:
+            return None
+        shown = zkb_line(check, system["name"] if system else "", type_name, self.s.zkb_check.window_s)
+        if shown is None:
+            return None
+        shown.update(checks=check["checks"], planned=check["planned"], next_check_at=check["next_check_at"])
+        return shown
+
+    def describe(
+        self, row: Any, names: dict[int, str] | None = None, ctx: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """One notification as the page and Discord show it. ``ctx`` is ``view_context`` of the whole list (one
+        lookup for all rows); without it the row is looked up on its own."""
         idx = self.g.index.get(row["solar_system_id"]) if row["solar_system_id"] else None
         system = self.g.describe(idx) if idx is not None else None
         ntype = row["type"]
+        if ctx is None:
+            ctx = self.view_context([row])
+        type_id = ctx["types"].get((row["character_id"], row["notification_id"]))
+        type_name = ctx["names"].get(type_id) if type_id else None
         return {
             "notification_id": row["notification_id"],
             "character_id": row["character_id"],
@@ -820,7 +1163,10 @@ class NotificationService:
             "system": system,
             "system_index": idx,
             "structure_id": row["structure_id"],
-            "structure_type_id": row["structure_type_id"],
+            "structure_type_id": type_id,
+            "structure_type": type_name,
+            "show_structure_type": bool(row["structure_id"] or type_id),
+            "zkb": self._zkb_view(row, ctx, system, type_name or ""),
         }
 
     def recent(
@@ -843,6 +1189,7 @@ class NotificationService:
                     self.state["last_error"] = redact(repr(exc))
                     log.exception("notification poll failed")
                 self.state["polls"] += 1
+                await self.resolve_type_names_soft()
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=self.sleep_s())
                 except TimeoutError:
@@ -850,7 +1197,36 @@ class NotificationService:
         finally:
             self.state["running"] = False
 
+    async def resolve_type_names_soft(self) -> None:
+        try:
+            await self.resolve_type_names()
+        except Exception:  # names are a nicety
+            log.warning("structure type names could not be resolved", exc_info=True)
+
+    async def _zkb_loop(self) -> None:
+        """The zKillboard checks run on their own task, so a slow API never holds up a read of ESI."""
+        self.zkb_refresh_counts()
+        while not self._stop.is_set():
+            self._zkb_running = True
+            try:
+                with activity("notifications.zkb_check"):
+                    await self.zkb_step()
+            except Exception as exc:  # one bad round must not stop the checks
+                self.state["last_error"] = redact(repr(exc))
+                log.exception("zKillboard check failed")
+            finally:
+                self._zkb_running = False
+            wait = self.zkb_wait()
+            self._zkb_wake.clear()
+            timeout = self.s.poll_s if wait is None else min(self.s.poll_s, max(MIN_SLEEP_S, wait))
+            try:
+                await asyncio.wait_for(self._zkb_wake.wait(), timeout=timeout)
+            except TimeoutError:
+                pass
+
     def start(self) -> None:
+        if self._zkb_task is None and self.s.zkb_check.enabled:
+            self._zkb_task = asyncio.ensure_future(self._zkb_loop())
         if self._task is None:
             log.info("notifications started (every %.0f s, ESI caches each character %.0f s)",
                      self.s.poll_s, self.s.character_interval_s)
@@ -858,6 +1234,15 @@ class NotificationService:
 
     async def stop(self) -> None:
         self._stop.set()
+        self._zkb_wake.set()
+        if self._zkb_task is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(self._zkb_task), timeout=10)
+            except TimeoutError:
+                self._zkb_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._zkb_task
+            self._zkb_task = None
         self._bump()  # let go of the pages that are waiting
         if self._task is not None:
             try:

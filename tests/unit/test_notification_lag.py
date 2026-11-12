@@ -214,7 +214,7 @@ def test_an_old_database_gets_the_read_log_in_place(tmp_path):
     con.commit()
     con.close()
     d = Database(path)
-    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 18
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 19
     assert d.query("SELECT COUNT(*) FROM notification_reads")[0][0] == 0
     assert d.notification_checks()[5]["next_check_at"] == 9.0  # what was there is kept
     cols = [r[1] for r in d.query("PRAGMA table_info(notification_reads)")]

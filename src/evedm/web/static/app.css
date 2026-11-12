@@ -312,6 +312,8 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
 .card.ntf, .ntf-groups, .page p code { overflow-wrap: anywhere; }
 .ntf-head .badge { white-space: normal; overflow-wrap: anywhere; max-width: 100%; }
 .card.ntf .where-line { flex-wrap: wrap; }
+.zkb-line { font-size: 0.9em; margin-bottom: 6px; color: var(--muted, inherit); }
+.zkb-found { color: var(--ok, #2e7d32); }
 
 /* Thera / Turnur filter (UC-15) */
 .hub-toggle { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; white-space: nowrap; border: 0; margin: 0; padding: 0;

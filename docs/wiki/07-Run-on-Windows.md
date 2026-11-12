@@ -283,6 +283,13 @@ to the system, and the three closest characters from *your* **Characters** set a
   role on attacks: `EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID`; off: `EVEDM_NOTIFICATIONS_DISCORD_ENABLED=0`.
   Nothing older than an hour is posted, so switching it on does not flood the channel. Everyone in that channel
   sees the notifications of all registered characters.
+- **Structure type**: every notification that names a structure shows its type (Astrahus, Fortizar...), "Unknown" if
+  neither the notification nor the structures the app knows give it.
+- **zKillboard check** (only "items moved to asset safety"): the card and the Discord message say whether a killmail
+  of that structure type appeared in that system within 5 minutes of the notification. Killmails arrive late, so it
+  checks every minute for 5 minutes ("checking... (2 of 6)"); the Discord message is edited when the check ends.
+  "No kill" can also mean the owner unanchored the structure. Switch it off with
+  `EVEDM_NOTIFICATIONS_ZKB_CHECK_ENABLED=0` (or `notifications.zkb_check.enabled: false`).
 - Notifications are kept 30 days (`notifications.retention_days`). Switch the section off with
   `EVEDM_NOTIFICATIONS_ENABLED=0`.
 

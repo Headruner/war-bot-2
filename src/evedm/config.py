@@ -504,6 +504,8 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
     "EVEDM_ALERTS_BIG_KILLS_ONLY": ("alerts", "big_kills_only"),
     "EVEDM_NOTIFICATIONS_MIN_STRUCTURES": ("notifications", "min_structures"),
     "EVEDM_NOTIFICATIONS_DISCORD_ENABLED": ("notifications", "discord", "enabled"),
+    "EVEDM_NOTIFICATIONS_ZKB_CHECK_ENABLED": ("notifications", "zkb_check", "enabled"),
+    "EVEDM_NOTIFICATIONS_ZKB_CHECK_API_ENABLED": ("notifications", "zkb_check", "api_enabled"),
     "EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK": ("notifications", "discord", "webhook_url"),
     "EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID": ("notifications", "discord", "mention_role_id"),
     "EVEDM_ACCESS_ALLIANCES": ("access", "alliance_ids"),

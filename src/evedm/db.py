@@ -875,9 +875,12 @@ class Database:
         fields.setdefault("updated_at", time.time())
         cols = ",".join(fields)
         marks = ",".join("?" * len(fields))
-        return bool(
-            self.execute(f"INSERT OR IGNORE INTO notification_zkb({cols}) VALUES({marks})", tuple(fields.values()))  # noqa: S608
-        )
+        with self.tx() as c:  # rowcount, not lastrowid: an ignored insert leaves the last row ID of the connection
+            cur = c.execute(
+                f"INSERT OR IGNORE INTO notification_zkb({cols}) VALUES({marks})",  # noqa: S608 - column names are ours
+                tuple(fields.values()),
+            )
+            return cur.rowcount > 0
 
     def update_zkb_check(self, event_key: str, **fields: Any) -> None:
         fields["updated_at"] = time.time()
@@ -924,7 +927,10 @@ class Database:
             chunk = ids[start : start + 900]
             marks = ",".join("?" * len(chunk))
             for table in ("known_structures", "public_structure_history"):
-                sql = f"SELECT structure_id, type_id FROM {table} WHERE type_id IS NOT NULL AND structure_id IN ({marks})"  # noqa: S608
+                sql = (
+                    f"SELECT structure_id, type_id FROM {table} "  # noqa: S608 - table names are literals above
+                    f"WHERE type_id IS NOT NULL AND structure_id IN ({marks})"
+                )
                 for sid, tid in self.query(sql, tuple(chunk)):
                     out.setdefault(sid, tid)
         return out

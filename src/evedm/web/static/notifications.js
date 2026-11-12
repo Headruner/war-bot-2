@@ -167,6 +167,23 @@ function card(n) {
     where.append(el("span", "small", "not named in this notification"));
   }
   li.append(where);
+  if (n.show_structure_type) {  // a notification that names no structure has no such line
+    const kind = el("div", "where-line struct-type");
+    kind.append(el("b", null, "Structure type"), el("span", n.structure_type ? null : "small", n.structure_type || "Unknown"));
+    li.append(kind);
+  }
+  if (n.zkb) {  // asset safety only: the same wording as the Discord post
+    const z = el("div", `zkb-line zkb-${n.zkb.status}`);
+    z.append(el("span", null, n.zkb.text));
+    if (n.zkb.url && /^https:\/\//.test(n.zkb.url)) {
+      const a = el("a", null, "zkillboard.com");
+      a.href = n.zkb.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      z.append(document.createTextNode(" — "), a);
+    }
+    li.append(z);
+  }
   li.append(el("div", "small when", eveTime(n.timestamp)));
 
   const box = el("div", "closest");

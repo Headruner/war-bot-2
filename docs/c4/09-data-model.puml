@@ -116,6 +116,27 @@ entity notification_posts {
   characters : TEXT (JSON names)
   created_at : REAL
 }
+entity notification_zkb {
+  * event_key : TEXT <<PK>> (as notification_posts, v19)
+  --
+  notification_type : TEXT
+  solar_system_id : INTEGER
+  structure_type_id : INTEGER
+  event_at : REAL (the notification's time)
+  received_at : REAL
+  status : pending | found | not_found | skipped
+  planned : INTEGER
+  checks : INTEGER
+  next_check_at : REAL
+  deadline_at : REAL
+  killmail_id : INTEGER
+  killmail_time : TEXT
+  zkb_url : TEXT
+  source : feed | api
+  error : TEXT (last zKillboard API problem)
+  character_id : INTEGER
+  notification_id : INTEGER
+}
 entity notification_characters {
   * character_id : INTEGER <<PK>>
   --
@@ -219,6 +240,7 @@ characters ||--o| snapshots
 characters ||--o{ character_notifications
 characters ||--o| notification_characters
 characters ||--o{ notification_reads
+notification_posts ||--o| notification_zkb : same event_key
 characters ||--o| scout_characters
 characters ||--o| ansiblex_characters
 characters ||--o{ ansiblex_access

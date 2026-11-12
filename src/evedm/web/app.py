@@ -45,6 +45,7 @@ from ..universe import GateGraph
 from ..wars.config import WarsSettings, load_wars_settings
 from ..wars.demo import DEMO_CENSUS, DEMO_WARS, seed_demo_census, seed_demo_wars
 from ..wars.service import WarService
+from ..zkb_check import ZkbApi
 
 log = logging.getLogger("evedm.web")
 SESSION_RENEW_S = 86400
@@ -154,6 +155,14 @@ def build_services(settings: Settings) -> Services:
         svc.notifications = NotificationService(
             settings.notifications, db, graph, chars, esi, demo=settings.demo
         )
+        z = settings.notifications.zkb_check
+        if z.enabled and z.api_enabled and not settings.demo:
+            contact = f"; {settings.alerts.contact}" if settings.alerts.contact else ""
+            svc.notifications.zkb = ZkbApi(
+                z.api_url,
+                f"EVE-Distance-Meter/{__version__} (notification kill check{contact})",
+                min_gap_s=z.min_api_gap_s,
+            )
         if settings.demo:
             seeded = seed_demo_notifications(db, graph)
             if seeded:
@@ -285,6 +294,8 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                 await svc.looplag.stop()
             if svc.notifications is not None:
                 await svc.notifications.stop()
+                if svc.notifications.zkb is not None:
+                    await svc.notifications.zkb.close()
             if svc.alerts is not None:
                 await svc.alerts.stop()
             if svc.scout is not None:
@@ -570,6 +581,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                     "running": svc.notifications.state["running"],
                     "polls": svc.notifications.state["polls"],
                     "lag": svc.notifications.lag_brief(),
+                    "zkb_check": svc.notifications.state.get("zkb_check"),
                 },
                 "alerts": None
                 if svc.alerts is None
@@ -740,8 +752,9 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             return per_system[idx]
 
         items = []
+        view = ns.view_context(rows)  # structure types and zKillboard checks of all rows at once
         for r in rows:
-            item = ns.describe(r, names)
+            item = ns.describe(r, names, view)
             item["main"] = mains.get(sources.get(r["character_id"], -1))
             idx = item.pop("system_index")
             item["closest"], item["hub"], item["closest_static"] = (
