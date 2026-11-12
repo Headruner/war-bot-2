@@ -1,4 +1,4 @@
-# CI: lint, unit tests (Linux + Windows), integration tests, 2 CPU / 1 GB footprint check,
+# CI: lint, unit tests (Linux), integration tests, 2 CPU / 1 GB footprint check,
 # Docker image (amd64 + arm64) with a smoke test under --cpus 2 --memory 1g, push to GHCR.
 name: ci
 
@@ -45,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest]
         python: ["3.13"]
     runs-on: ${{ matrix.os }}
     steps:

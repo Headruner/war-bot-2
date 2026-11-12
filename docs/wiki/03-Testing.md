@@ -208,4 +208,4 @@ In CI every job uploads these folders as artifacts.
 
 ## Where the tests run
 
-The full suite (lint, unit on Linux and Windows, integration + browser, footprint, image smoke test) runs in the GitHub `ci` workflow on **Python 3.13 only**. Locally use Python 3.13 (`pip install -r requirements-dev.txt && pip install -e . --no-deps`, `python -m pytest tests/unit`).
+The full suite (lint, unit on Linux, integration + browser, footprint, image smoke test) runs in the GitHub `ci` workflow on **Python 3.13 only**. Locally use Python 3.13 (`pip install -r requirements-dev.txt && pip install -e . --no-deps`, `python -m pytest tests/unit`).

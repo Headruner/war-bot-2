@@ -398,7 +398,7 @@ scripts/render-diagrams.sh           # C4 diagrams (PlantUML) -> docs/diagrams (
 python scripts/build_structure_index.py   # local structure index -> data/structure-index.jsonl (see docs/wiki/06)
 ```
 
-CI (`.github/workflows/ci.yml`): lint → unit (Linux + Windows, Python 3.13 only) → integration + browser → footprint →
+CI (`.github/workflows/ci.yml`): lint → unit (Linux, Python 3.13 only) → integration + browser → footprint →
 image build, smoke test under `--cpus 2 --memory 1g`, container footprint, image tarball artifact, multi-arch push to GHCR.
 
 ## Guidelines
