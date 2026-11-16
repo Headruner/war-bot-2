@@ -482,6 +482,121 @@ async function init() {
   render();
 }
 
+/* ---------------------------------------------------------------- Characters tab */
+let chars = null;        // last /api/settings/characters answer
+const APP_LABEL = { main: "evedm", legacy: "legacy", other: "other app", none: "no token" };
+const SHOWN = 6;         // permissions shown before "+N"
+
+function charRow(c) {
+  const tr = el("tr");
+  const who = el("td");
+  who.append(el("div", null, c.name), el("div", "sub", String(c.character_id)));
+  const main = el("td");
+  main.append(el("div", null, c.owner_name));
+  if (c.owner_id) main.append(el("div", "sub", String(c.owner_id)));
+  const st = el("td");
+  const badge = el("span", `badge ${c.status === "OK" ? "online" : c.status === "LIMITED" ? "limited" : "err"}`, c.status);
+  st.append(badge);
+  const app = el("td", null, APP_LABEL[c.app] || c.app);
+  if (c.app === "legacy" && !(chars.legacy_client.client_id && chars.legacy_client.secret_set)) {
+    app.append(el("div", "sub", "waiting for the application"));
+  }
+  const perms = el("td");
+  perms.title = c.scopes.join("\n");
+  for (const m of c.missing) {
+    const s = el("span", "perm missing", `no ${m}`);
+    s.title = "required, not granted";
+    perms.append(s);
+  }
+  for (const p of c.permissions.slice(0, SHOWN)) perms.append(el("span", "perm", p));
+  if (c.permissions.length > SHOWN) {
+    const more = el("span", "perm more", `+${c.permissions.length - SHOWN}`);
+    more.title = c.permissions.slice(SHOWN).join(", ");
+    perms.append(more);
+  }
+  if (!c.permissions.length) perms.append(el("span", "sub", "none"));
+  const tags = el("td", "hide-sm", c.tags.join(", "));
+  tr.append(who, main, st, app, perms, tags);
+  tr.dataset.text = [c.name, c.character_id, c.owner_name, c.status, APP_LABEL[c.app], ...c.tags, ...c.permissions,
+    ...c.scopes].join(" ").toLowerCase();
+  return tr;
+}
+
+function renderChars() {
+  const body = $("#c-rows");
+  body.replaceChildren(...chars.characters.map(charRow));
+  const lc = chars.legacy_client;
+  $("#lc-id").value = lc.client_id || "";
+  $("#lc-secret").value = "";
+  $("#lc-secret").placeholder = lc.secret_set ? "saved - type to replace" : "not set";
+  $("#lc-state").textContent = lc.client_id && lc.secret_set ? "Set: imported characters refresh with it."
+    : "Not complete: imported characters wait until both values are saved.";
+  filterChars();
+}
+
+function filterChars() {
+  const q = $("#c-filter").value.trim().toLowerCase();
+  let shown = 0;
+  for (const tr of $("#c-rows").children) {
+    tr.hidden = q !== "" && !tr.dataset.text.includes(q);
+    if (!tr.hidden) shown += 1;
+  }
+  const all = chars ? chars.characters : [];
+  const distinct = new Set(all.map((c) => c.character_id)).size;
+  const legacy = all.filter((c) => c.app === "legacy").length;
+  $("#c-summary").textContent = `${shown} of ${all.length} links, ${distinct} characters, ${legacy} on the legacy app`;
+}
+
+function charStatus(kind, text) {
+  const box = $("#c-status");
+  box.replaceChildren();
+  if (text) box.append(el("div", `notice ${kind}`, text));
+}
+
+async function loadChars() {
+  try {
+    chars = await api("/api/settings/characters");
+    renderChars();
+  } catch (err) {
+    charStatus("err", err.message);
+  }
+}
+
+async function saveLegacy() {
+  const set = { "evedm:eve.legacy_client_id": $("#lc-id").value.trim() };
+  const secret = $("#lc-secret").value.trim();
+  if (secret) set["evedm:eve.legacy_client_secret"] = secret;
+  $("#lc-save").disabled = true;
+  try {
+    data = await send("/api/settings", "PUT", { set, reset: [] });
+    render();  // the Settings tab shows the same two fields
+    charStatus("ok", "Legacy EVE application saved.");
+    await loadChars();
+  } catch (err) {
+    charStatus("err", err.message);
+  } finally {
+    $("#lc-save").disabled = false;
+  }
+}
+
+let charsLoaded = false;
+function showTab(name) {
+  document.querySelectorAll(".tab").forEach((b) => {
+    const on = b.dataset.tab === name;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", String(on));
+  });
+  document.querySelectorAll(".tab-panel").forEach((pn) => { pn.hidden = pn.id !== `tab-${name}`; });
+  if (name === "characters" && !charsLoaded) { charsLoaded = true; loadChars(); }
+  if (location.hash !== `#${name}`) history.replaceState(null, "", `#${name}`);
+}
+
+document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
+$("#c-filter").addEventListener("input", filterChars);
+$("#c-reload").addEventListener("click", loadChars);
+$("#lc-save").addEventListener("click", saveLegacy);
+showTab(location.hash === "#characters" ? "characters" : "settings");
+
 $("#s-filter").addEventListener("input", applyFilter);
 $("#s-changed").addEventListener("change", applyFilter);
 $("#s-save").addEventListener("click", save);

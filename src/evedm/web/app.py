@@ -29,7 +29,7 @@ from ..access import AllianceGate
 from ..alerts import AlertService, seed_demo_alerts
 from ..ansiblex import AnsiblexService, seed_demo_gates
 from ..bundle import BundleRejected, export_bundle, import_bundle, report
-from ..characters import REAUTH, CharacterService
+from ..characters import DISABLED, REAUTH, CharacterService, short_scope
 from ..config import NOTIFICATION_GROUPS, WAYPOINT_SCOPE, ConfigError, Settings
 from ..crypto import TokenCipher, redact
 from ..db import Database
@@ -46,7 +46,7 @@ from ..roster import RosterRejected, RosterService
 from ..scout import SEARCH_MAX_IDS, SUGGEST_MAX_CHARS, ResolveError, StructureScout, seed_demo_structures
 from ..selfcheck import check
 from ..settings_admin import SettingsAdmin
-from ..sso import AuthService, SsoError
+from ..sso import LEGACY_CLIENT, AuthService, SsoError
 from ..universe import GateGraph
 from ..wars.config import WarsSettings, load_wars_settings
 from ..wars.demo import DEMO_CENSUS, DEMO_WARS, seed_demo_census, seed_demo_wars
@@ -1562,6 +1562,49 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
                         rule[key] = found
             out.append(rule)
         return out
+
+    @app.get("/api/settings/characters")
+    async def settings_characters(request: Request) -> JSONResponse:
+        """Every linked character of every main with a short list of its permissions (Characters tab)."""
+        require_admin(request)
+        svc = svc_of(request)
+        eve = settings.eve
+        required, optional = eve.required_scopes, eve.optional_scopes
+        known = {*required, *optional}
+        rows = []
+        for c in svc.db.all_character_links():
+            if c["demo"] and not settings.demo:
+                continue
+            scopes = c["scopes"]
+            cid = c["client_id"]
+            if cid is None:
+                app_name = "none"
+            elif cid == eve.client_id:
+                app_name = "main"
+            elif cid == LEGACY_CLIENT or (eve.legacy_client_id and cid == eve.legacy_client_id):
+                app_name = "legacy"
+            else:
+                app_name = "other"
+            rows.append(
+                {
+                    "character_id": c["character_id"],
+                    "name": c["name"],
+                    "owner_id": c["owner_id"],
+                    "owner_name": c["owner_name"] or ("(local)" if c["owner_id"] == 0 else str(c["owner_id"])),
+                    "status": DISABLED if not c["enabled"] and c["status"] == "OK" else c["status"],
+                    "enabled": c["enabled"],
+                    "notify": c["notify"],
+                    "tags": c["tags"],
+                    "app": app_name,
+                    "token_updated_at": c["token_updated_at"],
+                    # what evedm uses first, the rest after; the full scope strings for the tooltip
+                    "permissions": [short_scope(s) for s in sorted(scopes, key=lambda s: (s not in known, s))],
+                    "missing": [short_scope(s) for s in required if s not in scopes],
+                    "scopes": scopes,
+                }
+            )
+        legacy = {"client_id": eve.legacy_client_id, "secret_set": bool(eve.legacy_client_secret)}
+        return JSONResponse({"characters": rows, "legacy_client": legacy})
 
     @app.get("/api/settings")
     async def settings_get(request: Request) -> JSONResponse:

@@ -8,6 +8,11 @@
 {% block content %}
 <div class="page settings-page">
   <h1>Settings</h1>
+  <div class="tabs" role="tablist">
+    <button class="tab active" role="tab" id="tab-btn-settings" data-tab="settings" aria-controls="tab-settings">Settings</button>
+    <button class="tab" role="tab" id="tab-btn-characters" data-tab="characters" aria-controls="tab-characters">Characters</button>
+  </div>
+  <section id="tab-settings" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-settings">
   <p id="s-intro" class="small"></p>
   <div class="toolbar">
     <label class="small" for="s-filter">Filter</label>
@@ -23,6 +28,36 @@
   <div id="s-discord" class="s-discord"></div>
   <div id="s-rules" class="s-discord s-rules" hidden></div>
   <div id="s-groups"></div>
+  </section>
+  <section id="tab-characters" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-characters" hidden>
+    <details class="s-group" open>
+      <summary><strong>Legacy EVE application</strong> <span class="small">characters imported from ThunderED</span></summary>
+      <p class="small">The imported characters keep the tokens of the old app, which only its EVE application can
+        refresh. Enter its client ID and secret key from developers.eveonline.com; they apply at once. Leave the secret
+        empty to keep the saved one.</p>
+      <div class="s-grid">
+        <label class="s-field"><span>Client ID</span>
+          <input id="lc-id" type="text" autocomplete="off" spellcheck="false" placeholder="32 hex characters"></label>
+        <label class="s-field"><span>Secret key</span>
+          <input id="lc-secret" type="password" autocomplete="new-password" spellcheck="false"></label>
+      </div>
+      <div class="toolbar">
+        <button id="lc-save" class="btn primary" type="button">Save application</button>
+        <span id="lc-state" class="small"></span>
+      </div>
+    </details>
+    <div class="toolbar">
+      <label class="small" for="c-filter">Filter</label>
+      <input id="c-filter" type="search" placeholder="character, main, tag or permission" autocomplete="off">
+      <span id="c-summary" class="small"></span>
+      <button id="c-reload" class="btn" type="button">Reload</button>
+    </div>
+    <div id="c-status" role="status"></div>
+    <table class="grid compact s-chars">
+      <thead><tr><th>Character</th><th>Main</th><th>Status</th><th>App</th><th>Permissions</th><th class="hide-sm">Tags</th></tr></thead>
+      <tbody id="c-rows"></tbody>
+    </table>
+  </section>
 </div>
 {% endblock %}
 {% block scripts %}

@@ -9,7 +9,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -625,6 +625,27 @@ class Database:
     def list_characters(self, owner_id: int = 0) -> list[CharacterRow]:
         rows = self.query("SELECT * FROM characters WHERE owner_id=? ORDER BY name COLLATE NOCASE", (owner_id,))
         return [self._char(r) for r in rows]
+
+    def all_character_links(self) -> list[dict[str, Any]]:
+        """Every owner -> character link with the owner's name and its token facts (Settings page, Characters tab)."""
+        rows = self.query(
+            "SELECT c.*, u.name AS owner_name, t.client_id, t.updated_at AS token_updated_at,"
+            " t.refresh_tail FROM characters c"
+            " LEFT JOIN users u ON u.user_id = c.owner_id"
+            " LEFT JOIN tokens t ON t.owner_id = c.owner_id AND t.character_id = c.character_id"
+            " ORDER BY c.name COLLATE NOCASE, c.owner_id"
+        )
+        out = []
+        for r in rows:
+            item = asdict(self._char(r))
+            item.update(
+                owner_name=r["owner_name"],
+                client_id=r["client_id"],
+                token_updated_at=r["token_updated_at"],
+                has_token=r["client_id"] is not None,
+            )
+            out.append(item)
+        return out
 
     def get_character(self, character_id: int, owner_id: int = 0) -> CharacterRow | None:
         rows = self.query("SELECT * FROM characters WHERE owner_id=? AND character_id=?", (owner_id, character_id))

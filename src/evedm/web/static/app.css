@@ -468,3 +468,10 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important;
     transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+/* settings page, Characters tab: short permission list per character */
+.s-chars .perm { display: inline-block; font-size: 12px; padding: 1px 7px; margin: 1px 2px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--line); white-space: nowrap; }
+.s-chars .perm.missing { color: var(--bad); border-color: var(--bad); }
+.s-chars .perm.more { color: var(--muted); cursor: help; }
+.s-chars .sub { color: var(--muted); font-size: 12px; }

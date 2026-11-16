@@ -16,6 +16,30 @@ log = logging.getLogger("evedm.characters")
 
 OK, LIMITED, REAUTH, DISABLED = "OK", "LIMITED", "REAUTH", "DISABLED"
 
+# Short names for the scopes evedm uses (Settings page, Characters tab); any other scope is shortened by short_scope
+SCOPE_LABELS = {
+    "esi-location.read_location.v1": "location",
+    "esi-location.read_ship_type.v1": "ship",
+    "esi-location.read_online.v1": "online",
+    "esi-characters.read_notifications.v1": "notifications",
+    "esi-universe.read_structures.v1": "structures",
+    "esi-assets.read_assets.v1": "assets",
+    "esi-ui.write_waypoint.v1": "waypoint",
+    "esi-search.search_structures.v1": "search",
+    "esi-mail.read_mail.v1": "mail",
+}
+
+
+def short_scope(scope: str) -> str:
+    """``esi-corporations.read_structures.v1`` -> ``corporations:structures``."""
+    if scope in SCOPE_LABELS:
+        return SCOPE_LABELS[scope]
+    group, _, rest = scope.removeprefix("esi-").partition(".")
+    action = rest.rsplit(".v", 1)[0]
+    for prefix in ("read_", "write_", "search_"):
+        action = action.removeprefix(prefix)
+    return f"{group}:{action}" if action else group
+
 
 class CharacterService:
     def __init__(self, db: Database, cipher: TokenCipher, auth: AuthService | None, settings: Settings):

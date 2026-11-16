@@ -366,3 +366,31 @@ def test_the_rule_presets_are_offered_and_every_rule_in_them_is_valid(client):
     assert "StructureDestroyed" in rules[0]["types"] and len(rules[0]["types"]) == len(set(rules[0]["types"])) == 13
     ok = client.put("/api/settings", headers=H, json={"set": {"evedm:discord.rules": presets[0]["rules"]}})
     assert ok.status_code == 200, ok.text  # saving the preset as it is works
+
+
+def test_characters_tab_lists_every_link_with_short_permissions(client):
+    db = client.app.state.svc.db
+    db.upsert_character(
+        2100000001, "Alpha One", "OK", ["esi-location.read_location.v1", "esi-corporations.read_contacts.v1"],
+        owner_id=MIO,
+    )
+    db.save_tokens(2100000001, "cid", b"x", 0, b"y", "tail", owner_id=MIO)
+    db.upsert_character(2100000002, "Bravo Two", "LIMITED", ["esi-characters.read_notifications.v1"], owner_id=BOB)
+    db.save_tokens(2100000002, "legacy", None, 0, b"y", "tail", owner_id=BOB)
+    body = client.get("/api/settings/characters").json()
+    rows = {r["name"]: r for r in body["characters"]}
+    assert rows["Alpha One"]["owner_name"] == "Shadowed Mio" and rows["Alpha One"]["app"] == "main"
+    assert rows["Alpha One"]["permissions"] == ["location", "corporations:contacts"]  # evedm's first
+    assert "notifications" in rows["Alpha One"]["missing"]
+    assert rows["Bravo Two"]["owner_name"] == "Bob" and rows["Bravo Two"]["app"] == "legacy"
+    assert body["legacy_client"] == {"client_id": "", "secret_set": False}
+
+    # the legacy application is saved like any setting, the secret encrypted and never shown
+    set_ = {"evedm:eve.legacy_client_id": "abc123", "evedm:eve.legacy_client_secret": "s3cret"}
+    assert client.put("/api/settings", json={"set": set_}, headers=H).status_code == 200
+    assert client.get("/api/settings/characters").json()["legacy_client"] == {"client_id": "abc123", "secret_set": True}
+    secret = fields(client.get("/api/settings").json())["evedm:eve.legacy_client_secret"]
+    assert secret.get("value") in (None, "") and "s3cret" not in client.get("/api/settings").text
+
+    as_user(client, BOB, "Bob")
+    assert client.get("/api/settings/characters").status_code == 404
