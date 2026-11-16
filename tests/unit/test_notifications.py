@@ -757,7 +757,7 @@ async def test_a_rule_that_matches_nothing_posts_nothing(ns, services, http):
 ABANDON = "StructureImpendingAbandonmentAssetsAtRisk"
 
 
-async def test_the_abandonment_warning_names_the_structure_and_the_days_left(ns, services, http):
+async def test_the_abandonment_warning_names_the_structure(ns, services, http):
     await add_character(services, A)
     ns.notifier = FakeNotifier()
     sid = 1035000000042
@@ -771,12 +771,12 @@ async def test_the_abandonment_warning_names_the_structure_and_the_days_left(ns,
     assert await ns.post_discord() == 1
     fields = {f["name"]: f["value"] for f in ns.notifier.sent[0]["embeds"][0]["fields"]}
     assert "Fluekele - Planta de procesado" in fields["Structure"]
-    assert "**2** days until the structure is abandoned" in fields["Days left"]
+    assert "Days left" not in fields
     d = ns.describe(services["db"].notifications([A])[0])
-    assert d["structure_name"] == "Fluekele - Planta de procesado" and d["days_left"] == 2
+    assert d["structure_name"] == "Fluekele - Planta de procesado"
 
 
-async def test_one_day_left_is_singular_and_an_unknown_name_adds_no_field(ns, services, http):
+async def test_an_unknown_name_adds_no_field(ns, services, http):
     await add_character(services, A)
     ns.notifier = FakeNotifier()
     body = "daysUntilAbandon: 1\nsolarsystemID: 30000142\nstructureID: 1035000000043\n"
@@ -784,7 +784,7 @@ async def test_one_day_left_is_singular_and_an_unknown_name_adds_no_field(ns, se
     await ns.poll_once()
     await ns.post_discord()
     fields = {f["name"]: f["value"] for f in ns.notifier.sent[0]["embeds"][0]["fields"]}
-    assert "Structure" not in fields and "**1** day until" in fields["Days left"]
+    assert "Structure" not in fields and "Days left" not in fields
 
 
 async def test_other_types_show_the_name_but_no_days(ns, services, http):
@@ -797,65 +797,7 @@ async def test_other_types_show_the_name_but_no_days(ns, services, http):
     await push(http, A, [item(1, timestamp=stamp())])
     await ns.poll_once()
     d = ns.describe(services["db"].notifications([A])[0])
-    assert d["structure_name"] == "Jita - Tradehub" and d["days_left"] is None
-
-
-# the in-game example: sent 2026.11.02 05:38, 5 days to deliver by hand, 20 days to the automatic delivery
-SENT = "2026-11-02T05:38:00Z"
-SAFETY = (
-    "assetSafetyDurationFull: 17280000000000\nassetSafetyDurationMinimum: 4320000000000\n"
-    "isCorpOwned: true\nnewStationID: 60008494\nsolarsystemID: 30000142\nstructureID: 1051833059347\n"
-    "structureShowInfoData: [showinfo, 35825, 1051833059347]\n"
-)
-
-
-def test_the_safety_moments_come_from_the_durations_or_the_filetimes():
-    from datetime import datetime
-
-    from evedm.notifications import eve_time, safety_of
-
-    sent = datetime.fromisoformat(SENT.replace("Z", "+00:00")).timestamp()
-    info = safety_of(parse_body(SAFETY), sent)
-    assert eve_time(info["minimum_at"]) == "2026.11.07 05:38" and eve_time(info["full_at"]) == "2026.11.22 05:38"
-    assert info["station_id"] == 60008494
-    # the same moments as Windows FILETIMEs (100 ns since 1601)
-    ticks = lambda at: int((at + 11_644_473_600) * 10**7)  # noqa: E731
-    body = {
-        "assetSafetyMinimumTimestamp": ticks(info["minimum_at"]),
-        "assetSafetyFullTimestamp": ticks(info["full_at"]),
-    }
-    again = safety_of(body, None)
-    assert eve_time(again["minimum_at"]) == "2026.11.07 05:38" and eve_time(again["full_at"]) == "2026.11.22 05:38"
-    assert safety_of({"solarsystemID": 1}, sent) is None
-
-
-async def test_the_safety_notification_shows_the_delivery_dates_the_station_and_the_fee(ns, services, http):
-    await add_character(services, A)
-    ns.notifier = FakeNotifier()
-    db = services["db"]
-    db.execute(
-        "INSERT INTO known_structures(structure_id, name, first_seen, last_seen) VALUES(?,?,?,?)",
-        (1051833059347, "Sakhti - Tortuga", 1.0, 1.0),
-    )
-    db.save_entity_names({60008494: ("Sakhti IX - Moon 7 - Amarr Certified News Development Studio", "station")})
-    await push(http, A, [item(1, "StructureItemsMovedToSafety", SAFETY, timestamp=stamp())])
-    await ns.poll_once()
-    row = db.notifications([A])[0]
-    d = ns.describe(row)
-    assert d["structure_name"] == "Sakhti - Tortuga" and d["asset_safety"]["station"].startswith("Sakhti IX")
-    assert await ns.post_discord() == 1
-    fields = {f["name"]: f["value"] for f in ns.notifier.sent[0]["embeds"][0]["fields"]}
-    assert "EVE time" in fields["Manual delivery from"] and "<t:" in fields["Manual delivery from"]
-    assert "Amarr Certified News Development Studio" in fields["Automatic delivery"]
-    assert "fee" in fields["Fee"]
-
-
-async def test_an_unknown_delivery_station_is_queued_for_one_batched_name_lookup(ns, services, http):
-    await add_character(services, A)
-    await push(http, A, [item(1, "StructureItemsMovedToSafety", SAFETY, timestamp=stamp())])
-    await ns.poll_once()
-    d = ns.describe(services["db"].notifications([A])[0])
-    assert d["asset_safety"]["station"] is None and ns._station_wanted == {60008494}  # noqa: SLF001
+    assert d["structure_name"] == "Jita - Tradehub"
 
 
 LINK_BODY = 'solarsystemID: 30002187\nstructureLink: <a href="showinfo:35833//1055812948447">C6CG-W - Euphoria HQ</a>\n'

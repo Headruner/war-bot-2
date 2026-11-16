@@ -159,23 +159,6 @@ function card(n) {
     nm.append(el("b", null, "Structure"), el("span", "ntf-hl", n.structure_name));
     li.append(nm);
   }
-  if (n.asset_safety) {  // assets moved to Asset Safety: when they can be delivered and where to
-    const a = n.asset_safety;
-    const rows = [];
-    if (a.minimum_eve) rows.push(["Manual delivery from", `${a.minimum_eve} EVE time`]);
-    if (a.full_eve) rows.push(["Automatic delivery", `${a.full_eve} EVE time${a.station ? ` to ${a.station}` : ""}`]);
-    if (a.full_eve) rows.push(["Fee", "applies when retrieving the assets"]);
-    for (const [label, text] of rows) {
-      const line = el("div", "where-line safety");
-      line.append(el("b", null, label), el("span", "ntf-hl", text));
-      li.append(line);
-    }
-  }
-  if (n.days_left !== null && n.days_left !== undefined) {  // the abandonment warning
-    const dl = el("div", "where-line days-left");
-    dl.append(el("b", null, "Days left"), el("span", "ntf-hl", `${n.days_left} until the structure is abandoned`));
-    li.append(dl);
-  }
   if (n.show_structure_type) {  // a notification that names no structure has no such line
     const kind = el("div", "where-line struct-type");
     kind.append(el("b", null, "Structure type"), el("span", n.structure_type ? "ntf-hl" : "small", n.structure_type || "Unknown"));
