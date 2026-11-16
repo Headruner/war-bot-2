@@ -10,7 +10,7 @@ System_Ext(sde, "CCP static data", "SDE JSONL zip")
 System_Ext(zkb, "zKillboard R2Z2", "live killmail feed")
 System_Ext(evescout, "EVE-Scout", "Thera / Turnur wormhole list")
 System_Ext(everef, "EVE Ref", "structure dataset")
-System_Ext(discord, "Discord", "bot (REST)")
+System_Ext(discord, "Discord", "bot (REST + gateway presence)")
 
 System_Boundary(evedm, "EVE Distance Meter") {
   Container(spa, "Browser UI", "HTML, vanilla JS, canvas", "Ranking + star map, Characters, Roster, Wars and Alerts pages; Notifications and Structures pages for members of the configured alliance only; settings in a browser cookie; desktop notifications")

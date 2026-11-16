@@ -9,7 +9,7 @@ System_Ext(sso, "EVE SSO")
 System_Ext(esi, "ESI")
 System_Ext(zkb, "zKillboard R2Z2")
 System_Ext(evescout, "EVE-Scout")
-System_Ext(discord, "Discord API (bot)")
+System_Ext(discord, "Discord API + gateway (bot)")
 
 Container_Boundary(web, "Web app") {
   Component(routes, "Routes", "web/app.py", "Pages, /api/*, /sso/*, session sign-in, CSRF header check")

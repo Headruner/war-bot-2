@@ -182,8 +182,8 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
      Make sure the bot can see the target channel(s). No privileged intents are needed.
   3. Discord -> User Settings -> Advanced -> Developer Mode on; right-click the channel -> Copy Channel ID; put it into
      `EVEDM_WARS_DISCORD_CHANNEL_ID` (and optionally the notifications / alerts ones, below).
-  The bot only calls Discord's REST API and never connects to the gateway, so it shows as **offline** in the member
-  list; that is expected. Messages the old webhook posted cannot be edited by the bot and stay as they are.
+  The bot posts over Discord's REST API and keeps a gateway connection (`discord.online`, default on) only to show as
+  **online** in the member list, which needs the bot to be invited to the server (the Settings page shows the link). Messages the old webhook posted cannot be edited by the bot and stay as they are.
   Instead of `.env`, the administrator can enter the bot token, the channel IDs, the role and the switches on the
   **Settings** page (menu entry visible only to the main named in `EVEDM_ADMIN_CHARACTERS`; the token is stored
   encrypted in `data\settings.yaml`, takes effect at once and is used for wars, notifications and alerts). Each target

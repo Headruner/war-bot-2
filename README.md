@@ -97,8 +97,11 @@ when you press **Set destination** for an online character.
   "restart" otherwise; Reset, Send test message and Restart app are on the page. Everyone else gets 404. The Discord
   section also holds the bot's identity and command settings: **bot name**, **bot game** (the "playing ..." text),
   **command prefix** (1 to 3 characters, default `!`), **guild ID** (empty = any server), **search character ID**
-  (0 = any character) and **admin roles** (default `ADMIN`). They are checked on Save like every other setting, but
-  only the bot token has an effect yet: the rest is stored for a bot that reads commands.
+  (0 = any character) and **admin roles** (default `ADMIN`). The first line of the Discord card shows the bot's state:
+  **online as <name> in N server(s)**, the last error (for example a rejected token), or, when it is in no server yet,
+  an **Invite the bot to a server** link; the bot stays online while the app runs (`Online` switch, default on). They are checked on Save like every other setting. **Bot game**
+  and **bot name** take effect when the bot connects; the command prefix, guild ID, search character and admin roles are
+  stored for a bot that reads commands.
 - **Discord rules** (Settings page): structure alerts and character notifications can go to several Discord channels,
   each rule being a filter (space, regions, systems, alert kinds, owners, notification groups or types) plus a channel and
   an optional role to ping. Whatever matches several rules is posted to each channel once; a source with at least one rule
@@ -399,8 +402,9 @@ docker compose stop evedm && cp -a data data-backup-$(date +%F) && docker compos
 | `EVEDM_ADMIN_CHARACTERS` | empty (nobody; the example config uses `Shadowed Mio`) | comma-separated names or character IDs of the mains who may open the Settings page (needs EVE SSO sign-in); values saved there go to `data/settings.yaml` and override the environment |
 | `EVEDM_WARS_CONFIG` | `config/wars.yaml` next to `EVEDM_CONFIG` | war watcher settings file |
 | `EVEDM_WARS_ENABLED` | `true` in `config/wars.yaml` | `0` switches the war watcher off |
-| `EVEDM_DISCORD_BOT_TOKEN` | empty | secret: token of your Discord application's bot, used for every Discord post (REST only; the bot shows as offline, that is expected). Replaces the removed `EVEDM_*_DISCORD_WEBHOOK` variables, which are ignored with a start-up warning; setup steps: docs/wiki/07-Run-on-Windows.md, section 10 |
-| `EVEDM_DISCORD_BOT_NAME`, `EVEDM_DISCORD_BOT_GAME`, `EVEDM_DISCORD_COMMAND_PREFIX`, `EVEDM_DISCORD_GUILD_ID`, `EVEDM_DISCORD_SEARCH_CHARACTER_ID`, `EVEDM_DISCORD_ADMIN_ROLES` | empty, empty, `!`, empty, `0`, `ADMIN` | bot identity and command settings (admin roles comma-separated); stored and validated, only the token acts today |
+| `EVEDM_DISCORD_BOT_TOKEN` | empty | secret: token of your Discord application's bot, used for every Discord post (posts go over REST; a gateway connection makes the bot show as online, see `EVEDM_DISCORD_ONLINE`). Replaces the removed `EVEDM_*_DISCORD_WEBHOOK` variables, which are ignored with a start-up warning; setup steps: docs/wiki/07-Run-on-Windows.md, section 10 |
+| `EVEDM_DISCORD_ONLINE` | `1` | keep a gateway connection so the bot shows as online in your Discord server (no privileged intent needed; the bot must be invited to the server); `0` = it stays offline and only posts |
+| `EVEDM_DISCORD_BOT_NAME`, `EVEDM_DISCORD_BOT_GAME`, `EVEDM_DISCORD_COMMAND_PREFIX`, `EVEDM_DISCORD_GUILD_ID`, `EVEDM_DISCORD_SEARCH_CHARACTER_ID`, `EVEDM_DISCORD_ADMIN_ROLES` | empty, empty, `!`, empty, `0`, `ADMIN` | bot username and "Playing ..." text (applied when it connects), command prefix, guild ID, search character and admin roles (comma-separated; the last four are stored for a bot that reads commands) |
 | `EVEDM_WARS_DISCORD_ENABLED`, `EVEDM_WARS_DISCORD_CHANNEL_ID` | `0`, empty | post new wars to a Discord channel (needs the bot token and the channel ID) |
 | `EVEDM_PUBLIC_URL` | from `EVE_CALLBACK_URL` | address of the site, used in Discord links to the Wars page |
 | `EVE_OPTIONAL_SCOPES` | `esi-universe.read_structures.v1 esi-assets.read_assets.v1 esi-ui.write_waypoint.v1 esi-search.search_structures.v1 esi-mail.read_mail.v1` | extra scopes (structure scout, mail scan, Set destination); `none` = only the ranking scopes |

@@ -11,7 +11,7 @@ System_Ext(client, "EVE game client", "Receives the autopilot destination set th
 System_Ext(zkb, "zKillboard R2Z2", "r2z2.zkillboard.com - live killmail feed, one file per kill")
 System_Ext(evescout, "EVE-Scout", "api.eve-scout.com - public list of the wormholes that connect Thera and Turnur to k-space systems")
 System_Ext(everef, "EVE Ref", "data.everef.net - public structure dataset")
-System_Ext(discord, "Discord", "Bot (REST) posts new wars, notifications and structure alerts (optional); the existing bot's channel is read by the user")
+System_Ext(discord, "Discord", "Bot (REST posts, gateway presence) posts new wars, notifications and structure alerts (optional); the existing bot's channel is read by the user")
 System_Ext(sde, "CCP static data (SDE)", "developers.eveonline.com - solar systems, stargates, ship types")
 
 Rel(user, evedm, "target system, characters, wars, alerts, Set destination", "HTTPS (browser / phone)")
