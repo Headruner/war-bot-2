@@ -36,6 +36,8 @@ discord:                                    # the registered Discord application
 eve:
   client_id: ${EVE_CLIENT_ID}               # your application at https://developers.eveonline.com
   client_secret: ${EVE_CLIENT_SECRET}
+  legacy_client_id: ${EVE_LEGACY_CLIENT_ID:-}        # EVE application of characters imported from ThunderED (evedm import-thundered)
+  legacy_client_secret: ${EVE_LEGACY_CLIENT_SECRET:-}
   callback_url: ${EVE_CALLBACK_URL:-http://localhost:8080/sso/callback}
   required_scopes:
     - esi-location.read_location.v1

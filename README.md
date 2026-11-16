@@ -160,6 +160,7 @@ A ready-made demo database is in [`data/demo/evedm.sqlite3`](data/demo) (key `de
    `/app/data` (one-file SQLite database in WAL mode + logs). On a Linux host run `sudo chown -R 10001:10001 data` once:
    the container runs as the non-root user 10001.
 4. Sign in, then **Characters > Add character** or **Import JSON**.
+5. Coming from ThunderED? Import its characters without a new sign-in: `docker compose exec evedm evedm import-thundered /app/data/edb.db --owner <your main's character ID> --dry-run`, then again without `--dry-run`. The tokens belong to ThunderED's EVE application, so enter its client ID and secret on **Settings > Discord/EVE** (`eve.legacy_client_id`, `eve.legacy_client_secret`) before the first use; the **Characters** tab of the Settings page shows every character, its owner, the application its token belongs to (main, legacy) and a short list of its permissions, with missing ones in red. A database backup is written next to the data file before an import.
 
 On a Linux VM follow [Run in Docker on a Linux VM](#run-in-docker-on-a-linux-vm).
 
@@ -395,6 +396,7 @@ docker compose stop evedm && cp -a data data-backup-$(date +%F) && docker compos
 | --- | --- | --- |
 | `EVEDM_SECRET_KEY` | — (required) | encrypts tokens, signs sessions |
 | `EVE_CLIENT_ID`, `EVE_CLIENT_SECRET` | — | your EVE application |
+| `EVE_LEGACY_CLIENT_ID`, `EVE_LEGACY_CLIENT_SECRET` | empty | secret: the EVE application of the characters imported from ThunderED (their tokens refresh with it); also on the Settings page |
 | `EVE_CALLBACK_URL` | `http://localhost:8080/sso/callback` | must match the application |
 | `EVEDM_PUBLISH` | `8080` | host port of `docker compose` (e.g. `8082` when 8080 is taken; change the callback too) |
 | `EVEDM_CPUS`, `EVEDM_MEMORY` | `2`, `1g` | container limits of `docker compose` (`EVEDM_CPUS=1` on a 1-vCPU host) |
