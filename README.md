@@ -102,6 +102,9 @@ when you press **Set destination** for an online character.
   an **Invite the bot to a server** link; the bot stays online while the app runs (`Online` switch, default on). They are checked on Save like every other setting. **Bot game**
   and **bot name** take effect when the bot connects; the command prefix, guild ID, search character and admin roles are
   stored for a bot that reads commands.
+- **Terms of Service and Privacy Policy** (`/terms`, `/privacy`): two static pages that anyone can open without signing in, for the
+  Discord Developer Portal (General Information: paste `https://<your host>/terms` and `https://<your host>/privacy`). They are
+  linked from no page of the site.
 - **Discord rules** (Settings page): structure alerts and character notifications can go to several Discord channels,
   each rule being a filter (space, regions, systems, alert kinds, owners, notification groups or types) plus a channel and
   an optional role to ping. Whatever matches several rules is posted to each channel once; a source with at least one rule

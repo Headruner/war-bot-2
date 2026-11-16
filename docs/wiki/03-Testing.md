@@ -200,6 +200,7 @@ rows marked 0.5.0 cover the war census, the high-sec structure list and the brow
 | Settings page | every setting of both YAML files; secrets | all listed with help and variable name, fixed ones read-only, secrets only as set / not set | test_every_setting_is_listed_and_secrets_are_never_shown |
 | ThunderED import | best token per character; dry run; own-application token; character already linked; not a ThunderED database | widest scopes win / nothing written / legacy credentials only for legacy tokens / skipped / refused | test_thundered.py |
 | Settings page | Characters tab and legacy application | all links with short permissions, missing in red; secret never returned; non-admin 404 | test_characters_tab_lists_every_link_with_short_permissions, test_short_scope |
+| Legal pages | /terms and /privacy signed out; links on other pages | 200 with the text / no link anywhere | test_legal_pages.py |
 | Settings page | save and reset | `settings.yaml` holds only the differences (secrets as `enc:`), running settings and Discord notifiers changed, restart list returned | test_saving_writes_the_file_and_changes_the_running_app |
 | Settings page | wrong value | 400, nothing written | test_a_wrong_value_is_refused_and_nothing_is_saved |
 | Settings page | a value valid alone but invalid with the rest; allow list without the administrator | whole configuration validated before saving: 400, nothing written | test_the_whole_configuration_is_validated_before_saving |
