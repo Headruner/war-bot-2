@@ -2,14 +2,6 @@
    The chosen tab and filters are remembered in this browser (prefs cookie). */
 "use strict";
 
-async function api(url) {
-  const resp = await fetch(url, { credentials: "same-origin", headers: { "X-EVEDM": "1" } });
-  if (resp.status === 401) { location.href = "/login"; return new Promise(() => {}); }  // signed out: leave quietly
-  if (!resp.ok) throw new Error(resp.statusText);
-  return resp.json();
-}
-const $ = (sel) => document.querySelector(sel);
-const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const TYPE_TEXT = { none: "War declared", mutual: "Mutual", open_for_allies: "Open for allies" };
 const PAGE = 30;
 let offset = 0;

@@ -2,19 +2,6 @@
    with the system, its region and the closest live and roster characters. Filters live in the prefs cookie. */
 "use strict";
 
-async function api(url, opts = {}) {
-  const resp = await fetch(url, { credentials: "same-origin", ...opts,
-    headers: { "X-EVEDM": "1", ...(opts.body ? { "Content-Type": "application/json" } : {}) } });
-  if (resp.status === 401) { location.href = "/login"; return new Promise(() => {}); }  // signed out: leave quietly
-  if (!resp.ok) {
-    let detail = resp.statusText;
-    try { detail = (await resp.json()).detail || detail; } catch (_) { /* not JSON */ }
-    throw new Error(detail);
-  }
-  return resp.json();
-}
-const $ = (sel) => document.querySelector(sel);
-const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const HUB_CLASS = { Thera: "thera", Turnur: "turnur" };  // violet and orange (see app.css)
 const GROUP_CLASS = { asset_safety: "state-ending", structure_attack: "state-fighting", tower: "state-fighting" };
 
@@ -285,7 +272,12 @@ $("#ntf-refresh").addEventListener("click", () => load());
 async function follow() {
   for (;;) {
     if (document.visibilityState !== "visible" || state.version == null) {
-      await new Promise((r) => setTimeout(r, 2000));
+      // nothing to do while the tab is hidden: sleep until it is shown again (no 2 s wake-ups)
+      await new Promise((r) => {
+        const done = () => { document.removeEventListener("visibilitychange", done); r(); };
+        document.addEventListener("visibilitychange", done);
+        if (state.version == null) setTimeout(done, 2000);
+      });
       continue;
     }
     try {
@@ -299,3 +291,4 @@ async function follow() {
 
 load().then(follow);
 setInterval(() => { if (document.visibilityState === "visible") load(); }, Math.min(Math.max(15, pollS), 30) * 1000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") load(); });

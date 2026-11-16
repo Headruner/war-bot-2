@@ -1,22 +1,6 @@
 /* EVE Distance Meter - ranking page: target input, ranked list (left) and route on the star map (right). */
 "use strict";
 
-async function api(url, opts = {}) {
-  const resp = await fetch(url, { credentials: "same-origin", ...opts,
-    headers: { "X-EVEDM": "1", ...(opts.body && !(opts.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
-      ...(opts.headers || {}) } });
-  if (resp.status === 401) { location.href = "/login"; return new Promise(() => {}); }  // signed out: leave quietly
-  if (!resp.ok) {
-    let detail = resp.statusText;
-    try { detail = (await resp.json()).detail || detail; } catch (_) { /* not JSON */ }
-    throw new Error(detail);
-  }
-  return resp.json();
-}
-
-const $ = (sel) => document.querySelector(sel);
-const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-
 /* ghost: no background, only the coloured figure, so the system status does not draw attention */
 function secChip(security, ghost = false) {
   const chip = el("span", ghost ? "sec ghost" : "sec", secText(security));
@@ -376,14 +360,23 @@ async function loadRecent() {
 }
 
 /* ---------------------------------------------------------------- autocomplete (INP-01) */
-let suggestTimer = null, active = -1, items = [];
+let suggestTimer = null, suggestAbort = null, active = -1, items = [];
 const input = $("#target"), suggest = $("#suggest");
 input.addEventListener("input", () => {
   clearTimeout(suggestTimer);
   suggestTimer = setTimeout(async () => {
     const q = input.value.trim();
     if (q.length < 2) { suggest.hidden = true; return; }
-    items = await api(`/api/systems/search?q=${encodeURIComponent(q)}`);
+    if (suggestAbort) suggestAbort.abort();  // a newer keystroke makes the older answer worthless
+    suggestAbort = new AbortController();
+    try {
+      items = await api(`/api/systems/search?q=${encodeURIComponent(q)}`, { signal: suggestAbort.signal });
+    } catch (err) {
+      if (err.name === "AbortError") return;
+      suggest.hidden = true;
+      return;
+    }
+    if (input.value.trim() !== q) return;
     active = -1;
     suggest.innerHTML = "";
     items.forEach((s, k) => {

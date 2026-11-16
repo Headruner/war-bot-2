@@ -20,6 +20,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -110,6 +111,35 @@ class RequestCounter:
             if svc is not None:
                 svc.launch.requests += 1
         await self.app(scope, receive, send)
+
+
+class CacheHeaders:
+    """Pure ASGI middleware: sensible Cache-Control for what the server does not label itself.
+
+    Static files linked with ``?v=<asset version>`` never change under that URL, so they are cached for a year
+    (immutable); the same files without a version, pages and API answers are revalidated (``no-cache``, not
+    ``no-store``, which would keep the page out of the browser's back/forward cache).
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        versioned = path.startswith("/static/") and b"v=" in scope.get("query_string", b"")
+
+        async def send_with_cache(message: Any) -> None:
+            if message["type"] == "http.response.start" and message["status"] in (200, 304):
+                headers = message.setdefault("headers", [])
+                if not any(k.lower() == b"cache-control" for k, _ in headers):
+                    value = b"public, max-age=31536000, immutable" if versioned else b"no-cache"
+                    headers.append((b"cache-control", value))
+            await send(message)
+
+        await self.app(scope, receive, send_with_cache)
 
 
 def build_services(settings: Settings) -> Services:
@@ -417,6 +447,8 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         https_only=settings.web.cookie_secure,
     )
     app.add_middleware(RequestCounter, owner=holder)
+    app.add_middleware(CacheHeaders)
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)  # outermost: compresses pages, scripts, JSON
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=str(HERE / "templates"))
 

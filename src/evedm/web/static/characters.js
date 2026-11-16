@@ -1,19 +1,10 @@
 /* EVE Distance Meter - characters page: list, enable/disable, tags, remove, import and export. */
 "use strict";
 
-async function api(url, opts = {}) {
-  const resp = await fetch(url, { credentials: "same-origin", ...opts,
-    headers: { "X-EVEDM": "1", ...(opts.body && !(opts.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
-      ...(opts.headers || {}) } });
-  if (resp.status === 401) { location.href = "/login"; return new Promise(() => {}); }  // signed out: leave quietly
-  return resp;
-}
-const $ = (sel) => document.querySelector(sel);
-const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const STATUS_TEXT = { OK: "OK", LIMITED: "Limited", REAUTH: "Re-auth required", DISABLED: "Disabled" };
 
 async function load() {
-  const rows = await (await api("/api/characters")).json();
+  const rows = await (await apiRaw("/api/characters")).json();
   const body = $("#char-rows");
   body.innerHTML = "";
   $("#empty").hidden = rows.length > 0;
@@ -44,7 +35,7 @@ async function load() {
     const tdEnabled = el("td");
     const toggle = el("input"); toggle.type = "checkbox"; toggle.checked = c.enabled;
     toggle.addEventListener("change", async () => {
-      await api(`/api/characters/${c.character_id}`, { method: "PATCH", body: JSON.stringify({ enabled: toggle.checked }) });
+      await apiRaw(`/api/characters/${c.character_id}`, { method: "PATCH", body: JSON.stringify({ enabled: toggle.checked }) });
       load();
     });
     tdEnabled.append(toggle);
@@ -55,7 +46,7 @@ async function load() {
       const notify = el("input"); notify.type = "checkbox"; notify.checked = c.notify;
       notify.setAttribute("aria-label", `Read the notifications of ${c.name}`);
       notify.addEventListener("change", async () => {
-        await api(`/api/characters/${c.character_id}`, { method: "PATCH", body: JSON.stringify({ notify: notify.checked }) });
+        await apiRaw(`/api/characters/${c.character_id}`, { method: "PATCH", body: JSON.stringify({ notify: notify.checked }) });
         load();
       });
       tdNotify.append(notify);
@@ -63,7 +54,7 @@ async function load() {
 
     const tdTags = el("td");
     const tags = el("input"); tags.type = "text"; tags.value = c.tags.join(", "); tags.placeholder = "e.g. cyno, logi";
-    tags.addEventListener("change", () => api(`/api/characters/${c.character_id}`, { method: "PATCH", body: JSON.stringify({ tags: tags.value.split(",") }) }));
+    tags.addEventListener("change", () => apiRaw(`/api/characters/${c.character_id}`, { method: "PATCH", body: JSON.stringify({ tags: tags.value.split(",") }) }));
     tdTags.append(tags);
 
     const tdActions = el("td");
@@ -71,7 +62,7 @@ async function load() {
     if (c.main) { rm.disabled = true; rm.title = "The main signs you in. Delete the account to remove it."; }
     rm.addEventListener("click", async () => {
       if (!confirm(`Remove ${c.name}? Its tokens are deleted and revoked.`)) return;
-      await api(`/api/characters/${c.character_id}`, { method: "DELETE" });
+      await apiRaw(`/api/characters/${c.character_id}`, { method: "DELETE" });
       load();
     });
     tdActions.append(rm);
@@ -85,7 +76,7 @@ $("#import-file").addEventListener("change", async (ev) => {
   if (!file) return;
   const fd = new FormData();
   fd.append("file", file);
-  const resp = await api("/api/characters/import", { method: "POST", body: fd });
+  const resp = await apiRaw("/api/characters/import", { method: "POST", body: fd });
   const data = await resp.json();
   const out = $("#import-report");
   out.innerHTML = "";
@@ -115,7 +106,7 @@ $("#export-btn").addEventListener("click", async () => {
   const ids = [...document.querySelectorAll(".pick:checked")].map((x) => Number(x.value));
   const what = ids.length ? `${ids.length} selected characters` : "all characters";
   if (!confirm(`Export ${what}? The file contains refresh tokens: anyone holding it can read those characters' locations.`)) return;
-  const resp = await api("/api/characters/export", { method: "POST", body: JSON.stringify({ confirm: true, character_ids: ids }) });
+  const resp = await apiRaw("/api/characters/export", { method: "POST", body: JSON.stringify({ confirm: true, character_ids: ids }) });
   if (!resp.ok) { alert((await resp.json()).detail || "Export failed"); return; }
   const blob = await resp.blob();
   const name = (resp.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/);
@@ -126,7 +117,7 @@ $("#export-btn").addEventListener("click", async () => {
 const del = $("#delete-account");
 if (del) del.addEventListener("click", async () => {
   if (!confirm("Delete your account? All linked characters are removed and their tokens revoked. This cannot be undone.")) return;
-  const resp = await api("/api/me", { method: "DELETE", body: JSON.stringify({ confirm: true }) });
+  const resp = await apiRaw("/api/me", { method: "DELETE", body: JSON.stringify({ confirm: true }) });
   if (resp.ok) location.href = "/login";
 });
 

@@ -458,3 +458,13 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
 .s-checks { display: flex; flex-wrap: wrap; gap: 4px 14px; }
 .s-checks label { display: flex; gap: 4px; align-items: center; font-size: 13px; }
 .s-field .s-checks input[type="checkbox"] { width: 14px; height: 14px; }
+
+/* ---------------------------------------------------------------- rendering cost (web-guide: performance) */
+/* long lists: the browser skips layout and paint of the rows far below the fold (the first ones stay normal) */
+.card.ntf:nth-child(n+8) { content-visibility: auto; contain-intrinsic-size: auto 8rem; }
+.rows > .row:nth-child(n+14) { content-visibility: auto; contain-intrinsic-size: auto 4.5rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}

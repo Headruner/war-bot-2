@@ -2,19 +2,6 @@
    Filters, notification and sound choices and the last alert seen are remembered in this browser (prefs cookie). */
 "use strict";
 
-async function api(url, opts = {}) {
-  const resp = await fetch(url, { credentials: "same-origin", ...opts,
-    headers: { "X-EVEDM": "1", ...(opts.body ? { "Content-Type": "application/json" } : {}) } });
-  if (resp.status === 401) { location.href = "/login"; return new Promise(() => {}); }  // signed out: leave quietly
-  if (!resp.ok) {
-    let detail = resp.statusText;
-    try { detail = (await resp.json()).detail || detail; } catch (_) { /* not JSON */ }
-    throw new Error(detail);
-  }
-  return resp.json();
-}
-const $ = (sel) => document.querySelector(sel);
-const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const SPACE = { high: "high-sec", low: "low-sec", null: "null-sec", wormhole: "wormhole" };
 const STATE = { destroyed: "Destroyed", combat: "Combat", firing: "Firing" };
 
@@ -224,4 +211,5 @@ $("#a-notify").addEventListener("click", async () => {
 notifyLabel();
 window.addEventListener("hashchange", focusHash);
 setInterval(() => { if (!document.hidden) load(); }, 30000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
 load();

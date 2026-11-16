@@ -2,14 +2,6 @@
    nearest to your own characters first. Filters are remembered in this browser (prefs cookie). */
 "use strict";
 
-async function api(url) {
-  const resp = await fetch(url, { credentials: "same-origin", headers: { "X-EVEDM": "1" } });
-  if (resp.status === 401) { location.href = "/login"; return new Promise(() => {}); }  // signed out: leave quietly
-  if (!resp.ok) throw new Error(resp.statusText);
-  return resp.json();
-}
-const $ = (sel) => document.querySelector(sel);
-const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const PAGE = 100;
 const SPACE = { high: "high-sec", low: "low-sec", null: "null-sec", wormhole: "wormhole", unknown: "unknown space" };
 const STATUS = { ok: "readable", no_access: "structure details unavailable from ESI", unread: "not read yet" };

@@ -2,15 +2,6 @@
    Filters are remembered in this browser (prefs cookie, ROS-21). */
 "use strict";
 
-async function api(url, opts = {}) {
-  const resp = await fetch(url, { credentials: "same-origin", ...opts,
-    headers: { "X-EVEDM": "1", ...(opts.body && !(opts.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
-      ...(opts.headers || {}) } });
-  if (resp.status === 401) { location.href = "/login"; return new Promise(() => {}); }  // signed out: leave quietly
-  return resp;
-}
-const $ = (sel) => document.querySelector(sel);
-const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const key = (k) => encodeURIComponent(k);
 
 const filters = Prefs.get("roster", { state: "", tag: "", enabledOnly: false });
@@ -22,7 +13,7 @@ async function load() {
   const params = new URLSearchParams();
   if (filters.state) params.set("state", filters.state);
   if (filters.tag) params.set("tag", filters.tag);
-  const resp = await api(`/api/roster?${params}`);
+  const resp = await apiRaw(`/api/roster?${params}`);
   const data = await resp.json();
   const rows = filters.enabledOnly ? data.rows.filter((r) => r.enabled) : data.rows;
   const body = $("#roster-rows");
@@ -50,7 +41,7 @@ function renderRow(r) {
   input.value = r.system ? r.system.name : r.system_name;
   input.size = 16;
   input.addEventListener("change", async () => {
-    const resp = await api(`/api/roster/${key(r.key)}`, { method: "PATCH", body: JSON.stringify({ system_name: input.value }) });
+    const resp = await apiRaw(`/api/roster/${key(r.key)}`, { method: "PATCH", body: JSON.stringify({ system_name: input.value }) });
     if (!resp.ok) { alert((await resp.json()).detail || "Could not change the system"); }
     load();
   });
@@ -65,7 +56,7 @@ function renderRow(r) {
       const b = el("button", null, candidate);
       b.type = "button";
       b.addEventListener("click", async () => {
-        await api(`/api/roster/${key(r.key)}`, { method: "PATCH", body: JSON.stringify({ system_name: candidate }) });
+        await apiRaw(`/api/roster/${key(r.key)}`, { method: "PATCH", body: JSON.stringify({ system_name: candidate }) });
         load();
       });
       wrap.append(b);
@@ -79,7 +70,7 @@ function renderRow(r) {
   toggle.type = "checkbox";
   toggle.checked = r.enabled;
   toggle.addEventListener("change", async () => {
-    await api(`/api/roster/${key(r.key)}`, { method: "PATCH", body: JSON.stringify({ enabled: toggle.checked }) });
+    await apiRaw(`/api/roster/${key(r.key)}`, { method: "PATCH", body: JSON.stringify({ enabled: toggle.checked }) });
     load();
   });
   ranked.append(toggle);
@@ -91,7 +82,7 @@ function renderRow(r) {
   tagInput.size = 12;
   tagInput.placeholder = "e.g. hauler";
   tagInput.addEventListener("change", async () => {
-    await api(`/api/roster/${key(r.key)}`, { method: "PATCH", body: JSON.stringify({ tags: tagInput.value.split(",") }) });
+    await apiRaw(`/api/roster/${key(r.key)}`, { method: "PATCH", body: JSON.stringify({ tags: tagInput.value.split(",") }) });
     load();
   });
   tags.append(tagInput);
@@ -103,7 +94,7 @@ function renderRow(r) {
   rm.type = "button";
   rm.addEventListener("click", async () => {
     if (!confirm(`Remove ${r.name} from the roster?`)) return;
-    await api(`/api/roster/${key(r.key)}`, { method: "DELETE" });
+    await apiRaw(`/api/roster/${key(r.key)}`, { method: "DELETE" });
     load();
   });
   actions.append(rm);
@@ -118,7 +109,7 @@ $("#roster-file").addEventListener("change", async (ev) => {
   if (!file) return;
   const fd = new FormData();
   fd.append("file", file);
-  const resp = await api("/api/roster/import", { method: "POST", body: fd });
+  const resp = await apiRaw("/api/roster/import", { method: "POST", body: fd });
   const data = await resp.json();
   const out = $("#roster-report");
   out.innerHTML = "";
@@ -147,7 +138,7 @@ $("#roster-file").addEventListener("change", async (ev) => {
 });
 
 $("#roster-resolve").addEventListener("click", async () => {
-  const resp = await api("/api/roster/resolve", { method: "POST", body: JSON.stringify({}) });
+  const resp = await apiRaw("/api/roster/resolve", { method: "POST", body: JSON.stringify({}) });
   const data = await resp.json();
   const out = $("#roster-report");
   out.className = "notice ok";
@@ -158,12 +149,12 @@ $("#roster-resolve").addEventListener("click", async () => {
 
 $("#roster-clear").addEventListener("click", async () => {
   if (!confirm("Remove every entry from the roster? The uploaded file is not kept, so this cannot be undone.")) return;
-  await api("/api/roster?confirm=1", { method: "DELETE" });
+  await apiRaw("/api/roster?confirm=1", { method: "DELETE" });
   load();
 });
 
 $("#roster-export").addEventListener("click", async () => {
-  const resp = await api("/api/roster/export");
+  const resp = await apiRaw("/api/roster/export");
   if (!resp.ok) { alert((await resp.json()).detail || "Export failed"); return; }
   const blob = await resp.blob();
   const name = (resp.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/);
