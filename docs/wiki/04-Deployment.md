@@ -260,6 +260,5 @@ with python3 + venv works: `--build-arg BASE_IMAGE=<image>`.
 | --- | --- | --- |
 | `login.eveonline.com`, `esi.evetech.net` | sign-in, character locations, structures, wars, killmails, Set destination | — |
 | `data.everef.net` | public structure dataset (Wars page) | `EVEDM_WARS_ENABLED=0` |
-| `zkillboard.com` (websocket, `wss://zkillboard.com/websocket/`) | main live killmail feed for structure alerts (channel `killstream`, one connection) | `EVEDM_ALERTS_WEBSOCKET=0` |
-| `r2z2.zkillboard.com` | fallback killmail feed while the websocket is down (one file per kill, ≥ 6 s pause when caught up; one small request per poll while the websocket works) | `EVEDM_ALERTS_ENABLED=0` |
+| `r2z2.zkillboard.com` | live killmail feed for structure alerts (one file per kill, ≥ 6 s pause when caught up) | `EVEDM_ALERTS_ENABLED=0` |
 | `discord.com` | optional war and alert posts (bot, REST) | leave the `*_DISCORD_ENABLED` settings at 0 |

@@ -41,8 +41,7 @@ when you press **Set destination** for an online character.
 - **Known, no assets** (third tab of the Structures page, members only): structures that are known - a character may
   dock there, an in-game mail names them or a public dataset lists them - but where no registered character has an asset;
   each row says how it is known (`known_via`: dock, mail, registry). `GET /api/structures/unclaimed?q=&region=&type=&space=&at_war=&via=&sort=&limit=&offset=`.
-- **Structure alerts** (Alerts page): zKillboard's live killmail feed (its websocket, with R2Z2 polling as the fallback;
-  a kill older than `alerts.max_age_min`, 60 minutes by default, is obsolete and skipped) shows structures **destroyed** (citadels,
+- **Structure alerts** (Alerts page): zKillboard's live killmail feed shows structures **destroyed** (citadels,
   engineering complexes and refineries drop their quantum core), **combat** within 1000 km of a known structure, and
   structures **firing**, in all space. Combat and firing alerts are kept only for kills with a **battleship or capital
   hull (T2 included)** or a single loss above **500M ISK** (`alerts.big_kills_only`, `alerts.min_value_isk`); the
@@ -95,11 +94,18 @@ when you press **Set destination** for an online character.
   **Settings** link that lists every setting of both configuration files, grouped by section, with help text. Changes
   are validated as a whole, saved to `data/settings.yaml` (secrets encrypted), applied at once where possible (the
   Discord bot token, channels and switches included, so Discord can be set up without `.env` entries) and marked
-  "restart" otherwise; Reset, Send test message and Restart app are on the page. Everyone else gets 404.
+  "restart" otherwise; Reset, Send test message and Restart app are on the page. Everyone else gets 404. The Discord
+  section also holds the bot's identity and command settings: **bot name**, **bot game** (the "playing ..." text),
+  **command prefix** (1 to 3 characters, default `!`), **guild ID** (empty = any server), **search character ID**
+  (0 = any character) and **admin roles** (default `ADMIN`). They are checked on Save like every other setting, but
+  only the bot token has an effect yet: the rest is stored for a bot that reads commands.
 - **Discord rules** (Settings page): structure alerts and character notifications can go to several Discord channels,
   each rule being a filter (space, regions, systems, alert kinds, owners, notification groups or types) plus a channel and
   an optional role to ping. Whatever matches several rules is posted to each channel once; a source with at least one rule
   no longer uses its single-channel settings; rules apply at once. A channel the bot cannot post to is skipped and logged.
+  Under the rules, the button **Add preset: Structure notifications** adds three rules at once (attacks, impending
+  abandonment, items moved to asset safety), each with its own channel and the notifications source; a rule whose name
+  is already there is not added twice, and nothing is saved until you press **Save**.
 - **Static roster** (Roster page): upload a JSON file of character names and systems (any number of entries, no tokens,
   nothing read from ESI) and rank it by jumps against the same target on the **Roster** tab of the ranking view.
   Unknown systems are kept with suggestions instead of being thrown away; the closest roster characters also appear
@@ -394,6 +400,7 @@ docker compose stop evedm && cp -a data data-backup-$(date +%F) && docker compos
 | `EVEDM_WARS_CONFIG` | `config/wars.yaml` next to `EVEDM_CONFIG` | war watcher settings file |
 | `EVEDM_WARS_ENABLED` | `true` in `config/wars.yaml` | `0` switches the war watcher off |
 | `EVEDM_DISCORD_BOT_TOKEN` | empty | secret: token of your Discord application's bot, used for every Discord post (REST only; the bot shows as offline, that is expected). Replaces the removed `EVEDM_*_DISCORD_WEBHOOK` variables, which are ignored with a start-up warning; setup steps: docs/wiki/07-Run-on-Windows.md, section 10 |
+| `EVEDM_DISCORD_BOT_NAME`, `EVEDM_DISCORD_BOT_GAME`, `EVEDM_DISCORD_COMMAND_PREFIX`, `EVEDM_DISCORD_GUILD_ID`, `EVEDM_DISCORD_SEARCH_CHARACTER_ID`, `EVEDM_DISCORD_ADMIN_ROLES` | empty, empty, `!`, empty, `0`, `ADMIN` | bot identity and command settings (admin roles comma-separated); stored and validated, only the token acts today |
 | `EVEDM_WARS_DISCORD_ENABLED`, `EVEDM_WARS_DISCORD_CHANNEL_ID` | `0`, empty | post new wars to a Discord channel (needs the bot token and the channel ID) |
 | `EVEDM_PUBLIC_URL` | from `EVE_CALLBACK_URL` | address of the site, used in Discord links to the Wars page |
 | `EVE_OPTIONAL_SCOPES` | `esi-universe.read_structures.v1 esi-assets.read_assets.v1 esi-ui.write_waypoint.v1 esi-search.search_structures.v1 esi-mail.read_mail.v1` | extra scopes (structure scout, mail scan, Set destination); `none` = only the ranking scopes |
@@ -407,8 +414,6 @@ docker compose stop evedm && cp -a data data-backup-$(date +%F) && docker compos
 | `EVEDM_NOTIFICATIONS_MIN_STRUCTURES` | `10` | a character is polled for notifications only with this many player structures holding assets |
 | `EVEDM_NOTIFICATIONS_DISCORD_ENABLED`, `EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID`, `EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID` | `1`, empty, empty | notifications on Discord: needs the bot token; empty channel = the wars channel, nothing is posted without a token or channel; role pinged on "structure attacked" only |
 | `EVEDM_ANSIBLEX_ENABLED` | `1` | `0` removes the Ansiblex route mode |
-| `EVEDM_ALERTS_WEBSOCKET`, `EVEDM_ALERTS_WEBSOCKET_URL` | `1`, `wss://zkillboard.com/websocket/` | main source of alerts; `0` = poll R2Z2 only |
-| `EVEDM_ALERTS_MAX_AGE_MIN` | `60` | a kill older than this is obsolete: no catch-up after a pause, not processed, not posted (1 to 1200) |
 | `EVEDM_ALERTS_CONTACT` | empty | added to the User-Agent zKillboard sees |
 | `EVEDM_ALERTS_GRID_KM` | `1000` | a kill this close to a known structure is "combat" |
 | `EVEDM_ALERTS_DISCORD_ENABLED`, `EVEDM_ALERTS_DISCORD_CHANNEL_ID`, `EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID` | `0`, empty, empty | post alerts to Discord (needs the bot token and the channel ID); the role is pinged on "destroyed" |
