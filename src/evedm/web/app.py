@@ -657,6 +657,15 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
     async def login_page(request: Request) -> Response:
         return page(request, "login.html", error=request.query_params.get("error"))
 
+    # Required by the Discord Developer Portal; open to everyone, linked from no page of the site.
+    @app.get("/terms", response_class=HTMLResponse)
+    async def terms_page(request: Request) -> Response:
+        return page(request, "terms.html")
+
+    @app.get("/privacy", response_class=HTMLResponse)
+    async def privacy_page(request: Request) -> Response:
+        return page(request, "privacy.html")
+
     @app.post("/logout")
     async def logout(request: Request) -> Response:
         request.session.clear()

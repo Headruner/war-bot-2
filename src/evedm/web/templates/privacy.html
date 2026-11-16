@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Privacy Policy · EVE Distance Meter{% endblock %}
+{% block page_help %}<p>What the service stores and why.</p>{% endblock %}
+{% block content %}
+<main class="page legal">
+  <h1>Privacy Policy</h1>
+  <p class="small">Last updated: 16 November 2026</p>
+
+  <p>This page describes what EVE Distance Meter and its Discord bot ("the service") handle. It is run by the person
+    who hosts this instance; the data stays on that person's server.</p>
+
+  <h2>What is collected</h2>
+  <p><b>When you sign in with EVE Online:</b> your character ID and name, and the access and refresh tokens that EVE
+    SSO gives for the permissions (scopes) you approve. Tokens are stored encrypted. With those permissions the
+    service reads, for your characters only, things such as location, ship, online status, notifications, structures
+    and assets, and searches mail for the names of structures. This data is used to rank your characters and to show
+    structure information; mail is read only for that purpose.</p>
+  <p><b>In the browser:</b> a session cookie that keeps you signed in and a few display preferences. The web server
+    may keep ordinary access logs (such as IP address and time).</p>
+  <p><b>Discord:</b> the bot posts messages into the channels that the operator configured. It does not read
+    messages or collect information about Discord users. It stores only the IDs of the servers and channels it is set
+    up for.</p>
+
+  <h2>Other services</h2>
+  <p>To work, the service calls EVE Online's ESI, zKillboard and Discord. Their own policies apply to the data they
+    receive. Nothing is sold or used for advertising.</p>
+
+  <h2>How long</h2>
+  <p>Data is kept while the character is linked. Alerts and notifications are removed automatically after a set time
+    (by default 7 and 30 days). Removing a character on the Characters page deletes its tokens and revokes them at
+    EVE. You can also revoke access yourself at CCP's third-party applications page, and remove the bot from your
+    Discord server at any time.</p>
+
+  <h2>Your choices</h2>
+  <p>You decide which permissions to approve, and you can remove your characters or revoke access whenever you like.
+    To ask for your data to be deleted, contact the person who runs this instance. They will do what they reasonably
+    can, but make no commitment about timing or outcome.</p>
+
+  <h2>No guarantee</h2>
+  <p>Reasonable care is taken with stored data, but no system is completely secure and no guarantee is given. The
+    operator accepts no liability for loss or misuse of data beyond what the law requires.</p>
+
+  <h2>Changes</h2>
+  <p>This policy may change at any time by updating this page.</p>
+</main>
+{% endblock %}

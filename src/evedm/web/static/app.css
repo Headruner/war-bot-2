@@ -477,3 +477,6 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
 .s-chars .sub { color: var(--muted); font-size: 12px; }
 
 .s-drow .warn { color: var(--warn); }
+
+.legal { max-width: 760px; line-height: 1.55; }
+.legal h2 { font-size: 17px; margin: 22px 0 6px; }
