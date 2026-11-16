@@ -231,6 +231,12 @@ def build_wars(settings: Settings, ws: WarsSettings, svc: Services) -> WarServic
     return wars
 
 
+def _socket_state(sock: Any) -> dict[str, Any] | None:
+    if sock is None:
+        return None
+    return {"connected": sock.healthy, "last_error": sock.last_error, **sock.stats}
+
+
 def build_alerts(settings: Settings, ws: WarsSettings, svc: Services) -> AlertService | None:
     """Structure alerts from zKillboard's live killmail feed (demo mode: sample alerts, no feed)."""
     if not settings.alerts.enabled:
@@ -1395,9 +1401,8 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             g["state"] = "destroyed" if g["counts"]["destroyed"] else ("combat" if g["counts"]["combat"] else "firing")
         out.sort(key=lambda g: -g["latest_at"])
         newest = max((r["alert_id"] for r in rows), default=0)
-        return JSONResponse(
-            {"groups": out, "newest_alert_id": newest, "feed": svc.alerts.state | {"stats": svc.alerts.feed.stats}}
-        )
+        feed = svc.alerts.state | {"stats": svc.alerts.feed.stats, "socket": _socket_state(svc.alerts.socket)}
+        return JSONResponse({"groups": out, "newest_alert_id": newest, "feed": feed})
 
     @app.post("/api/characters/{character_id}/destination")
     async def set_destination(request: Request, character_id: int) -> JSONResponse:

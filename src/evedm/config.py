@@ -195,11 +195,16 @@ class AlertSettings:
     """Structure alerts from zKillboard's live killmail feed (R2Z2): destroyed, combat on grid, structure firing."""
 
     enabled: bool = True
-    feed_url: str = "https://r2z2.zkillboard.com/ephemeral"
+    feed_url: str = "https://r2z2.zkillboard.com/ephemeral"  # the fallback: polled only while the websocket is down
+    websocket: bool = True  # main source: zKillboard's killstream, kills arrive as they are processed
+    websocket_url: str = "wss://zkillboard.com/websocket/"
     poll_s: float = 10.0  # zKillboard asks for at least 6 s after "no new killmail"
     grid_km: float = 1000.0  # a kill this close to a known structure counts as combat on its grid
     retention_days: float = 7.0
     max_per_poll: int = 300  # killmail files read per poll at most (zKillboard allows 15 requests/s)
+    # A kill matters for this long. After a longer stop the feed restarts at the newest killmail instead of catching
+    # up, and an alert that could not be posted within this time is dropped from Discord (it stays on the page).
+    max_age_min: float = 60.0
     contact: str = ""  # added to the User-Agent sent to zKillboard
     # Only kills that matter are kept: a battleship or capital hull (T2 variants included) on either side, or a single
     # killmail worth at least ``min_value_isk``. Destroyed structures are always kept. false = keep every kill.
@@ -422,6 +427,10 @@ class Settings:
             raise ConfigError("alerts.poll_s must be at least 6 (zKillboard's rule)")
         if a.grid_km <= 0 or a.retention_days <= 0 or not 1 <= a.max_per_poll <= 2000:
             raise ConfigError("alerts.grid_km and alerts.retention_days > 0, alerts.max_per_poll 1..2000")
+        if a.websocket and not a.websocket_url.startswith(("wss://", "ws://")):
+            raise ConfigError("alerts.websocket_url must start with wss:// (or ws://)")
+        if not 1 <= a.max_age_min <= 1200:
+            raise ConfigError("alerts.max_age_min must be between 1 and 1200 minutes (R2Z2 keeps files 24 h)")
         if a.min_value_isk < 0:
             raise ConfigError("alerts.min_value_isk must be 0 or more")
         bad = [k for k in a.discord.kinds if k not in ("destroyed", "combat", "firing")]
@@ -567,6 +576,8 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
     "EVEDM_STRUCTURES_INTERVAL_MIN": ("structures", "interval_min"),
     "EVEDM_ALERTS_ENABLED": ("alerts", "enabled"),
     "EVEDM_ALERTS_FEED_URL": ("alerts", "feed_url"),
+    "EVEDM_ALERTS_WEBSOCKET": ("alerts", "websocket"),
+    "EVEDM_ALERTS_WEBSOCKET_URL": ("alerts", "websocket_url"),
     "EVEDM_ALERTS_GRID_KM": ("alerts", "grid_km"),
     "EVEDM_ALERTS_CONTACT": ("alerts", "contact"),
     "EVEDM_ALERTS_DISCORD_ENABLED": ("alerts", "discord", "enabled"),
@@ -585,6 +596,7 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
     "EVEDM_EVESCOUT_URL": ("evescout", "url"),
     "EVEDM_EVESCOUT_REFRESH_S": ("evescout", "refresh_s"),
     "EVEDM_ANSIBLEX_ENABLED": ("ansiblex", "enabled"),
+    "EVEDM_ALERTS_MAX_AGE_MIN": ("alerts", "max_age_min"),
     "EVEDM_ALERTS_MIN_VALUE_ISK": ("alerts", "min_value_isk"),
     "EVEDM_ALERTS_BIG_KILLS_ONLY": ("alerts", "big_kills_only"),
     "EVEDM_NOTIFICATIONS_MIN_STRUCTURES": ("notifications", "min_structures"),

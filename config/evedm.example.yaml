@@ -122,11 +122,14 @@ notifications:                              # notifications of every registered 
 
 alerts:                                     # structure alerts from zKillboard's live killmail feed (Alerts page)
   enabled: ${EVEDM_ALERTS_ENABLED:-true}
-  feed_url: https://r2z2.zkillboard.com/ephemeral
+  websocket: ${EVEDM_ALERTS_WEBSOCKET:-true}  # main source: zKillboard's killstream, kills arrive as they happen
+  websocket_url: wss://zkillboard.com/websocket/
+  feed_url: https://r2z2.zkillboard.com/ephemeral   # fallback while the websocket is down, only kills younger than max_age_min
   poll_s: 10                                # wait after "no new killmail" (zKillboard asks for at least 6)
   grid_km: 1000                             # a kill this close to a known structure counts as combat on its grid
   retention_days: 7
   max_per_poll: 300                         # killmails read per poll at most
+  max_age_min: 60                           # a kill older than this is obsolete: no catch-up after a pause, no post
   big_kills_only: true                      # "combat"/"firing" alerts only for a battleship or capital hull (T2 included) or a loss above min_value_isk
   min_value_isk: 500000000
   contact: ${EVEDM_ALERTS_CONTACT:-}        # added to the User-Agent zKillboard sees (mail or Discord name)

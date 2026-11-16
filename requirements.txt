@@ -17,6 +17,7 @@ PyJWT==2.15.1
 python-multipart==0.0.32
 PyYAML==6.0.3
 uvicorn==0.54.0
+websockets==16.1.1
 uvloop==0.23.0; sys_platform != "win32"
 
 # --- transitive

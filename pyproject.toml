@@ -23,6 +23,7 @@ dependencies = [
   "jsonschema>=4.21",
   "python-multipart>=0.0.9",
   "itsdangerous>=2.1",
+  "websockets>=15",
 ]
 
 [project.optional-dependencies]

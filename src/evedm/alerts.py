@@ -23,9 +23,12 @@ import logging
 import math
 import time
 from collections import defaultdict
+from datetime import datetime
 from typing import Any
 
 import httpx
+from websockets.asyncio.client import connect as ws_connect
+from websockets.exceptions import WebSocketException
 
 from . import __version__
 from .activity import activity
@@ -51,7 +54,7 @@ CAPITAL_GROUPS = {
     "Titan",
     "Capital Industrial Ship",  # Rorqual
 }
-RESUME_MAX_AGE_S = 20 * 3600  # R2Z2 keeps files at least 24 h: older positions restart at the pointer
+DEFAULT_MAX_AGE_S = 3600  # a kill older than this is obsolete: no catch-up, no post (alerts.max_age_min)
 BLOCKED_BACKOFF_S = 600
 ZKILL = "https://zkillboard.com"
 
@@ -67,9 +70,11 @@ class R2Z2Feed:
         *,
         max_per_poll: int = 300,
         delay_s: float = 0.1,
+        max_age_s: float = DEFAULT_MAX_AGE_S,
         transport: httpx.AsyncBaseTransport | None = None,
     ):
         self.db = db
+        self.max_age_s = max_age_s
         self.base = base_url.rstrip("/")
         self.max_per_poll = max_per_poll
         self.delay_s = delay_s
@@ -80,7 +85,7 @@ class R2Z2Feed:
             transport=transport,
             follow_redirects=True,
         )
-        self.stats = {"read": 0, "gaps": 0, "blocked": 0, "errors": 0}
+        self.stats = {"read": 0, "gaps": 0, "blocked": 0, "errors": 0, "obsolete": 0}
 
     async def close(self) -> None:
         await self.http.aclose()
@@ -93,6 +98,23 @@ class R2Z2Feed:
         if r.status_code != 200:
             return None
         return int(r.json().get("sequence"))
+
+    async def sync_pointer(self) -> None:
+        """Move the saved position to the newest published one without reading files (the websocket is delivering).
+
+        When the websocket drops, the fallback then starts here: at most one poll interval behind.
+        """
+        if time.time() < self.blocked_until:
+            return
+        try:
+            seq = await self._pointer()
+        except (httpx.HTTPError, ValueError) as exc:
+            self.stats["errors"] += 1
+            log.warning("zKillboard feed: %s", exc)
+            return
+        if seq is not None:
+            self.db.set_meta("alerts.sequence", str(seq))
+            self.db.set_meta("alerts.sequence_at", str(time.time()))
 
     def _block(self) -> None:
         self.blocked_until = time.time() + BLOCKED_BACKOFF_S
@@ -107,8 +129,8 @@ class R2Z2Feed:
         try:
             seq_raw, at_raw = self.db.get_meta("alerts.sequence"), self.db.get_meta("alerts.sequence_at")
             seq = int(seq_raw) if seq_raw else None
-            if seq is None or time.time() - float(at_raw or 0) > RESUME_MAX_AGE_S:
-                seq = await self._pointer()  # start (or restart) at the newest published position
+            if seq is None or time.time() - float(at_raw or 0) > self.max_age_s:
+                seq = await self._pointer()  # start, or restart after a stop longer than kills matter, at the newest
                 if seq is None:
                     return []
             for _ in range(self.max_per_poll):
@@ -140,6 +162,114 @@ class R2Z2Feed:
         return out
 
 
+class KillSocket:
+    """zKillboard's websocket ``killstream`` channel: the main source, kills arrive as they are processed.
+
+    Keeps itself connected (capped exponential back-off). A connection that has been silent for ``silence_s`` counts as
+    down, so the R2Z2 fallback takes over. Killmails wait in a queue until the alert service drains them.
+    """
+
+    SUBSCRIBE = {"action": "sub", "channel": "killstream"}
+
+    def __init__(
+        self,
+        url: str,
+        user_agent: str,
+        *,
+        silence_s: float = 120.0,
+        backoff_max_s: float = 60.0,
+        connect: Any = None,
+    ):
+        self.url = url
+        self.user_agent = user_agent
+        self.silence_s = silence_s
+        self.backoff_max_s = backoff_max_s
+        self._connect = connect or ws_connect
+        self.queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=5000)
+        self.wake = asyncio.Event()  # set on every killmail: the service processes it at once
+        self.connected = False
+        self.last_message = 0.0
+        self.last_error: str | None = None
+        self.stats = {"connects": 0, "messages": 0, "errors": 0, "dropped": 0}
+        self._stop = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+
+    @property
+    def healthy(self) -> bool:
+        return self.connected and time.time() - self.last_message < self.silence_s
+
+    def start(self) -> None:
+        if self._task is None:
+            self._task = asyncio.ensure_future(self._run())
+
+    async def stop(self) -> None:
+        self._stop.set()
+        if self._task is not None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+            self._task = None
+
+    def drain(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        while True:
+            try:
+                out.append(self.queue.get_nowait())
+            except asyncio.QueueEmpty:
+                return out
+
+    def _accept(self, raw: str | bytes) -> None:
+        try:
+            msg = json.loads(raw)
+        except ValueError:
+            return
+        if not isinstance(msg, dict):
+            return
+        self.last_message = time.time()
+        if not (msg.get("killmail_id") or "victim" in msg or msg.get("esi") or msg.get("killmail")):
+            return  # an acknowledgement or a status line, not a killmail
+        try:
+            self.queue.put_nowait(msg)
+        except asyncio.QueueFull:
+            self.stats["dropped"] += 1  # the R2Z2 position still covers it if the socket then drops
+            return
+        self.stats["messages"] += 1
+        self.wake.set()
+
+    async def _run(self) -> None:
+        delay = 1.0
+        while not self._stop.is_set():
+            try:
+                async with self._connect(
+                    self.url,
+                    additional_headers={"User-Agent": self.user_agent},
+                    open_timeout=15,
+                    ping_interval=20,
+                    ping_timeout=20,
+                    max_size=4 * 1024 * 1024,
+                ) as ws:
+                    await ws.send(json.dumps(self.SUBSCRIBE))
+                    self.connected = True
+                    self.last_message = time.time()
+                    self.last_error = None
+                    self.stats["connects"] += 1
+                    delay = 1.0
+                    log.info("zKillboard websocket connected: %s", self.url)
+                    async for raw in ws:
+                        self._accept(raw)
+            except asyncio.CancelledError:
+                raise
+            except (OSError, TimeoutError, WebSocketException) as exc:
+                self.stats["errors"] += 1
+                self.last_error = redact(f"{type(exc).__name__}: {exc}")
+                log.warning("zKillboard websocket: %s (R2Z2 fallback, retry in %.0f s)", self.last_error, delay)
+            finally:
+                self.connected = False
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stop.wait(), timeout=delay)
+            delay = min(delay * 2, self.backoff_max_s)
+
+
 def _distance_m(a: tuple[float, float, float] | None, b: tuple[float, float, float] | None) -> float | None:
     if not a or not b:
         return None
@@ -165,6 +295,7 @@ class AlertService:
         notifier: Any = None,
         page_url: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        socket_connect: Any = None,
     ):
         self.s = settings
         self.db = db
@@ -181,9 +312,25 @@ class AlertService:
             settings.feed_url,
             f"EVE-Distance-Meter/{__version__} (structure alerts{contact})",
             max_per_poll=settings.max_per_poll,
+            max_age_s=settings.max_age_min * 60,
             transport=transport,
         )
-        self.state: dict[str, Any] = {"running": False, "polls": 0, "alerts": 0, "last_error": None, "last_kill": None}
+        self.socket: KillSocket | None = None
+        if settings.websocket:
+            self.socket = KillSocket(
+                settings.websocket_url,
+                f"EVE-Distance-Meter/{__version__} (structure alerts{contact})",
+                connect=ws_connect if socket_connect is None else socket_connect,
+            )
+        self._ws_was_healthy = False
+        self.state: dict[str, Any] = {
+            "running": False,
+            "polls": 0,
+            "alerts": 0,
+            "last_error": None,
+            "last_kill": None,
+            "source": "r2z2",
+        }
         self._types: dict[int, tuple[int | None, str | None, str | None]] = {}
         self._known: tuple[Any, dict[int, list[dict[str, Any]]]] | None = None
         self._stop = asyncio.Event()
@@ -420,7 +567,11 @@ class AlertService:
         alliances = self._alliances() if any(r["owners"] or r["exclude_owners"] for r in rules) else {}
         posted = 0
         cooldown = time.time() - d.combat_cooldown_min * 60
+        too_old = time.time() - self.s.max_age_min * 60
         for r in rows:
+            if (r["created_at"] or 0) < too_old:  # waited too long (Discord down): obsolete, kept on the page only
+                self.db.execute("UPDATE structure_alerts SET posted=2 WHERE alert_id=?", (r["alert_id"],))
+                continue
             before = self.db.query("SELECT channel_id FROM alert_posts WHERE alert_id=?", (r["alert_id"],))
             done = {x[0] for x in before}
             sent = bool(done)
@@ -597,19 +748,53 @@ class AlertService:
     # -- background ---------------------------------------------------------------------------------------
     async def poll_once(self) -> int:
         new = 0
-        for pkg in await self.feed.poll():
+        for pkg in await self._packages():
+            km = pkg.get("esi") or pkg.get("killmail") or pkg
+            when = km.get("killmail_time") if isinstance(km, dict) else None
+            if self._obsolete(when):  # still catching up after a pause: the kill no longer matters
+                self.feed.stats["obsolete"] += 1
+                continue
             try:
                 found = await self.handle(pkg)
             except Exception:  # one odd killmail must not stop the feed
                 log.exception("could not classify a killmail")
                 continue
             new += len(found)
-            km = pkg.get("esi") or pkg.get("killmail") or {}
-            self.state["last_kill"] = km.get("killmail_time") or self.state["last_kill"]
+            self.state["last_kill"] = when or self.state["last_kill"]
         await self.resolve_names()
         await self.post()
         self.purge()
         return new
+
+    async def _packages(self) -> list[dict[str, Any]]:
+        """Killmails to look at now: the websocket's; R2Z2 only while the websocket is down.
+
+        While the websocket delivers, R2Z2 is only asked for its newest position (one small request per poll), so the
+        fallback can start right where the live feed stopped. The first poll after a reconnect still reads R2Z2 once,
+        which covers the seconds before the subscription went live (a killmail seen twice is stored once).
+        """
+        sock = self.socket
+        if sock is None:
+            return await self.feed.poll()
+        live = sock.drain()
+        healthy = sock.healthy
+        if healthy and self._ws_was_healthy:
+            await self.feed.sync_pointer()
+        else:
+            live += await self.feed.poll()
+        self._ws_was_healthy = healthy
+        self.state["source"] = "websocket" if healthy else "r2z2"
+        return live
+
+    def _obsolete(self, killmail_time: str | None) -> bool:
+        """True when the killmail happened longer ago than ``alerts.max_age_min`` (unknown time: kept)."""
+        if not killmail_time:
+            return False
+        try:
+            when = datetime.fromisoformat(killmail_time).timestamp()
+        except ValueError:
+            return False
+        return time.time() - when > self.s.max_age_min * 60
 
     async def resolve_names(self) -> None:
         """Owner and victim corporation names of recent alerts (shared name table)."""
@@ -633,6 +818,23 @@ class AlertService:
                 [(i, n, cat, now) for i, (n, cat) in found.items()],
             )
 
+    async def _wait(self) -> None:
+        """Until the next poll: ``poll_s``, or a second after a killmail came in over the websocket."""
+        sock = self.socket
+        if sock is None:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stop.wait(), timeout=self.s.poll_s)
+            return
+        if sock.wake.is_set():  # a killmail is already waiting: at most one pass a second under load
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stop.wait(), timeout=1.0)
+        else:
+            tasks = {asyncio.ensure_future(sock.wake.wait()), asyncio.ensure_future(self._stop.wait())}
+            await asyncio.wait(tasks, timeout=self.s.poll_s, return_when=asyncio.FIRST_COMPLETED)
+            for t in tasks:
+                t.cancel()
+        sock.wake.clear()
+
     async def _loop(self) -> None:
         self.state["running"] = True
         try:
@@ -645,16 +847,19 @@ class AlertService:
                     self.state["last_error"] = redact(repr(exc))
                     log.exception("alert poll failed")
                 self.state["polls"] += 1
-                try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=self.s.poll_s)
-                except TimeoutError:
-                    pass
+                await self._wait()
         finally:
             self.state["running"] = False
 
     def start(self) -> None:
         if self._task is None:
-            log.info("structure alerts started (zKillboard R2Z2 %s)", self.s.feed_url)
+            log.info(
+                "structure alerts started (websocket %s, R2Z2 %s)",
+                self.s.websocket_url if self.socket else "off",
+                self.s.feed_url,
+            )
+            if self.socket is not None:
+                self.socket.start()
             self._task = asyncio.ensure_future(self._loop())
 
     async def stop(self) -> None:
@@ -667,6 +872,8 @@ class AlertService:
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._task
             self._task = None
+        if self.socket is not None:
+            await self.socket.stop()
         await self.feed.close()
 
 

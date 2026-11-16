@@ -4,6 +4,7 @@ the Alerts page and API with each main's closest characters, and setting an in-g
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 import httpx
@@ -11,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from common import AMARR, JITA, PERIMETER, add_character
-from evedm.alerts import CORE_GROUPS, R2Z2Feed, seed_demo_alerts
+from evedm.alerts import CORE_GROUPS, KillSocket, R2Z2Feed, seed_demo_alerts
 from evedm.alerts import AlertService as Alerts
 from evedm.config import WAYPOINT_SCOPE, AlertSettings, ConfigError, Settings, load_settings
 from evedm.esi import EsiError
@@ -21,6 +22,10 @@ from evedm.wars.discord import DiscordRejected, NotifyError
 from evedm.wars.structures import Structure, StructureIndex
 from evedm.web.app import create_app
 from fake_eve import ALL_SCOPES, GROUPS, TYPES
+
+# Kills only matter for an hour (alerts.max_age_min), so the fixtures happened a few minutes ago.
+KILL_TIME = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 300))
+OLD_TIME = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 2 * 3600))
 
 pytestmark = pytest.mark.anyio
 CORP, OTHER, SHOOTER = 98000001, 98000002, 98000003
@@ -128,7 +133,7 @@ def package(
         victim["position"] = pos
     km = {
         "killmail_id": kid,
-        "killmail_time": "2026-10-31T12:00:00Z",
+        "killmail_time": KILL_TIME,
         "solar_system_id": system,
         "victim": victim,
         "attackers": attackers or [{"ship_type_id": RIFTER, "corporation_id": SHOOTER, "final_blow": True}],
@@ -171,6 +176,7 @@ async def make(db, graph, index):
             notifier=notifier,
             page_url="https://evedm.example/alerts",
             transport=(feed or FakeR2Z2()).transport,
+            socket_connect=FakeSocket([], OSError("offline in tests")),  # never the real websocket
         )
         svc.feed.delay_s = 0
         made.append(svc)
@@ -460,8 +466,141 @@ async def test_poll_once_reads_the_feed_and_posts(make, db):
     note = FakeNotifier()
     svc = make(feed=fake, notifier=note)
     assert await svc.poll_once() == 2
-    assert svc.state["last_kill"] == "2026-10-31T12:00:00Z" and len(note.sent) == 2
+    assert svc.state["last_kill"] == KILL_TIME and len(note.sent) == 2
     assert svc.feed.stats["read"] == 3
+
+
+async def test_kills_older_than_an_hour_are_obsolete_and_not_processed(make, db):
+    fake = FakeR2Z2(pointer=7)
+    old = package(80, ASTRAHUS, corp=CORP)
+    old["esi"]["killmail_time"] = OLD_TIME  # caught up after a pause: two hours late
+    fake.files = {7: old, 8: package(82, RIFTER, pos=near(P_FORT, 5))}
+    note = FakeNotifier()
+    svc = make(feed=fake, notifier=note)
+    assert await svc.poll_once() == 1 and len(note.sent) == 1
+    assert svc.feed.stats["obsolete"] == 1 and svc.state["last_kill"] == KILL_TIME
+    svc.s.max_age_min = 600  # the window is a setting: ten hours keeps the old one
+    fake.files[9] = old | {"killmail_id": 83}
+    fake.files[9]["esi"] = old["esi"] | {"killmail_id": 83}
+    fake.pointer = 9
+    assert await svc.poll_once() == 1
+
+
+async def test_an_alert_that_could_not_be_posted_for_an_hour_is_dropped(make, db):
+    fake = FakeR2Z2(pointer=7)
+    fake.files = {7: package(80, ASTRAHUS, corp=CORP)}
+    note = FakeNotifier()
+    svc = make(feed=fake, notifier=note)
+    svc.notifier = None  # Discord is down: the alert waits
+    assert await svc.poll_once() == 1
+    db.execute("UPDATE structure_alerts SET created_at = created_at - 7200")
+    svc.notifier = note
+    assert await svc.post() == 0 and note.sent == []
+    assert db.query("SELECT posted FROM structure_alerts")[0][0] == 2  # kept on the page, never posted
+
+
+async def test_the_feed_restarts_at_the_pointer_after_a_pause_longer_than_the_window(db):
+    fake = FakeR2Z2(pointer=900)
+    fake.files = {900: {"killmail_id": 900}, 5: {"killmail_id": 5}}
+    db.set_meta("alerts.sequence", "5")
+    db.set_meta("alerts.sequence_at", str(time.time() - 2 * 3600))
+    assert [p["killmail_id"] for p in await feed_for(db, fake).poll()] == [900]
+    db.set_meta("alerts.sequence", "5")
+    db.set_meta("alerts.sequence_at", str(time.time() - 600))  # a short stop is caught up
+    assert [p["killmail_id"] for p in await feed_for(db, fake).poll()] == [5]
+
+
+class FakeSocket:
+    """Stands in for websockets' ``connect``: replays the given messages, then ends (or fails to connect)."""
+
+    def __init__(self, messages: list, fail: Exception | None = None) -> None:
+        self.messages, self.fail, self.sent, self.headers = messages, fail, [], {}
+
+    def __call__(self, url, **kw):
+        self.url, self.headers = url, kw.get("additional_headers", {})
+        if self.fail:
+            raise self.fail
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def send(self, text):
+        self.sent.append(text)
+
+    def __aiter__(self):
+        async def gen():
+            for m in self.messages:
+                yield m if isinstance(m, str) else json.dumps(m)
+            await asyncio.sleep(3600)  # stays connected
+
+        return gen()
+
+
+async def test_the_socket_subscribes_queues_killmails_and_ignores_the_rest():
+    pkg = package(80, ASTRAHUS, corp=CORP)
+    fake = FakeSocket(["not json", {"status": "ok"}, pkg, "[1]"])
+    sock = KillSocket("wss://zkb.test/websocket/", "ua/1", connect=fake)
+    sock.start()
+    for _ in range(100):
+        if sock.stats["messages"]:
+            break
+        await asyncio.sleep(0.01)
+    assert sock.healthy and fake.sent == ['{"action": "sub", "channel": "killstream"}']
+    assert fake.headers == {"User-Agent": "ua/1"} and sock.wake.is_set()
+    assert [m["killmail_id"] for m in sock.drain()] == [80] and sock.drain() == []
+    await sock.stop()
+    assert not sock.connected
+
+
+async def test_the_socket_reconnects_after_errors_and_a_silent_one_is_not_healthy():
+    sock = KillSocket("wss://zkb.test/", "ua", connect=FakeSocket([], OSError("refused")), backoff_max_s=0.01)
+    sock.start()
+    for _ in range(200):
+        if sock.stats["errors"] >= 2:
+            break
+        await asyncio.sleep(0.01)
+    assert sock.stats["errors"] >= 2 and not sock.healthy and "refused" in sock.last_error
+    await sock.stop()
+    quiet = KillSocket("wss://zkb.test/", "ua", silence_s=60)
+    quiet.connected, quiet.last_message = True, time.time() - 120
+    assert not quiet.healthy
+
+
+async def test_the_websocket_is_the_main_source_and_r2z2_is_the_fallback(make, db):
+    r2z2 = FakeR2Z2(pointer=7)
+    r2z2.files = {7: package(81, ASTRAHUS, corp=CORP), 8: package(82, RIFTER, pos=near(P_FORT, 5))}
+    svc = make(feed=r2z2, discord={})
+    assert svc.socket is not None
+    sock = svc.socket
+    # websocket down: R2Z2 is read
+    assert await svc.poll_once() == 2 and svc.state["source"] == "r2z2"
+    # websocket up: the first pass still reads R2Z2 once, then only the pointer is asked for
+    sock.connected, sock.last_message = True, time.time()
+    sock.queue.put_nowait(package(83, ASTRAHUS, corp=CORP))
+    assert await svc.poll_once() == 1 and svc.state["source"] == "websocket"
+    before = len(r2z2.requests)
+    r2z2.pointer = 40
+    sock.queue.put_nowait(package(84, ASTRAHUS, corp=CORP))
+    assert await svc.poll_once() == 1
+    assert r2z2.paths()[before:] == ["sequence.json"] and db.get_meta("alerts.sequence") == "40"
+    # websocket drops: R2Z2 continues from the position it kept
+    r2z2.files[40] = package(85, ASTRAHUS, corp=CORP)
+    r2z2.pointer = 41
+    sock.connected = False
+    assert await svc.poll_once() == 1 and svc.state["source"] == "r2z2"
+
+
+async def test_the_fallback_ignores_kills_older_than_the_window(make, db):
+    r2z2 = FakeR2Z2(pointer=7)
+    old = package(80, ASTRAHUS, corp=CORP)
+    old["esi"]["killmail_time"] = OLD_TIME
+    r2z2.files = {7: old}
+    svc = make(feed=r2z2)
+    assert await svc.poll_once() == 0 and svc.feed.stats["obsolete"] == 1
 
 
 @pytest.mark.alerts_loop
@@ -501,6 +640,8 @@ def serve_settings(**alerts) -> Settings:
         ({"poll_s": 3}, "at least 6"),
         ({"grid_km": 0}, "grid_km"),
         ({"max_per_poll": 0}, "max_per_poll"),
+        ({"max_age_min": 0}, "max_age_min"),
+        ({"websocket_url": "https://zkb.test/ws"}, "websocket_url"),
         ({"discord_kinds": ["boom"]}, r"unknown \['boom'\]"),
         ({"discord_enabled": True}, "needs the bot token"),
     ],
