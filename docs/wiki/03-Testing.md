@@ -9,6 +9,10 @@
 | Dependencies | `tests/unit/test_dependencies.py` | every import pinned in `requirements.txt`, exact stable pins, installed = pinned, absolute verified paths, WAL + checkpoint | 8 |
 | Container | `scripts/docker-smoke.sh` | Image with `--cpus 2 --memory 1g`, host folder mounted at `/app/data`, health, ranking, wars, structures, alerts, WAL, `evedm check`, uid 10001, restart keeps data | script |
 
+Added after 0.8.0: `tests/unit/test_scout_unclaimed.py` (Known, no assets listing: `scout.unclaimed()`, `known_via`, filters, public-dataset-only rows, `GET /api/structures/unclaimed`) and `tests/unit/test_web_delivery.py` (cache headers for versioned, unversioned, page and API answers, gzip threshold, universe map answer, `defer` on every script, shared `common.js`). The last full unit run passed 642 tests.
+
+Secrets in tests: a test token is built at run time (for example by joining parts), never written as one literal shaped like a Discord bot token, because GitHub push protection blocks such a push.
+
 ## Scenario matrix (accounts, war watcher, structures, alerts)
 
 Every row is an automated test. Rows marked *fix* found a defect that was corrected before release 0.4.0;

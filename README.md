@@ -38,6 +38,9 @@ when you press **Set destination** for an online character.
   corporation or alliance, list citadels known and unknown (EVE Ref's public dataset included) that match every
   filled-in input. `GET /api/structures/suggest?kind=place|owner&q=` and `GET /api/structures/search?systems=&regions=&corps=&alliances=&state=&sort=&limit=&offset=`;
   alliance members come from the war census or ESI and are remembered for 6 hours.
+- **Known, no assets** (third tab of the Structures page, members only): structures that are known - a character may
+  dock there, an in-game mail names them or a public dataset lists them - but where no registered character has an asset;
+  each row says how it is known (`known_via`: dock, mail, registry). `GET /api/structures/unclaimed?q=&region=&type=&space=&at_war=&via=&sort=&limit=&offset=`.
 - **Structure alerts** (Alerts page): zKillboard's live killmail feed shows structures **destroyed** (citadels,
   engineering complexes and refineries drop their quantum core), **combat** within 1000 km of a known structure, and
   structures **firing**, in all space. Combat and firing alerts are kept only for kills with a **battleship or capital
@@ -106,6 +109,8 @@ when you press **Set destination** for an online character.
 - 2D **star map** (canvas): zoom, pan, pinch, route with security colours, all characters marked; phone layout puts the map on top.
 - Runs comfortably on **2 vCPU / 1 GB RAM**: ~74 MB idle, ~78 MB peak, 420 req/s in a container limited to 2 CPUs / 1 GB
   ([measurements](docs/wiki/05-Performance.md)).
+- Fast delivery: gzip for answers of 1 KB and more, one-year cache for assets linked with `?v=<version>` (pages and API
+  answers use `no-cache`, so the back/forward cache still works), deferred scripts, one shared `common.js`.
 - Every launch recorded (DB table + `logs/launches.jsonl`); rotating log with secrets redacted.
 - Pinned, stable dependencies in `requirements.txt`, verified by tests and by `evedm check` (dependencies + absolute,
   existing resource paths) at start-up and at image build time.

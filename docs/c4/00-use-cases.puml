@@ -8,6 +8,8 @@ actor "Member of the configured\nalliance (BB)" as bb
 actor "EVE SSO" as sso <<system>>
 actor "ESI" as esi <<system>>
 actor "EVE-Scout" as evs <<system>>
+actor "Discord" as discord <<system>>
+actor "Administrator main\n(web.admin_characters)" as adm
 rectangle "EVE Distance Meter" {
   usecase "UC-08 Sign in to the Web UI" as UC8
   usecase "UC-01 Add a character\nthrough EVE SSO" as UC1
@@ -24,6 +26,9 @@ rectangle "EVE Distance Meter" {
   usecase "UC-16 Rank over the Ansiblex jump gates\neach character can see" as UC16
   usecase "UC-18 Report a structure and its owner by mail\n(drag both links into an in-game mail)" as UC18
   usecase "UC-19 Search citadels by system or region\nand by corporation or alliance (members only)" as UC19
+  usecase "UC-22 Find structures known without assets\n(Known, no assets tab, members only)" as UC22
+  usecase "UC-20 Change the configuration on the Settings page\n(administrator main only, no restart)" as UC20
+  usecase "UC-21 Send alerts and notifications to several\nDiscord channels, each with its own filter" as UC21
   usecase "UC-11 React to a structure alert\n(battleship / capital kills or > 500M ISK)" as UC11
 }
 bb --|> user
@@ -43,7 +48,11 @@ user --> UC18
 bb --> UC13
 bb --> UC14
 bb --> UC19
+bb --> UC22
+adm --> UC20
+UC20 .> UC21 : <<include>>
 UC19 .> UC14 : <<extend>>
+UC22 .> UC14 : <<extend>>
 UC18 .> UC14 : <<extend>>
 UC5 .> UC4 : <<include>>
 UC15 .> UC4 : <<extend>>
@@ -54,6 +63,7 @@ UC1 --> sso
 UC2 --> sso : refresh tokens
 UC4 --> esi : location, ship, online
 UC13 --> esi : /characters/{id}/notifications
+UC21 --> discord : bot REST API, one message per matching channel
 UC14 --> esi : assets, then /universe/structures/{id}
 UC18 --> esi : /characters/{id}/mail/, /characters/{id}/mail/{mail_id}/
 UC15 --> evs : /v2/public/signatures

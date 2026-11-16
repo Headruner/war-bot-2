@@ -64,6 +64,7 @@ gets 404 for the page and `/api/settings` and sees no menu entry.
 - **Secrets** (`discord.bot_token`, `eve.client_secret`) are never sent to the browser and are stored encrypted with
   `EVEDM_SECRET_KEY`. Every save is logged at WARNING level with the administrator's name and the names (not the
   values) of the changed settings.
+- **Secrets in Git**: `data/settings.yaml` (any `settings.yaml`), `.env` variants, `config/evedm.yaml`, local and secret config files, key and certificate files and `*.sqlite3*` are listed in `.gitignore` and are never committed (the demo database `data/demo/*.sqlite3` is the exception). `config/wars.yaml` is tracked and holds only `${EVEDM_DISCORD_BOT_TOKEN}`. A literal Discord bot token in a file or a test makes GitHub push protection reject the push; build test tokens at run time. A token that was committed or pasted anywhere shared must be reset in the Discord developer portal.
 - **Backup**: copy `data/settings.yaml` with the database. Its secrets can be decrypted only with the same
   `EVEDM_SECRET_KEY`.
 

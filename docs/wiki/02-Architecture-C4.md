@@ -125,6 +125,15 @@ Key mechanisms:
   memory for 6 hours (`alliance_cache` in `create_app`); an alliance that cannot be read is reported in
   `unresolved_alliances`. The wars-side counterpart is `WarCensus.loot()` (all space, `space` and `min_sec` filters,
   WAR-17).
+- **Known, no assets tab** (`StructureScout.unclaimed`, STR-16, UC-22): the third tab of the Structures page calls
+  `GET /api/structures/unclaimed`. It lists the rows of `effective()` that have no assets and are not destroyed and that
+  are known another way, plus the structures of the public dataset that no scout row stands for (`origin` `public`).
+  Each row has `known_via` (`dock`, `mail`, `registry`); `via=` filters on it. The tab keeps its filters in the prefs
+  cookie (`structures_unclaimed`).
+- **Web delivery** (WEB-07): `CacheHeaders`, an ASGI middleware in `web/app.py`, marks static files linked with
+  `?v=<asset version>` `public, max-age=31536000, immutable` and everything else `no-cache` (never `no-store`);
+  `GZipMiddleware` (1024 bytes, level 5) is outermost; the universe map keeps its own pre-compressed answer. Scripts are
+  `defer`red and share `static/common.js` (see [05 · Performance](05-Performance.md)).
 
 - **Settings page** (`SettingsAdmin`, `settings_admin.py`; routes in `web/app.py`, `settings.html`, `settings.js`): builds the
   list of settings from the settings dataclasses of `evedm.yaml` and `wars.yaml`, validates the whole resulting

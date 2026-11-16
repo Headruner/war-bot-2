@@ -134,6 +134,7 @@ EVEDM_ALLOWED_LOGIN_CHARACTERS=<your character ID>
 - Your character ID is the number in `zkillboard.com/character/<id>/`; empty means anyone may sign in.
 - `EVEDM_PUBLISH=127.0.0.1:<port>` makes the app reachable from the VM only (reverse proxy, Tailscale).
 - Keep a copy of `EVEDM_SECRET_KEY`: a new key makes the stored tokens unreadable.
+- Keep real tokens and secrets only in `.env` (and in `data/settings.yaml`, where the Settings page stores them encrypted). `.gitignore` keeps them out of Git: `.env` and its variants except `.env.example`, `config/evedm.yaml`, `config/*.local.yaml`, `config/*.secret.yaml`, `**/settings.yaml`, `secrets/`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `credentials*.json`, `docker-compose.override.yml` and `*.sqlite3*`. The demo database `data/demo/*.sqlite3` stays tracked. `config/wars.yaml` is tracked and holds only the placeholder `${EVEDM_DISCORD_BOT_TOKEN}`; the token itself belongs in `.env`.
 
 #### 7. Build and start
 

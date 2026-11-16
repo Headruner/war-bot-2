@@ -31,3 +31,17 @@ Memory stays under 8 % of 1 GB, and the container serves 400+ requests per secon
 | Image | single process, `MALLOC_ARENA_MAX=2`, bytecode precompiled, pip removed from the venv, non-root user | 65 MB compressed image |
 
 Reports: `logs/perf/*.json` and `*.md`.
+
+## Web delivery (browser to server)
+
+Added after 0.8.0 (WEB-07, `tests/unit/test_web_delivery.py`). No new load-test figures: the changes cut bytes and requests on the browser link, not ESI or SQLite work.
+
+| Piece | What it does |
+| --- | --- |
+| `CacheHeaders` (ASGI middleware, `web/app.py`) | static files linked with `?v=<asset version>` get `Cache-Control: public, max-age=31536000, immutable`; unversioned static files, pages and API answers get `no-cache` (revalidate, never `no-store`), so pages stay eligible for the browser's back/forward cache |
+| `GZipMiddleware` | outermost; minimum size 1024 bytes, level 5. The universe map keeps its own pre-compressed answer with `public, max-age=86400` and is not compressed again |
+| `defer` on every `<script>` | HTML is parsed and painted before any script runs |
+| `static/common.js` | `apiRaw`, `api`, `$`, `el` in one file loaded in the page head and used by all page scripts instead of eight copies; cached once for every page |
+| Ranking autocomplete | aborts the previous request when the next key is typed, so a stale answer never overwrites a newer one |
+| Notifications long poll | sleeps while the tab is hidden; Alerts and Notifications refresh once when the tab becomes visible |
+| CSS | `content-visibility: auto` for list rows far below the fold; `prefers-reduced-motion` honoured |
