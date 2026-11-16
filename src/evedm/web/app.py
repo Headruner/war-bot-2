@@ -1108,6 +1108,45 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         result["wars_known"] = svc.wars is not None and svc.wars.census is not None
         return JSONResponse(result)
 
+    @app.get("/api/structures/unclaimed")
+    async def unclaimed_structures(
+        request: Request,
+        q: str = "",
+        region: str = "",
+        type: str = "",  # noqa: A002
+        space: str = "",
+        at_war: int = 0,
+        via: str = "",
+        sort: str = "jumps",
+        limit: int = 100,
+        offset: int = 0,
+        refresh: int = 1,
+    ) -> JSONResponse:
+        """Structures that are known from docking rights, in-game mails or the public datasets but where no character
+        has an asset (``known_via`` per row; ``via=dock|mail|registry`` keeps one way). Counts only, never who."""
+        uid = owner(request)
+        scout = await scout_of(request)
+        svc = svc_of(request)
+        sources = await character_sources(svc, uid, refresh)
+        wars = svc.wars.census.corps_at_war() if svc.wars is not None and svc.wars.census is not None else {}
+        return JSONResponse(
+            scout.unclaimed(
+                sources,
+                svc.ranking.avoid,
+                wars,
+                public=public_structures_of(svc),
+                q=q[:60],
+                region=region,
+                type_name=type,
+                space=space,
+                war_only=bool(at_war),
+                via=via,
+                sort=sort,
+                limit=max(1, min(limit, 500)),
+                offset=max(0, offset),
+            )
+        )
+
     def public_structures_of(svc: Services) -> dict[int, list[Any]] | None:
         """The public dataset's structures (owner -> Structure) once it is loaded; None before that."""
         structures = svc.wars.structures if svc.wars is not None else None

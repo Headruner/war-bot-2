@@ -1791,6 +1791,7 @@ class StructureScout:
             item = dict(r)
             mail, record = mails.get(r["structure_id"]), history.get(r["structure_id"])
             item["mailed"] = mail is not None
+            item["registry"] = record is not None  # a public dataset (EVE Ref, local index, Adam4EVE) lists it
             if r["destroyed_at"] is None:
                 if mail is not None:
                     self._apply_mail(item, mail)
@@ -2074,6 +2075,7 @@ class StructureScout:
             "dock_by": 0,
             "dockable": False,
             "mailed": False,
+            "registry": True,
             "first_seen": None,
             "last_seen": None,
             "checked_at": None,
@@ -2081,6 +2083,81 @@ class StructureScout:
             "status": "public",
             "position": st.position,
             "destroyed_at": None,
+        }
+
+    @staticmethod
+    def _known_via(r: dict[str, Any]) -> list[str]:
+        """Why a structure is known without assets: ``dock`` (a character may dock there), ``mail`` (an in-game mail
+        names it) and ``registry`` (a public dataset lists it)."""
+        flags = (("dock", "dockable"), ("mail", "mailed"), ("registry", "registry"))
+        return [name for name, flag in flags if r.get(flag)]
+
+    def unclaimed(
+        self,
+        sources: dict[int, list[str]],
+        avoid: list[int],
+        at_war: dict[int, list[int]] | None = None,
+        *,
+        public: dict[int, list[Any]] | None = None,
+        q: str = "",
+        region: str = "",
+        type_name: str = "",
+        space: str = "",
+        war_only: bool = False,
+        via: str = "",
+        sort: str = "jumps",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Structures that are known (a docking right, an in-game mail or a public dataset) but where no registered
+        character has an asset. Every row has ``known_via``; ``via`` keeps the rows known that way (dock, mail or
+        registry). A structure with assets, or one a killmail showed destroyed, is never listed. The candidates are
+        ``effective()`` plus the structures of ``public`` that no scout row stands for."""
+        scouted = self.effective()
+        rows = [
+            r | {"known_via": self._known_via(r), "origin": "scout"}
+            for r in scouted
+            if not r["assets"] and r["destroyed_at"] is None and self._known_via(r)
+        ]
+        taken = {r["structure_id"] for r in scouted}
+        extra = []
+        for items in (public or {}).values():
+            for st in items:
+                if st.structure_id not in taken:
+                    extra.append((st, self.g.index.get(st.system_id) if st.system_id else None))
+        names = self._entity_names({st.owner_id for st, _ in extra} | {st.type_id for st, _ in extra})
+        tag = {"known_via": ["registry"], "origin": "public"}
+        rows += [self._public_row(st, idx, names) | tag for st, idx in extra]
+        dist, origin = self.g.nearest(sources.keys(), avoid)
+        at_war = at_war or {}
+        rows = [self._present(r, dist, origin, sources, at_war) for r in rows]
+        facets = {
+            "types": Counter(r["type"] for r in rows).most_common(),
+            "regions": Counter(r["system"]["region"] for r in rows).most_common(),
+            "spaces": Counter(r["system"]["space"] for r in rows).most_common(),
+            "total": len(rows),
+            "via": {k: sum(1 for r in rows if k in r["known_via"]) for k in ("dock", "mail", "registry")},
+        }
+        needle = q.strip().lower()
+        if needle:
+            rows = [r for r in rows if needle in f"{r['name']} {r['system']['name']} {r['owner']}".lower()]
+        if region:
+            rows = [r for r in rows if r["system"]["region"] == region]
+        if type_name:
+            rows = [r for r in rows if r["type"] == type_name]
+        if space:
+            rows = [r for r in rows if r["system"]["space"] == space]
+        if via in ("dock", "mail", "registry"):
+            rows = [r for r in rows if via in r["known_via"]]
+        if war_only:
+            rows = [r for r in rows if r["wars"]]
+        rows = self._sorted(rows, sort)
+        return {
+            "rows": rows[offset : offset + limit],
+            "matched": len(rows),
+            "facets": facets,
+            "characters": sum(len(v) for v in sources.values()),
+            "public_loaded": public is not None,
         }
 
     def search(

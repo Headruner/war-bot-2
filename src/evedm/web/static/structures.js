@@ -4,6 +4,7 @@
 
 const PAGE = 100;
 const SPACE = { high: "high-sec", low: "low-sec", null: "null-sec", wormhole: "wormhole", unknown: "unknown space" };
+const VIA_TEXT = { dock: "docking rights", mail: "an in-game mail", registry: "a public dataset" };
 const STATUS = { ok: "readable", no_access: "structure details unavailable from ESI", unread: "not read yet" };
 let offset = 0;
 
@@ -70,6 +71,7 @@ function row(r, showSource = source) {
     });
     owner.append(w);
   }
+  if (r.known_via) st.append(el("div", "small", "Known from: " + r.known_via.map((v) => VIA_TEXT[v] || v).join(", ")));
   if (r.mail) st.append(el("div", "small", `Named in a mail · ${r.mail.date}${r.mail.owner ? " · owner from the mail" : ""}`));
   const seen = el("td", "small");
   seen.append(el("div", null, r.last_seen == null ? "public dataset" : ago(r.last_seen)));
@@ -212,6 +214,61 @@ $("#s-resolve-stop").addEventListener("click", async () => {
 });
 $("#s-more").addEventListener("click", () => load(true));
 
+// Known, no assets tab: structures known from docking rights, mails or public datasets where nobody here has assets.
+const UNCLAIMED_DEFAULTS = { q: "", space: "", region: "", type: "", via: "", war: false, sort: "jumps" };
+const uPrefs = Prefs.get("structures_unclaimed", UNCLAIMED_DEFAULTS);
+let uOffset = 0, uSeq = 0;
+
+async function loadUnclaimed(append = false) {
+  if (!append) uOffset = 0;
+  const mine = ++uSeq;
+  const f = { q: $("#u-q").value.trim(), space: $("#u-space").value, region: $("#u-region").value, type: $("#u-type").value,
+    via: $("#u-via").value, war: $("#u-war").checked, sort: $("#u-sort").value };
+  Prefs.set("structures_unclaimed", f);
+  const qs = new URLSearchParams({ q: f.q, space: f.space, region: f.region, type: f.type, via: f.via,
+    at_war: f.war ? 1 : 0, sort: f.sort, limit: PAGE, offset: uOffset });
+  $("#u-info").textContent = "Loading…";
+  let d;
+  try {
+    d = await api(`/api/structures/unclaimed?${qs}`);
+  } catch (err) {
+    if (mine === uSeq) $("#u-info").textContent = "Could not load: " + err.message;
+    return;
+  }
+  if (mine !== uSeq) return;  // a newer request is under way
+  fillSelect($("#u-region"), d.facets.regions, f.region);
+  fillSelect($("#u-type"), d.facets.types, f.type);
+  const body = $("#u-rows");
+  if (!append) body.innerHTML = "";
+  d.rows.forEach((r) => body.append(row(r, "all")));
+  uOffset += d.rows.length;
+  $("#u-more").hidden = uOffset >= d.matched;
+  const v = d.facets.via;
+  const parts = [`${d.matched} of ${d.facets.total} structures without assets`,
+    `${v.dock} dockable, ${v.mail} named in mails, ${v.registry} in public datasets`];
+  if (!d.public_loaded) parts.push("public datasets not loaded yet");
+  if (!d.characters) parts.push("add characters to see jumps");
+  $("#u-info").textContent = parts.join(" · ");
+}
+
+$("#u-q").value = uPrefs.q || "";
+$("#u-space").value = uPrefs.space || "";
+["#u-region", "#u-type"].forEach((id, k) => {
+  const v = [uPrefs.region, uPrefs.type][k];
+  if (v) $(id).append(new Option(v, v));
+  $(id).value = v || "";
+});
+$("#u-war").checked = Boolean(uPrefs.war);
+if ([...$("#u-via").options].some((o) => o.value === uPrefs.via)) $("#u-via").value = uPrefs.via;
+if ([...$("#u-sort").options].some((o) => o.value === uPrefs.sort)) $("#u-sort").value = uPrefs.sort;
+let uTyping = null;
+$("#u-q").addEventListener("input", () => { clearTimeout(uTyping); uTyping = setTimeout(() => loadUnclaimed(), 300); });
+$("#u-q").addEventListener("search", () => { clearTimeout(uTyping); loadUnclaimed(); });
+["#u-space", "#u-region", "#u-type", "#u-via", "#u-war", "#u-sort"].forEach((id) =>
+  $(id).addEventListener("change", () => loadUnclaimed()));
+$("#u-reload").addEventListener("click", () => loadUnclaimed());
+$("#u-more").addEventListener("click", () => loadUnclaimed(true));
+
 // Search tab: citadels by place and owner, known and unknown. It searches on every change of a chip or a select.
 const SEARCH_DEFAULTS = { state: "all", sort: "jumps", chips: [] };
 const MAX_STORED_CHIPS = 12;  // the prefs cookie holds 3.5 KB: more chips than this would make it drop the write
@@ -268,7 +325,7 @@ $("#q-more").addEventListener("click", () => search(true));
 
 const tabLoaded = new Set();
 function showTab(name, save = true) {
-  if (name !== "search") name = "list";
+  if (name !== "search" && name !== "unclaimed") name = "list";
   document.querySelectorAll(".tab").forEach((b) => {
     const on = b.dataset.tab === name;
     b.classList.toggle("active", on);
@@ -277,6 +334,7 @@ function showTab(name, save = true) {
   document.querySelectorAll(".tab-panel").forEach((pn) => { pn.hidden = pn.id !== `tab-${name}`; });
   if (save) Prefs.set("structures", { tab: name });
   if (name === "search" && !tabLoaded.has(name)) { tabLoaded.add(name); search(); }
+  if (name === "unclaimed" && !tabLoaded.has(name)) { tabLoaded.add(name); loadUnclaimed(); }
 }
 document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
 showTab(prefs.tab, false);
