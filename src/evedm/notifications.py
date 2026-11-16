@@ -100,6 +100,7 @@ _MOON_KEYS = ("moonID", "moonId")
 _STRUCTURE_TYPE_KEYS = ("structureTypeID", "structureTypeId", "structure_type_id")
 _SHOWINFO = re.compile(r"showinfo:(\d+)//(\d+)")
 TYPE_ID_GROUPS = ("tower", "other_attacks")  # ``typeID`` is the structure itself only in these (towers, orbitals...)
+DAYS_LEFT_TYPES = ("StructureImpendingAbandonmentAssetsAtRisk",)  # the body says how many days remain
 TYPE_NAME_RETRY_S = 3600.0  # a type ESI could not name is not asked again for this long
 DISCORD_MARK = "\U0001f7e3"  # purple circle: Discord cannot colour embed text, so the key values get a marker and bold
 
@@ -166,6 +167,12 @@ def parse_body(text: str) -> dict[str, Any]:
     except yaml.YAMLError:
         return {}
     return body if isinstance(body, dict) else {}
+
+
+def days_left_of(body: dict[str, Any]) -> int | None:
+    """Days until the structure is abandoned (its assets then become loot), from the abandonment warning."""
+    value = _first(body, ("daysUntilAbandon", "daysUntilAbandoned", "days_until_abandon"))
+    return value if value is not None and value >= 0 else None
 
 
 def title_of(ntype: str, system_name: str) -> str:
@@ -441,6 +448,19 @@ class NotificationService:
         d = self.describe(row)
         system = d["system"]
         fields: list[dict[str, Any]] = []
+        if d["structure_name"]:  # the structure's own name; unknown to the app: no field
+            fields.append({"name": "Structure", "value": f"{DISCORD_MARK} **{d['structure_name'][:900]}**"})
+        if d["days_left"] is not None:
+            unit = "day" if d["days_left"] == 1 else "days"
+            fields.append(
+                {
+                    "name": "Days left",
+                    "value": (
+                        f"{DISCORD_MARK} **{d['days_left']}** {unit} until the structure is abandoned"
+                        " and its assets can be looted"
+                    ),
+                }
+            )
         if d["structure_type"]:  # unknown: no field (the page says "Unknown")
             fields.append(
                 {"name": "Structure type", "value": f"{DISCORD_MARK} **{d['structure_type'][:900]}**", "inline": True}
@@ -1157,11 +1177,17 @@ class NotificationService:
                 types[key] = by_structure.get(r["structure_id"])
         ids = sorted({t for t in types.values() if t})
         names = self.db.structure_type_names(ids) if ids else {}
+        structures = self.db.structure_names(sorted({r["structure_id"] for r in rows if _f(r, "structure_id")}))
         now = time.time()
         self._type_wanted |= {t for t in ids if t not in names and self._type_failed.get(t, 0.0) <= now}
         wanted = set(self.s.zkb_check.types) if self.s.zkb_check.enabled else set()
         keys = [self.event_key(r) for r in rows if r["type"] in wanted]
-        return {"types": types, "names": names, "zkb": self.db.zkb_checks(keys) if keys else {}}
+        return {
+            "types": types,
+            "names": names,
+            "structures": structures,
+            "zkb": self.db.zkb_checks(keys) if keys else {},
+        }
 
     def _zkb_view(
         self, row: Any, ctx: dict[str, Any], system: dict[str, Any] | None, type_name: str
@@ -1201,6 +1227,8 @@ class NotificationService:
             "structure_type_id": type_id,
             "structure_type": type_name,
             "show_structure_type": bool(row["structure_id"] or type_id),
+            "structure_name": ctx.get("structures", {}).get(row["structure_id"]) if row["structure_id"] else None,
+            "days_left": days_left_of(parse_body(_f(row, "body") or "")) if ntype in DAYS_LEFT_TYPES else None,
             "zkb": self._zkb_view(row, ctx, system, type_name or ""),
         }
 

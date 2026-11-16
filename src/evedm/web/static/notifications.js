@@ -154,6 +154,16 @@ function card(n) {
     where.append(el("span", "small", "not named in this notification"));
   }
   li.append(where);
+  if (n.structure_name) {
+    const nm = el("div", "where-line struct-name");
+    nm.append(el("b", null, "Structure"), el("span", "ntf-hl", n.structure_name));
+    li.append(nm);
+  }
+  if (n.days_left !== null && n.days_left !== undefined) {  // the abandonment warning
+    const dl = el("div", "where-line days-left");
+    dl.append(el("b", null, "Days left"), el("span", "ntf-hl", `${n.days_left} until the structure is abandoned`));
+    li.append(dl);
+  }
   if (n.show_structure_type) {  // a notification that names no structure has no such line
     const kind = el("div", "where-line struct-type");
     kind.append(el("b", null, "Structure type"), el("span", n.structure_type ? "ntf-hl" : "small", n.structure_type || "Unknown"));

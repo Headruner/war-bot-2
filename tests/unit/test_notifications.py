@@ -730,3 +730,49 @@ async def test_a_rule_that_matches_nothing_posts_nothing(ns, services, http):
     services["esi"]._cache.clear()
     await ns.poll_once()
     assert await ns.post_discord() == 1 and ns.notifier.to == [None]
+
+
+ABANDON = "StructureImpendingAbandonmentAssetsAtRisk"
+
+
+async def test_the_abandonment_warning_names_the_structure_and_the_days_left(ns, services, http):
+    await add_character(services, A)
+    ns.notifier = FakeNotifier()
+    sid = 1035000000042
+    services["db"].execute(
+        "INSERT INTO known_structures(structure_id, name, first_seen, last_seen) VALUES(?,?,?,?)",
+        (sid, "Fluekele - Planta de procesado", 1.0, 1.0),
+    )
+    body = f"daysUntilAbandon: 2\nisCorpOwned: true\nsolarsystemID: 30000142\nstructureID: {sid}\n"
+    await push(http, A, [item(1, ABANDON, body, timestamp=stamp())])
+    await ns.poll_once()
+    assert await ns.post_discord() == 1
+    fields = {f["name"]: f["value"] for f in ns.notifier.sent[0]["embeds"][0]["fields"]}
+    assert "Fluekele - Planta de procesado" in fields["Structure"]
+    assert "**2** days until the structure is abandoned" in fields["Days left"]
+    d = ns.describe(services["db"].notifications([A])[0])
+    assert d["structure_name"] == "Fluekele - Planta de procesado" and d["days_left"] == 2
+
+
+async def test_one_day_left_is_singular_and_an_unknown_name_adds_no_field(ns, services, http):
+    await add_character(services, A)
+    ns.notifier = FakeNotifier()
+    body = "daysUntilAbandon: 1\nsolarsystemID: 30000142\nstructureID: 1035000000043\n"
+    await push(http, A, [item(1, ABANDON, body, timestamp=stamp())])
+    await ns.poll_once()
+    await ns.post_discord()
+    fields = {f["name"]: f["value"] for f in ns.notifier.sent[0]["embeds"][0]["fields"]}
+    assert "Structure" not in fields and "**1** day until" in fields["Days left"]
+
+
+async def test_other_types_show_the_name_but_no_days(ns, services, http):
+    await add_character(services, A)
+    sid = 1035000000001  # the structure of BODY
+    services["db"].execute(
+        "INSERT INTO structure_mail_finds(structure_id, name, mail_id, mail_ts, found_at) VALUES(?,?,?,?,?)",
+        (sid, "Jita - Tradehub", 9, 1.0, 1.0),
+    )
+    await push(http, A, [item(1, timestamp=stamp())])
+    await ns.poll_once()
+    d = ns.describe(services["db"].notifications([A])[0])
+    assert d["structure_name"] == "Jita - Tradehub" and d["days_left"] is None

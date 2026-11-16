@@ -1010,6 +1010,22 @@ class Database:
                     out.setdefault(sid, tid)
         return out
 
+    def structure_names(self, structure_ids: list[int]) -> dict[int, str]:
+        """structure_id -> name ("System - Name"): scout finds, then mail finds, then the public history."""
+        out: dict[int, str] = {}
+        ids = sorted({int(i) for i in structure_ids if i})
+        for start in range(0, len(ids), 900):
+            chunk = ids[start : start + 900]
+            marks = ",".join("?" * len(chunk))
+            for table in ("known_structures", "structure_mail_finds", "public_structure_history"):
+                sql = (
+                    f"SELECT structure_id, name FROM {table} "  # noqa: S608 - table names are literals above
+                    f"WHERE name IS NOT NULL AND name != '' AND structure_id IN ({marks})"
+                )
+                for sid, name in self.query(sql, tuple(chunk)):
+                    out.setdefault(sid, name)
+        return out
+
     def structure_type_names(self, type_ids: list[int]) -> dict[int, str]:
         """Type names the app already knows (the Structures page's names, ranking's, the alerts' and the history's)."""
         out: dict[int, str] = {}
