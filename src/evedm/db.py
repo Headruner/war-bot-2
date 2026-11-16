@@ -1313,6 +1313,26 @@ class Database:
         rows = self.query(f"SELECT type_id, name FROM type_names WHERE type_id IN ({marks})", tuple(ids))  # noqa: S608
         return {r["type_id"]: r["name"] for r in rows}
 
+    def station_names(self, station_ids: list[int]) -> dict[int, str]:
+        """Names of stations already resolved (``entity_names``, shared with the alerts)."""
+        out: dict[int, str] = {}
+        ids = sorted({int(i) for i in station_ids if i})
+        for start in range(0, len(ids), 900):
+            chunk = ids[start : start + 900]
+            marks = ",".join("?" * len(chunk))
+            sql = f"SELECT entity_id, name FROM entity_names WHERE entity_id IN ({marks})"  # noqa: S608
+            out.update({sid: name for sid, name in self.query(sql, tuple(chunk))})
+        return out
+
+    def save_entity_names(self, found: dict[int, tuple[str, str]]) -> None:
+        """id -> (name, category) from ESI's /universe/names."""
+        now = time.time()
+        with self.tx() as c:
+            c.executemany(
+                "INSERT OR REPLACE INTO entity_names(entity_id, name, category, updated_at) VALUES(?,?,?,?)",
+                [(i, n, cat, now) for i, (n, cat) in found.items()],
+            )
+
     def save_type_names(self, names: dict[int, str]) -> None:
         with self.tx() as c:
             c.executemany("INSERT OR REPLACE INTO type_names(type_id,name) VALUES(?,?)", list(names.items()))

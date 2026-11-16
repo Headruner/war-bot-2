@@ -100,6 +100,7 @@ _MOON_KEYS = ("moonID", "moonId")
 _STRUCTURE_TYPE_KEYS = ("structureTypeID", "structureTypeId", "structure_type_id")
 _SHOWINFO = re.compile(r"showinfo:(\d+)//(\d+)")
 TYPE_ID_GROUPS = ("tower", "other_attacks")  # ``typeID`` is the structure itself only in these (towers, orbitals...)
+SAFETY_TYPES = ("StructureItemsMovedToSafety",)  # the body says when the assets can be delivered
 DAYS_LEFT_TYPES = ("StructureImpendingAbandonmentAssetsAtRisk",)  # the body says how many days remain
 TYPE_NAME_RETRY_S = 3600.0  # a type ESI could not name is not asked again for this long
 DISCORD_MARK = "\U0001f7e3"  # purple circle: Discord cannot colour embed text, so the key values get a marker and bold
@@ -175,6 +176,50 @@ def days_left_of(body: dict[str, Any]) -> int | None:
     return value if value is not None and value >= 0 else None
 
 
+_FILETIME_EPOCH_S = 11_644_473_600  # seconds between 1601-01-01 (Windows FILETIME) and 1970-01-01
+
+
+def _epoch(value: Any) -> float | None:
+    """A moment from a notification body: a Windows FILETIME (100 ns since 1601), milliseconds or seconds."""
+    number = _int(value)
+    if number is None or number <= 0:
+        return None
+    if number > 10**16:
+        return number / 10**7 - _FILETIME_EPOCH_S
+    if number > 10**11:
+        return number / 1000
+    return float(number)
+
+
+def _span_s(value: Any) -> float | None:
+    """A duration from a notification body: 100 ns ticks when large, else seconds."""
+    number = _int(value)
+    if number is None or number <= 0:
+        return None
+    return number / 10**7 if number > 10**9 else float(number)
+
+
+def safety_of(body: dict[str, Any], sent_at: float | None) -> dict[str, Any] | None:
+    """When the assets of a structure moved to Asset Safety can be delivered by hand (``minimum_at``) and when they
+    are delivered automatically (``full_at``) to ``station_id``. Moments come from the body's timestamps, else from the
+    time the notification was sent plus the body's durations; None when the body has neither."""
+    minimum = _epoch(body.get("assetSafetyMinimumTimestamp"))
+    full = _epoch(body.get("assetSafetyFullTimestamp"))
+    if sent_at is not None:
+        span_min = _span_s(body.get("assetSafetyDurationMinimum"))
+        span_full = _span_s(body.get("assetSafetyDurationFull"))
+        minimum = minimum if minimum is not None else (sent_at + span_min if span_min else None)
+        full = full if full is not None else (sent_at + span_full if span_full else None)
+    station = _first(body, ("newStationID", "newStationId", "stationID"))
+    if minimum is None and full is None and station is None:
+        return None
+    return {"minimum_at": minimum, "full_at": full, "station_id": station}
+
+
+def eve_time(at: float) -> str:
+    return time.strftime("%Y.%m.%d %H:%M", time.gmtime(at))
+
+
 def title_of(ntype: str, system_name: str) -> str:
     template = TITLES.get(ntype)
     if template:
@@ -229,6 +274,9 @@ class NotificationService:
         self._type_failed: dict[int, float] = {}
         self._type_retry_at = 0.0
         self._body_types: dict[tuple[int, int], int | None] = {}
+        self._safety_cache: dict[tuple[int, int], dict[str, Any] | None] = {}
+        self._station_wanted: set[int] = set()  # delivery stations seen on a view whose name is not known yet
+        self._station_failed: dict[int, float] = {}
         self._post_retry_at = 0.0
         self._eligible_n: int | None = None
         self._lag_cache: tuple[float, dict[str, Any]] | None = None
@@ -461,6 +509,17 @@ class NotificationService:
                     ),
                 }
             )
+        safety = d["asset_safety"]
+        if safety:
+            for label, key in (("Manual delivery from", "minimum"), ("Automatic delivery", "full")):
+                at = safety[f"{key}_at"]
+                if at is not None:
+                    value = f"{safety[f'{key}_eve']} EVE time · <t:{int(at)}:R>"
+                    if key == "full" and safety["station"]:
+                        value += f"\nto {DISCORD_MARK} **{safety['station'][:200]}**"
+                    fields.append({"name": label, "value": value[:1000], "inline": key == "minimum"})
+            if safety["full_at"] is not None:
+                fields.append({"name": "Fee", "value": "A fee applies when retrieving the assets.", "inline": True})
         if d["structure_type"]:  # unknown: no field (the page says "Unknown")
             fields.append(
                 {"name": "Structure type", "value": f"{DISCORD_MARK} **{d['structure_type'][:900]}**", "inline": True}
@@ -634,9 +693,28 @@ class NotificationService:
             log.exception("notification post failed")
 
     # -- structure type names ------------------------------------------------------------------------------
+    async def _resolve_stations(self) -> None:
+        """Name the stations assets are delivered to (one batched ESI call, kept in ``entity_names``)."""
+        if not self._station_wanted or self.esi is None or self.demo or time.time() < self._type_retry_at:
+            return
+        ids = sorted(self._station_wanted)[:200]
+        now = time.time()
+        try:
+            found = await self.esi.names_categories(ids)
+        except EsiError as exc:
+            self._type_retry_at = now + self.s.retry_s
+            log.warning("station names could not be read: %s", redact(repr(exc)))
+            return
+        if found:
+            self.db.save_entity_names(found)
+            self._bump()
+        self._station_wanted.difference_update(ids)
+        self._station_failed.update({i: now + TYPE_NAME_RETRY_S for i in ids if i not in found})
+
     async def resolve_type_names(self) -> int:
         """Name the structure types the views asked for and the database does not know: one batched ESI call for
         all of them (never one per notification), kept in ``type_names``. A failure is retried after ``retry_s``."""
+        await self._resolve_stations()
         if not self._type_wanted or self.esi is None or self.demo or time.time() < self._type_retry_at:
             return 0
         ids = sorted(self._type_wanted)[:200]
@@ -1158,6 +1236,19 @@ class NotificationService:
             self._body_types[key] = structure_of(row["type"], parse_body(body))[1] if body else None
         return self._body_types[key]
 
+    def _safety(self, row: Any) -> dict[str, Any] | None:
+        """``safety_of`` for a stored row (parsed once, the body never changes)."""
+        key = (row["character_id"], row["notification_id"])
+        if key not in self._safety_cache:
+            if len(self._safety_cache) > 5000:
+                self._safety_cache.clear()
+            try:
+                sent = datetime.fromisoformat(str(row["timestamp"]).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                sent = None
+            self._safety_cache[key] = safety_of(parse_body(_f(row, "body") or ""), sent)
+        return self._safety_cache[key]
+
     def view_context(self, rows: list[Any]) -> dict[str, Any]:
         """What the views of ``rows`` need beyond the rows: the structure type of each (body, then the scout's
         structure, then the public structure history), the type names the app already knows and the state of the
@@ -1178,6 +1269,15 @@ class NotificationService:
         ids = sorted({t for t in types.values() if t})
         names = self.db.structure_type_names(ids) if ids else {}
         structures = self.db.structure_names(sorted({r["structure_id"] for r in rows if _f(r, "structure_id")}))
+        safety = {
+            (r["character_id"], r["notification_id"]): self._safety(r) for r in rows if r["type"] in SAFETY_TYPES
+        }
+        stations = {s["station_id"] for s in safety.values() if s and s["station_id"]}
+        station_names = self.db.station_names(sorted(stations)) if stations else {}
+        later = time.time()
+        self._station_wanted |= {
+            i for i in stations if i not in station_names and self._station_failed.get(i, 0.0) <= later
+        }
         now = time.time()
         self._type_wanted |= {t for t in ids if t not in names and self._type_failed.get(t, 0.0) <= now}
         wanted = set(self.s.zkb_check.types) if self.s.zkb_check.enabled else set()
@@ -1186,6 +1286,8 @@ class NotificationService:
             "types": types,
             "names": names,
             "structures": structures,
+            "safety": safety,
+            "stations": station_names,
             "zkb": self.db.zkb_checks(keys) if keys else {},
         }
 
@@ -1228,9 +1330,22 @@ class NotificationService:
             "structure_type": type_name,
             "show_structure_type": bool(row["structure_id"] or type_id),
             "structure_name": ctx.get("structures", {}).get(row["structure_id"]) if row["structure_id"] else None,
+            "asset_safety": self._safety_view(row, ctx),
             "days_left": days_left_of(parse_body(_f(row, "body") or "")) if ntype in DAYS_LEFT_TYPES else None,
             "zkb": self._zkb_view(row, ctx, system, type_name or ""),
         }
+
+    def _safety_view(self, row: Any, ctx: dict[str, Any]) -> dict[str, Any] | None:
+        info = ctx.get("safety", {}).get((row["character_id"], row["notification_id"]))
+        if not info:
+            return None
+        out: dict[str, Any] = {"station_id": info["station_id"]}
+        out["station"] = ctx.get("stations", {}).get(info["station_id"]) if info["station_id"] else None
+        for key in ("minimum_at", "full_at"):
+            at = info[key]
+            out[key] = at
+            out[f"{key[:-3]}_eve"] = eve_time(at) if at is not None else None
+        return out
 
     def recent(
         self, character_ids: list[int], types: list[str] | None, hours: float = 720, limit: int = 200
