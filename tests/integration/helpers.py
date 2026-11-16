@@ -69,6 +69,7 @@ def evedm_env(data_dir: Path, fake_base: str, port: int, **extra: str) -> dict[s
             "EVEDM_WEB_AUTH": "sso",
             "EVEDM_WARS_ENABLED": "0",  # the war watcher has its own tests; no network from these processes
             "EVEDM_ALERTS_FEED_URL": f"{fake_base}/r2z2",  # the fake's killmail feed, never zKillboard itself
+            "EVEDM_ALERTS_WEBSOCKET": "0",  # the fake only serves the R2Z2 files: no connection to the real websocket
             "PYTHONUNBUFFERED": "1",
         }
     )

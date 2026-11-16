@@ -19,7 +19,7 @@ OWNER, SHOOTERS = 98000001, 98000002
 def killmail(kid: int, system: int, victim_type: int, corp: int, attackers: list[dict] | None = None) -> dict:
     return {
         "killmail_id": kid,
-        "killmail_time": "2026-10-31T12:00:00Z",
+        "killmail_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 300)),  # kills expire in 1 h
         "solar_system_id": system,
         "victim": {"ship_type_id": victim_type, "corporation_id": corp, "position": {"x": 1.0, "y": 2.0, "z": 3.0}},
         "attackers": attackers or [{"ship_type_id": 587, "corporation_id": SHOOTERS, "final_blow": True}],
