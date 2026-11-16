@@ -14,6 +14,9 @@ import jwt
 
 from .config import EveSettings
 
+# client_id stored with tokens imported before the legacy EVE application was entered on the Settings page
+LEGACY_CLIENT = "legacy"
+
 
 class SsoError(Exception):
     def __init__(self, code: str, detail: str = ""):
@@ -63,17 +66,35 @@ class AuthService:
         }
         return f"{self.s.sso_base.rstrip('/')}/v2/oauth/authorize?{urlencode(params)}"
 
-    def _basic(self) -> dict[str, str]:
-        raw = f"{self.s.client_id}:{self.s.client_secret}".encode()
+    def is_legacy(self, client_id: str | None) -> bool:
+        """True for a token of the legacy EVE application (characters imported from ThunderED)."""
+        if not client_id or client_id == self.s.client_id:
+            return False
+        return client_id == LEGACY_CLIENT or client_id == self.s.legacy_client_id
+
+    def stored_client_id(self, client_id: str | None) -> str:
+        """The client_id to keep with a token refreshed for ``client_id``."""
+        if self.is_legacy(client_id):
+            return self.s.legacy_client_id or LEGACY_CLIENT
+        return self.s.client_id
+
+    def _basic(self, client_id: str | None = None) -> dict[str, str]:
+        cid, secret = self.s.client_id, self.s.client_secret
+        if self.is_legacy(client_id):
+            if not (self.s.legacy_client_id and self.s.legacy_client_secret):
+                raise SsoError("legacy_client_missing", "enter the legacy EVE application on the Settings page")
+            cid, secret = self.s.legacy_client_id, self.s.legacy_client_secret
+        raw = f"{cid}:{secret}".encode()
         return {"Authorization": "Basic " + base64.b64encode(raw).decode()}
 
     # -- token endpoint -----------------------------------------------------------------------
-    async def _token(self, data: dict[str, str]) -> dict[str, Any]:
+    async def _token(self, data: dict[str, str], client_id: str | None = None) -> dict[str, Any]:
+        headers = {**self._basic(client_id), "Content-Type": "application/x-www-form-urlencoded"}
         try:
             resp = await self.http.post(
                 f"{self.s.sso_base.rstrip('/')}/v2/oauth/token",
                 data=data,
-                headers={**self._basic(), "Content-Type": "application/x-www-form-urlencoded"},
+                headers=headers,
             )
         except httpx.HTTPError as exc:
             raise SsoError("sso_unreachable", type(exc).__name__) from exc
@@ -91,20 +112,21 @@ class AuthService:
         body = await self._token({"grant_type": "authorization_code", "code": code})
         return await self._token_set(body)
 
-    async def refresh(self, refresh_token: str) -> TokenSet:
-        body = await self._token({"grant_type": "refresh_token", "refresh_token": refresh_token})
+    async def refresh(self, refresh_token: str, client_id: str | None = None) -> TokenSet:
+        """New access token; ``client_id`` is the one stored with the token (the legacy application or ours)."""
+        body = await self._token({"grant_type": "refresh_token", "refresh_token": refresh_token}, client_id)
         if not body.get("refresh_token"):
             body["refresh_token"] = refresh_token
         return await self._token_set(body)
 
-    async def revoke(self, refresh_token: str) -> None:
+    async def revoke(self, refresh_token: str, client_id: str | None = None) -> None:
         try:
             await self.http.post(
                 f"{self.s.sso_base.rstrip('/')}/v2/oauth/revoke",
                 data={"token_type_hint": "refresh_token", "token": refresh_token},
-                headers=self._basic(),
+                headers=self._basic(client_id),
             )
-        except httpx.HTTPError:
+        except (httpx.HTTPError, SsoError):
             pass  # best effort (TOK-05)
 
     async def _token_set(self, body: dict[str, Any]) -> TokenSet:
@@ -146,7 +168,7 @@ class AuthService:
                 token,
                 key=jwt.PyJWK(jwk).key,
                 algorithms=["RS256", "ES256"],
-                audience=self.s.client_id or None,
+                audience=[a for a in (self.s.client_id, self.s.legacy_client_id) if a] or None,
                 options={"verify_exp": not allow_expired, "verify_aud": bool(self.s.client_id), "verify_iss": False},
                 leeway=30,
             )

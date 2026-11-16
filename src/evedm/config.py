@@ -94,6 +94,8 @@ class ConfigError(ValueError):
 class EveSettings:
     client_id: str = ""
     client_secret: str = ""
+    legacy_client_id: str = ""  # EVE application of the characters imported from ThunderED; their tokens use it
+    legacy_client_secret: str = ""  # secret key of that EVE application
     callback_url: str = "http://localhost:8080/sso/callback"
     required_scopes: list[str] = field(default_factory=lambda: list(DEFAULT_SCOPES))
     optional_scopes: list[str] = field(
@@ -559,6 +561,8 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
     "EVEDM_LOG_LEVEL": ("log_level",),
     "EVE_CLIENT_ID": ("eve", "client_id"),
     "EVE_CLIENT_SECRET": ("eve", "client_secret"),
+    "EVE_LEGACY_CLIENT_ID": ("eve", "legacy_client_id"),
+    "EVE_LEGACY_CLIENT_SECRET": ("eve", "legacy_client_secret"),
     "EVE_CALLBACK_URL": ("eve", "callback_url"),
     "EVEDM_SSO_BASE": ("eve", "sso_base"),
     "EVEDM_ESI_BASE": ("eve", "esi_base"),

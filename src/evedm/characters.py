@@ -33,8 +33,13 @@ class CharacterService:
         return LIMITED if self.missing_scopes(scopes) else OK
 
     # -- storing tokens ---------------------------------------------------------------------------
-    def store(self, ts: TokenSet, demo: bool = False, owner_id: int = 0) -> tuple[bool, str]:
-        """Link the character to ``owner_id`` (a main) with its encrypted tokens; returns (is_new, status)."""
+    def store(
+        self, ts: TokenSet, demo: bool = False, owner_id: int = 0, client_id: str | None = None
+    ) -> tuple[bool, str]:
+        """Link the character to ``owner_id`` (a main) with its encrypted tokens; returns (is_new, status).
+
+        ``client_id`` is the EVE application the token belongs to; ours unless it came from the legacy one.
+        """
         ident = ts.identity
         status = self.status_for(ident.scopes)
         is_new = self.db.upsert_character(
@@ -48,7 +53,7 @@ class CharacterService:
         )
         self.db.save_tokens(
             ident.character_id,
-            self.settings.eve.client_id,
+            client_id or self.settings.eve.client_id,
             self.cipher.encrypt(ts.access_token),
             ts.expires_at,
             self.cipher.encrypt(ts.refresh_token),
@@ -77,8 +82,9 @@ class CharacterService:
             if self.auth is None:
                 raise SsoError("sso_disabled")
             refresh = self.cipher.decrypt(row["refresh_token"])
+            client_id = row["client_id"]
             try:
-                ts = await self.auth.refresh(refresh)
+                ts = await self.auth.refresh(refresh, client_id)
             except SsoError as exc:
                 if exc.code in ("invalid_grant", "invalid_token", "wrong_client"):
                     self.db.set_status(character_id, REAUTH, owner_id)  # TOK-04
@@ -86,7 +92,7 @@ class CharacterService:
                 raise
             if ts.identity.character_id != character_id:
                 raise SsoError("identity_mismatch")
-            self.store(ts, owner_id=owner_id)
+            self.store(ts, owner_id=owner_id, client_id=self.auth.stored_client_id(client_id))
             return ts.access_token
 
     async def remove(self, character_id: int, owner_id: int = 0) -> None:
@@ -94,7 +100,7 @@ class CharacterService:
         row = self.db.get_tokens(character_id, owner_id)
         if row is not None and self.auth is not None:
             try:
-                await self.auth.revoke(self.cipher.decrypt(row["refresh_token"]))
+                await self.auth.revoke(self.cipher.decrypt(row["refresh_token"]), row["client_id"])
             except ValueError:
                 pass
         self.db.delete_character(character_id, owner_id)

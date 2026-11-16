@@ -68,7 +68,7 @@ def app_client(tmp_path):
         yield c
 
 
-async def no_revoke(refresh_token: str) -> None:
+async def no_revoke(refresh_token: str, client_id: str | None = None) -> None:
     return None
 
 

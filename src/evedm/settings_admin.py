@@ -50,7 +50,7 @@ LOCKED = {
     },
     "wars": set(),
 }
-SECRET = {"evedm": {"discord.bot_token", "eve.client_secret"}, "wars": set()}
+SECRET = {"evedm": {"discord.bot_token", "eve.client_secret", "eve.legacy_client_secret"}, "wars": set()}
 RULES = {"evedm": {"discord.rules"}, "wars": set()}  # a list of mappings with an editor of its own on the page
 # read once at start-up (a constructor argument, an HTTP client, whether a service exists at all)
 RESTART = {
