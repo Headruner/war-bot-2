@@ -179,6 +179,35 @@ def cmd_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import_thundered(args: argparse.Namespace) -> int:
+    import sqlite3
+    import time
+
+    from .crypto import TokenCipher
+    from .db import Database
+    from .thundered import import_legacy, report
+
+    s = _settings(args)
+    if not s.secret_key:
+        raise ConfigError("EVEDM_SECRET_KEY is required to encrypt the imported tokens")
+    db = Database(s.db_path, s.sqlite_journal)
+    try:
+        if args.owner and db.get_user(args.owner) is None:
+            print("evedm: --owner must be the character ID of a main that has signed in once", file=sys.stderr)
+            return 2
+        if not args.dry_run and s.db_path.exists():
+            backup = s.db_path.with_name(f"{s.db_path.name}.before-thundered-{time.strftime('%Y%m%d-%H%M%S')}")
+            dst = sqlite3.connect(backup)
+            db._conn.backup(dst)  # a consistent copy even while the app is running
+            dst.close()
+            print(f"backup: {backup}", file=sys.stderr)
+        entries = import_legacy(args.file, db, TokenCipher(s.secret_key), s, args.owner, dry_run=args.dry_run)
+        print(json.dumps(report(entries, args.dry_run), indent=2))
+    finally:
+        db.close()
+    return 0
+
+
 def cmd_export(args: argparse.Namespace) -> int:
     from .bundle import export_bundle
 
@@ -456,6 +485,14 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("file")
     sp.add_argument("--owner", type=int, default=0, help="main character ID that receives the characters")
     sp.set_defaults(fn=cmd_import)
+
+    sp = sub.add_parser(
+        "import-thundered", help="import characters and refresh tokens from a ThunderED database (no new sign-in)"
+    )
+    sp.add_argument("file", help="the ThunderED SQLite file, e.g. data/edb.db")
+    sp.add_argument("--owner", type=int, default=0, help="main character ID that receives the characters")
+    sp.add_argument("--dry-run", action="store_true", help="show what would be imported, write nothing")
+    sp.set_defaults(fn=cmd_import_thundered)
 
     sp = sub.add_parser("export", help="export characters to a bundle (contains credentials)")
     sp.add_argument("--out", default="evedm-characters.json")
