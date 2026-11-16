@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -396,6 +397,12 @@ def cmd_notifications(args: argparse.Namespace) -> int:
 
     s = _settings(args)
     db = Database(s.db_path, read_only=True)  # no migration, no write: safe next to a running server
+    if args.action == "samples":
+        try:
+            _print_samples(db, args)
+        finally:
+            db.close()
+        return 0
     try:
         # lag() reads the database only; the graph, the character service and the ESI client are not needed
         service = NotificationService(s.notifications, db, None, None, None)  # type: ignore[arg-type]
@@ -405,6 +412,26 @@ def cmd_notifications(args: argparse.Namespace) -> int:
     finally:
         db.close()
     return 0
+
+
+def _print_samples(db: Any, args: argparse.Namespace) -> None:
+    """Raw notifications as JSON lines (type, timestamp, body text): material for tests with real data. The body
+    is what ESI sent; character, sender and structure IDs are kept as they are, so keep the file private."""
+    wanted = {t.strip() for t in (args.types or "").split(",") if t.strip()}
+    rows = db.query(
+        "SELECT notification_id, type, timestamp, body FROM character_notifications "
+        "WHERE created_at > ? ORDER BY type, timestamp DESC",
+        (time.time() - args.days * 86400,),
+    )
+    seen: dict[str, int] = {}
+    for r in rows:
+        if wanted and r["type"] not in wanted:
+            continue
+        seen[r["type"]] = seen.get(r["type"], 0) + 1
+        if args.limit and seen[r["type"]] > args.limit:
+            continue
+        rec = {"id": r["notification_id"], "type": r["type"], "timestamp": r["timestamp"], "body": r["body"]}
+        print(json.dumps(rec, ensure_ascii=False))
 
 
 def cmd_launches(args: argparse.Namespace) -> int:
@@ -526,8 +553,11 @@ def main(argv: list[str] | None = None) -> int:
         help="notification diagnostics: lag (database only) shows where the time between a notification and its "
         "delivery goes",
     )
-    sp.add_argument("action", choices=["lag"])
+    sp.add_argument("action", choices=["lag", "samples"])
     sp.add_argument("--hours", type=float, default=24.0, help="lag: look back this many hours")
+    sp.add_argument("--types", help="samples: comma-separated notification types (default: all)")
+    sp.add_argument("--days", type=float, default=90.0, help="samples: look back this many days")
+    sp.add_argument("--limit", type=int, default=0, help="samples: newest N per type (0 = all)")
     sp.set_defaults(fn=cmd_notifications)
 
     sp = sub.add_parser("launches", help="show recorded launches")

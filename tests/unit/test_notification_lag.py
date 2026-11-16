@@ -68,9 +68,16 @@ def store(db: Database, cid: int, nid: int, delay_s: float, now: float) -> None:
     db.save_notifications(
         [
             {
-                "character_id": cid, "notification_id": nid, "type": "StructureUnderAttack", "sender_id": 1,
-                "sender_type": "corporation", "timestamp": stamp_at, "body": "", "solar_system_id": None,
-                "structure_id": None, "structure_type_id": None,
+                "character_id": cid,
+                "notification_id": nid,
+                "type": "StructureUnderAttack",
+                "sender_id": 1,
+                "sender_type": "corporation",
+                "timestamp": stamp_at,
+                "body": "",
+                "solar_system_id": None,
+                "structure_id": None,
+                "structure_type_id": None,
             }
         ]
     )
@@ -219,7 +226,15 @@ def test_an_old_database_gets_the_read_log_in_place(tmp_path):
     assert d.notification_checks()[5]["next_check_at"] == 9.0  # what was there is kept
     cols = [r[1] for r in d.query("PRAGMA table_info(notification_reads)")]
     assert cols == [
-        "character_id", "read_at", "status", "data_age_s", "lifetime_s", "late_s", "new", "max_delay_s", "error"
+        "character_id",
+        "read_at",
+        "status",
+        "data_age_s",
+        "lifetime_s",
+        "late_s",
+        "new",
+        "max_delay_s",
+        "error",
     ]
     d.close()
 
@@ -364,6 +379,29 @@ def test_the_lag_command_prints_json_and_leaves_the_database_alone(tmp_path, cap
     assert con.execute("PRAGMA user_version").fetchone()[0] == 17
     assert not con.execute("SELECT 1 FROM sqlite_master WHERE name='notification_reads'").fetchone()
     con.close()
+
+
+def test_the_samples_command_prints_stored_bodies_as_json_lines(tmp_path, capsys):
+    data = tmp_path / "data"
+    db = Database(data / "evedm.sqlite3")
+    for nid, ntype in (
+        (1, "StructureItemsMovedToSafety"),
+        (2, "StructureItemsMovedToSafety"),
+        (3, "StructureUnderAttack"),
+    ):
+        db.execute(
+            "INSERT INTO character_notifications(character_id, notification_id, type, sender_id, sender_type, "
+            "timestamp, body, created_at, posted) VALUES(1, ?, ?, 1, 'x', ?, 'structureID: 9', ?, 0)",
+            (nid, ntype, f"2026-11-0{nid}T05:38:00Z", time.time()),
+        )
+    db.close()
+    args = ["--data-dir", str(data), "notifications", "samples"]
+    assert main(args) == 0
+    rows = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
+    assert {r["id"] for r in rows} == {1, 2, 3} and rows[0]["body"] == "structureID: 9"
+    assert main([*args, "--types", "StructureItemsMovedToSafety", "--limit", "1"]) == 0
+    rows = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
+    assert [r["id"] for r in rows] == [2]  # the newest of the one type asked for
 
 
 # --------------------------------------------------------------------------- the structure gate

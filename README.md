@@ -74,7 +74,7 @@ when you press **Set destination** for an online character.
   their route type (gates, Thera or Turnur), roster characters jumps only. A character is checked only when its *Notifications* tick on the Characters page is
   on (default) **and** it has at least **1 player structure with assets** (NPC stations do not count;
   `notifications.min_structures`, 0 = everybody). The next check is scheduled at ESI's cache expiry (not a fixed 10 minutes), and
-  transient ESI errors are retried after 60 s; this removes the up-to-15-minute delays. `evedm notifications lag` shows where the remaining time goes. The characters' reads are
+  transient ESI errors are retried after 60 s; this removes the up-to-15-minute delays. `evedm notifications lag` shows where the remaining time goes. To test the parsers with real data, run `scripts\export-notification-samples.ps1` (Windows, Docker running): it writes `data\notification-samples.jsonl` (private, git-ignored), then `.venv\Scripts\python scripts\check_notification_samples.py` lists the fields found per type and what is missing. The characters' reads are
   spread over ESI's 10-minute window (`notifications.stagger_s`), so a notification that several characters receive
   shows up after the earliest of them; the page is told at once when something new is stored (long poll) instead
   of waiting for its timer. New notifications are also **posted to Discord** by the Discord bot
