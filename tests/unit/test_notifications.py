@@ -9,7 +9,15 @@ from fastapi.testclient import TestClient
 
 from common import AMARR, JITA, PERIMETER, TAMA, add_character
 from evedm.config import NOTIFICATION_SCOPE, Settings
-from evedm.notifications import MIN_SLEEP_S, READ_MARGIN_S, NotificationService, parse_body, title_of
+from evedm.notifications import (
+    MIN_SLEEP_S,
+    READ_MARGIN_S,
+    NotificationService,
+    parse_body,
+    structure_name_of,
+    structure_of,
+    title_of,
+)
 from evedm.wars.config import WarsSettings
 from evedm.web.app import create_app
 
@@ -115,8 +123,17 @@ async def test_a_broken_token_is_recorded_and_does_not_stop_the_round(ns, servic
 
 async def test_old_notifications_are_purged(ns, services):
     db = services["db"]
-    db.save_notifications([{"character_id": A, "notification_id": 5, "type": "StructureUnderAttack",
-                            "timestamp": "2026-01-01T00:00:00Z", "body": ""}])
+    db.save_notifications(
+        [
+            {
+                "character_id": A,
+                "notification_id": 5,
+                "type": "StructureUnderAttack",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "body": "",
+            }
+        ]
+    )
     db.execute("UPDATE character_notifications SET created_at=? WHERE notification_id=5", (time.time() - 90 * 86400,))
     assert db.purge_notifications(ns.s.retention_days) == 1
     assert db.notifications([A]) == []
@@ -157,9 +174,7 @@ def client_for(tmp_path, alliances: list[int] = []) -> TestClient:  # noqa: ANN0
 def seed(svc, system_id: int, ntype: str = "StructureItemsMovedToSafety") -> None:  # noqa: ANN001
     svc.db.upsert_character(A, "Alpha One", "OK", [NOTIFICATION_SCOPE], owner_id=0)
     svc.db.save_snapshot(A, solar_system_id=system_id, online=0, fetched_at=time.time(), error=None)
-    svc.roster.import_file(
-        b'[{"char_name": "Static Scout", "star_system_name": "Perimeter"}]', 0
-    )
+    svc.roster.import_file(b'[{"char_name": "Static Scout", "star_system_name": "Perimeter"}]', 0)
     svc.db.save_notifications(
         [
             {
@@ -228,8 +243,14 @@ async def test_the_api_lists_the_notifications_of_every_registered_character(tmp
         gone = 2100000009
         svc.db.upsert_character(gone, "Revoked Nine", "REAUTH", [NOTIFICATION_SCOPE], owner_id=77)
         rows = [
-            {"character_id": cid, "notification_id": nid, "type": "StructureUnderAttack",
-             "timestamp": f"2026-11-01T1{nid}:00:00Z", "body": "", "solar_system_id": PERIMETER}
+            {
+                "character_id": cid,
+                "notification_id": nid,
+                "type": "StructureUnderAttack",
+                "timestamp": f"2026-11-01T1{nid}:00:00Z",
+                "body": "",
+                "solar_system_id": PERIMETER,
+            }
             for cid, nid in ((B, 5), (gone, 6))
         ]
         svc.db.save_notifications(rows)
@@ -315,6 +336,7 @@ async def test_the_next_read_follows_the_expiry_of_esis_cache(ns, services, http
     await add_character(services, A)
     await push(http, A, [item(1)])
     now = time.time()
+
     def near(got: float, want: float) -> bool:  # epoch seconds: pytest.approx is far too loose here
         return abs(got - want) < 0.01
 
@@ -834,3 +856,33 @@ async def test_an_unknown_delivery_station_is_queued_for_one_batched_name_lookup
     await ns.poll_once()
     d = ns.describe(services["db"].notifications([A])[0])
     assert d["asset_safety"]["station"] is None and ns._station_wanted == {60008494}  # noqa: SLF001
+
+
+LINK_BODY = 'solarsystemID: 30002187\nstructureLink: <a href="showinfo:35833//1055812948447">C6CG-W - Euphoria HQ</a>\n'
+
+
+def test_the_link_gives_the_structure_id_its_type_and_its_name():
+    body = parse_body(LINK_BODY)
+    assert structure_of("StructureUnderAttack", body) == (1055812948447, 35833)
+    assert structure_name_of(body) == "C6CG-W - Euphoria HQ"
+    old = parse_body("structureLinkData:\n- showinfo\n- 2233\n- 1004790835098\nstructureName: Customs Office (J VII)\n")
+    assert structure_of("OwnershipTransferred", old) == (1004790835098, 2233)
+    assert structure_name_of(old) == "Customs Office (J VII)"
+    assert structure_name_of({}) is None
+
+
+async def test_a_name_in_the_body_is_shown_and_the_event_is_one_for_every_character(ns, services, http):
+    await add_character(services, A)
+    await add_character(services, B)
+    ns.notifier = FakeNotifier()
+    when = stamp()
+    for char in (A, B):
+        await push(http, char, [item(1, "StructureUnderAttack", LINK_BODY, timestamp=when)])
+    await ns.poll_once()
+    await ns.post_discord()
+    assert len(ns.notifier.sent) == 1  # one message for the structure; the second character is added by an edit
+    d = ns.describe(services["db"].notifications([A])[0])
+    assert d["structure_id"] == 1055812948447 and d["structure_name"] == "C6CG-W - Euphoria HQ"
+    last = ns.notifier.edits[-1][1] if ns.notifier.edits else ns.notifier.sent[0]
+    fields = {f["name"]: f["value"] for f in last["embeds"][0]["fields"]}
+    assert "C6CG-W - Euphoria HQ" in fields["Structure"] and fields["Received by"].count(",") == 1

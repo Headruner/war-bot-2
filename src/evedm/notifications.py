@@ -141,6 +141,10 @@ def structure_of(ntype: str, body: dict[str, Any]) -> tuple[int | None, int | No
             structure_id = _int(info[2])
     if type_id is None:
         type_id = _first(body, _STRUCTURE_TYPE_KEYS)
+    data = body.get("structureLinkData")  # older bodies: [showinfo, typeID, structureID]
+    if isinstance(data, list) and len(data) >= 3:
+        type_id = type_id if type_id is not None else _int(data[1])
+        structure_id = structure_id if structure_id is not None else _int(data[2])
     if type_id is None or structure_id is None:
         link = _SHOWINFO.search(str(body.get("structureLink") or ""))
         if link:
@@ -149,6 +153,17 @@ def structure_of(ntype: str, body: dict[str, Any]) -> tuple[int | None, int | No
     if type_id is None and GROUP_OF.get(ntype) in TYPE_ID_GROUPS:
         type_id = _first(body, ("typeID",))
     return structure_id, type_id
+
+
+_LINK_TEXT = re.compile(r"<a\s[^>]*>(.*?)</a>", re.S)
+
+
+def structure_name_of(body: dict[str, Any]) -> str | None:
+    """The structure's name as the game wrote it into the body: the text of ``structureLink``
+    (``<a href="showinfo:35833//ID">C6CG-W - Euphoria HQ</a>``), else ``structureName``."""
+    link = _LINK_TEXT.search(str(body.get("structureLink") or ""))
+    name = (link.group(1) if link else str(body.get("structureName") or "")).strip()
+    return name or None
 
 
 def _f(row: Any, key: str) -> Any:
@@ -322,7 +337,10 @@ class NotificationService:
         if len(eligible) != self._eligible_n:
             log.info(
                 "notifications: reading %d of %d registered characters (%d below min_structures=%d)",
-                len(eligible), len(pollable), len(pollable) - len(eligible), need,
+                len(eligible),
+                len(pollable),
+                len(pollable) - len(eligible),
+                need,
             )
             self._eligible_n = len(eligible)
         return eligible
@@ -848,8 +866,14 @@ class NotificationService:
             fields["error"] = error
         if hit is not None:
             kid, ktime, source = hit
-            fields.update(status="found", next_check_at=None, killmail_id=kid, killmail_time=ktime,
-                          zkb_url=kill_url(kid), source=source)
+            fields.update(
+                status="found",
+                next_check_at=None,
+                killmail_id=kid,
+                killmail_time=ktime,
+                zkb_url=kill_url(kid),
+                source=source,
+            )
         elif now >= (c["deadline_at"] or 0):
             fields.update(status="not_found", next_check_at=None)
         else:
@@ -1114,9 +1138,7 @@ class NotificationService:
                 f"{late_share:.0%} of the reads started {LATE_S:.0f} s or more after their time "
                 f"(p90 {late['p90']} s): blocked event loop, a slow ESI answer or the app was not running"
             )
-        elif (data_age["p50"] or 0.0) >= thresholds["data_age_s"] or (
-            aged and old / len(aged) >= OLD_DATA_SHARE
-        ):
+        elif (data_age["p50"] or 0.0) >= thresholds["data_age_s"] or (aged and old / len(aged) >= OLD_DATA_SHARE):
             dominant = "ESI data age"
             text = (
                 f"ESI sends data that is already old: median {data_age['p50']} s, {old} of {len(aged)} reads "
@@ -1207,10 +1229,7 @@ class NotificationService:
                     "group": name,
                     "label": GROUP_LABELS.get(name, name),
                     "default": name in self.s.groups,
-                    "types": [
-                        {"type": t, "seen": seen.get(t, 0), "default": t in defaults}
-                        for t in types
-                    ],
+                    "types": [{"type": t, "seen": seen.get(t, 0), "default": t in defaults} for t in types],
                 }
             )
         extra = sorted(t for t in seen if t not in GROUP_OF)
@@ -1269,9 +1288,13 @@ class NotificationService:
         ids = sorted({t for t in types.values() if t})
         names = self.db.structure_type_names(ids) if ids else {}
         structures = self.db.structure_names(sorted({r["structure_id"] for r in rows if _f(r, "structure_id")}))
-        safety = {
-            (r["character_id"], r["notification_id"]): self._safety(r) for r in rows if r["type"] in SAFETY_TYPES
-        }
+        for r in rows:  # the body names its structure too: it fills what the scout and the mails do not know
+            sid = _f(r, "structure_id")
+            if sid and sid not in structures:
+                named = structure_name_of(parse_body(_f(r, "body") or ""))
+                if named:
+                    structures[sid] = named
+        safety = {(r["character_id"], r["notification_id"]): self._safety(r) for r in rows if r["type"] in SAFETY_TYPES}
         stations = {s["station_id"] for s in safety.values() if s and s["station_id"]}
         station_names = self.db.station_names(sorted(stations)) if stations else {}
         later = time.time()
@@ -1406,8 +1429,11 @@ class NotificationService:
         if self._zkb_task is None and self.s.zkb_check.enabled:
             self._zkb_task = asyncio.ensure_future(self._zkb_loop())
         if self._task is None:
-            log.info("notifications started (every %.0f s, ESI caches each character %.0f s)",
-                     self.s.poll_s, self.s.character_interval_s)
+            log.info(
+                "notifications started (every %.0f s, ESI caches each character %.0f s)",
+                self.s.poll_s,
+                self.s.character_interval_s,
+            )
             self._task = asyncio.ensure_future(self._loop())
 
     async def stop(self) -> None:
