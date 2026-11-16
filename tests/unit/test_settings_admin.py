@@ -312,3 +312,41 @@ def test_a_complete_discord_setup_is_left_alone(tmp_path):
     s.discord.bot_token, s.alerts.discord.channel_id = TOKEN, "123456789012345678"
     with TestClient(create_app(s, WarsSettings(enabled=False))):
         assert s.alerts.discord.enabled is True
+
+
+def test_the_bot_identity_and_command_settings_are_on_the_page_and_validated(client):
+    f = fields(client.get("/api/settings").json())
+    for key, kind in (("bot_name", "str"), ("bot_game", "str"), ("command_prefix", "str"), ("guild_id", "str"),
+                      ("search_character_id", "int"), ("admin_roles", "list")):
+        assert f[f"evedm:discord.{key}"]["type"] == kind, key
+    assert f["evedm:discord.command_prefix"]["value"] == "!" and f["evedm:discord.admin_roles"]["value"] == ["ADMIN"]
+    ok = client.put("/api/settings", headers=H, json={"set": {
+        "evedm:discord.bot_name": "War Bot", "evedm:discord.bot_game": "watching the wars",
+        "evedm:discord.command_prefix": "?", "evedm:discord.guild_id": "123456789012345678",
+        "evedm:discord.search_character_id": 2112000010, "evedm:discord.admin_roles": "ADMIN, Officers"}})
+    assert ok.status_code == 200, ok.text
+    s = client.app.state.svc  # noqa: F841 - the live settings object is the one the app was built with
+    after = fields(client.get("/api/settings").json())
+    assert after["evedm:discord.admin_roles"]["value"] == ["ADMIN", "Officers"]
+    assert after["evedm:discord.guild_id"]["value"] == "123456789012345678"
+    for key, bad in (("command_prefix", "!!!!"), ("command_prefix", "a b"), ("command_prefix", ""),
+                     ("guild_id", "not-a-number"), ("search_character_id", -5), ("bot_name", "x" * 33)):
+        r = client.put("/api/settings", headers=H, json={"set": {f"evedm:discord.{key}": bad}})
+        assert r.status_code == 400, (key, bad, r.status_code)
+
+
+def test_the_bot_settings_come_from_yaml_and_the_environment(tmp_path, monkeypatch):
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text("discord:\n  guild_id: 123456789012345678\n  search_character_id: 2112000010\n"
+                   "  admin_roles: [ADMIN, Officers]\n  command_prefix: '$'\n")
+    monkeypatch.setenv("EVEDM_SECRET_KEY", "k")
+    monkeypatch.setenv("EVE_CLIENT_ID", "cid")
+    monkeypatch.setenv("EVE_CLIENT_SECRET", "csecret")
+    monkeypatch.setenv("EVEDM_DISCORD_BOT_NAME", "Env Bot")
+    monkeypatch.setenv("EVEDM_DISCORD_ADMIN_ROLES", "Leads, Fleet Commanders")
+    s = load_settings(str(cfg))
+    s.validate_for_serve()
+    d = s.discord
+    assert (d.guild_id, d.search_character_id) == ("123456789012345678", 2112000010)
+    assert (d.command_prefix, d.bot_name) == ("$", "Env Bot")
+    assert d.admin_roles == ["Leads", "Fleet Commanders"]  # the environment wins; commas separate, spaces stay

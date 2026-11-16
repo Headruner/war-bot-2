@@ -171,6 +171,12 @@ class DiscordBotSettings:
     """The registered Discord application every post goes through (REST only: no gateway connection is kept)."""
 
     bot_token: str = ""  # the bot token of the application (Developer Portal > Bot); a secret, kept in .env
+    bot_name: str = ""  # display name of the bot (up to 32 characters); the posting bot keeps the application's name
+    bot_game: str = ""  # the "playing ..." status text (up to 128 characters); needs a gateway connection, not kept yet
+    command_prefix: str = "!"  # the prefix of chat commands (1 to 3 characters, no spaces); no commands are read yet
+    guild_id: str = ""  # the Discord server (guild) ID the bot works in; empty = any (numeric)
+    search_character_id: int = 0  # EVE character ID whose token is used for structure searches; 0 = any character
+    admin_roles: list[str] = field(default_factory=lambda: ["ADMIN"])  # Discord roles allowed to use admin commands
     # filters with a channel each for alerts and notifications (see discord_rules.py); none = the single channels
     rules: list[dict[str, Any]] = field(default_factory=list)
 
@@ -354,6 +360,29 @@ class Settings:
             "ansiblex": self.ansiblex.enabled,
         }
 
+    def _validate_bot(self) -> None:
+        """The bot's identity and command settings (discord.*): normalised in place, ConfigError when unusable."""
+        d = self.discord
+        d.bot_name, d.bot_game = str(d.bot_name or "").strip(), str(d.bot_game or "").strip()
+        if len(d.bot_name) > 32 or len(d.bot_game) > 128:
+            raise ConfigError("discord.bot_name is at most 32 characters and discord.bot_game at most 128")
+        d.command_prefix = str(d.command_prefix if d.command_prefix is not None else "!")
+        if not 1 <= len(d.command_prefix) <= 3 or any(c.isspace() for c in d.command_prefix):
+            raise ConfigError("discord.command_prefix must be 1 to 3 characters without spaces")
+        d.guild_id = str(d.guild_id or "").strip()  # YAML reads an unquoted ID as a number
+        if d.guild_id and not is_snowflake(d.guild_id):
+            raise ConfigError("discord.guild_id must be a numeric Discord server ID")
+        try:
+            d.search_character_id = int(d.search_character_id or 0)
+        except (TypeError, ValueError):
+            raise ConfigError("discord.search_character_id must be an EVE character ID (a whole number)") from None
+        if d.search_character_id < 0:
+            raise ConfigError("discord.search_character_id must be 0 (any) or an EVE character ID")
+        roles = d.admin_roles.replace(";", ",").split(",") if isinstance(d.admin_roles, str) else d.admin_roles
+        d.admin_roles = list(dict.fromkeys(str(r).strip() for r in roles or [] if str(r).strip()))
+        if any(len(r) > 100 for r in d.admin_roles):
+            raise ConfigError("discord.admin_roles: a role name is at most 100 characters")
+
     def validate_for_serve(self) -> None:
         """WEB-05: refuse to start without the secrets the mode needs."""
         missing = []
@@ -404,6 +433,7 @@ class Settings:
                 "alerts.discord.enabled needs the bot token (EVEDM_DISCORD_BOT_TOKEN) and a numeric channel ID"
                 " (EVEDM_ALERTS_DISCORD_CHANNEL_ID)"
             )
+        self._validate_bot()
         n = self.notifications
         n.discord.channel_id = str(n.discord.channel_id or "").strip()
         if n.enabled:
@@ -541,6 +571,12 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
     "EVEDM_ALERTS_CONTACT": ("alerts", "contact"),
     "EVEDM_ALERTS_DISCORD_ENABLED": ("alerts", "discord", "enabled"),
     "EVEDM_DISCORD_BOT_TOKEN": ("discord", "bot_token"),
+    "EVEDM_DISCORD_BOT_NAME": ("discord", "bot_name"),
+    "EVEDM_DISCORD_BOT_GAME": ("discord", "bot_game"),
+    "EVEDM_DISCORD_COMMAND_PREFIX": ("discord", "command_prefix"),
+    "EVEDM_DISCORD_GUILD_ID": ("discord", "guild_id"),
+    "EVEDM_DISCORD_SEARCH_CHARACTER_ID": ("discord", "search_character_id"),
+    "EVEDM_DISCORD_ADMIN_ROLES": ("discord", "admin_roles"),
     "EVEDM_ALERTS_DISCORD_CHANNEL_ID": ("alerts", "discord", "channel_id"),
     "EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID": ("alerts", "discord", "mention_role_id"),
     "EVEDM_NOTIFICATIONS_ENABLED": ("notifications", "enabled"),
@@ -591,7 +627,7 @@ def _load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
             setattr(obj, target[-1], [int(v) for v in value.replace(";", ",").split(",") if v.strip()])
         elif target[-1] == "groups":
             setattr(obj, target[-1], [v for v in value.replace(",", " ").split() if v.strip()])
-        elif target[-1] == "admin_characters":  # names contain spaces: commas only
+        elif target[-1] in ("admin_characters", "admin_roles"):  # names contain spaces: commas only
             setattr(obj, target[-1], [v.strip() for v in value.replace(";", ",").split(",") if v.strip()])
         elif target[-1] == "allowed_login_characters":
             setattr(obj, target[-1], [int(v) for v in value.replace(";", ",").split(",") if v.strip()])

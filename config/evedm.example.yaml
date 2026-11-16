@@ -10,6 +10,12 @@ log_level: INFO
 
 discord:                                    # the registered Discord application that posts wars, notifications and alerts
   bot_token: ${EVEDM_DISCORD_BOT_TOKEN:-}   # secret: keep it in .env (Developer Portal > your application > Bot)
+  bot_name: ${EVEDM_DISCORD_BOT_NAME:-}     # display name (up to 32 characters); empty = the application's own name
+  bot_game: ${EVEDM_DISCORD_BOT_GAME:-}     # "playing ..." status text (needs a gateway connection: stored, not used yet)
+  command_prefix: "!"                       # prefix of chat commands, 1 to 3 characters (stored, no commands are read yet)
+  guild_id: ${EVEDM_DISCORD_GUILD_ID:-}     # the Discord server (guild) ID; empty = any
+  search_character_id: ${EVEDM_DISCORD_SEARCH_CHARACTER_ID:-0}   # EVE character whose token searches structures; 0 = any
+  admin_roles: [ADMIN]                      # Discord roles allowed to use admin commands (stored, no commands yet)
   # Discord rules: a filter plus a channel each, for alerts or notifications. A source with at least one rule uses only
   # its rules (alerts.discord.* / notifications.discord.* channel, switch, kinds and role are then ignored); an empty
   # list means "any"; what matches several rules is posted to each channel once. Also editable on the Settings page.
