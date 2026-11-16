@@ -34,7 +34,7 @@ from ..config import NOTIFICATION_GROUPS, WAYPOINT_SCOPE, ConfigError, Settings
 from ..crypto import TokenCipher, redact
 from ..db import Database
 from ..demo import seed_demo, seed_demo_notifications, seed_demo_roster
-from ..discord_rules import KINDS, SPACES, of_source
+from ..discord_rules import KINDS, PRESETS, SPACES, of_source
 from ..esi import EsiClient, EsiError
 from ..evescout import EveScout
 from ..logs import LaunchRecorder, peak_rss_mb, rss_mb, setup_logging, trim_memory
@@ -1504,7 +1504,8 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             "groups": NOTIFICATION_GROUPS,
             "regions": sorted(set(graph.regions.values()) - {""}),
         }
-        return admin.state() | {"discord": discord_status(settings, ws, svc_of(request)), "rule_options": options}
+        extra = {"discord": discord_status(settings, ws, svc_of(request)), "rule_options": options}
+        return admin.state() | extra | {"rule_presets": PRESETS}
 
     def named_places(rules: Any, graph: GateGraph) -> Any:
         """The rules with their system and region names as the universe spells them; 400 for an unknown one."""

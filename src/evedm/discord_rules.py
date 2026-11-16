@@ -41,6 +41,53 @@ _NAME_LISTS = ("regions", "exclude_regions", "systems", "exclude_systems", "type
 _ID_LISTS = ("owners", "exclude_owners")
 
 
+# Ready-made rule sets the Settings page can add with one click (the rules are still checked and saved like any other).
+# A notification type in ``types`` matches whatever group ESI files it under.
+_ATTACK_TYPES = [
+    "StructureUnderAttack",
+    "StructureWentLowPower",
+    "StructureWentHighPower",
+    "StructureLostArmor",
+    "StructureLostShields",
+    "StructureFuelAlert",
+    "OrbitalReinforced",
+    "OrbitalAttacked",
+    "AllAnchoringMsg",
+    "OwnershipTransferred",
+    "TowerResourceAlertMsg",
+    "TowerAlertMsg",
+    "StructureDestroyed",
+]
+PRESETS: list[dict[str, Any]] = [
+    {
+        "id": "structure-notifications",
+        "title": "Structure notifications: attacks, abandonment, asset safety",
+        "note": "Three rules, one channel each. The channel IDs are the ones of the Discord server this was made for: "
+        "change them in each rule if yours differ.",
+        "rules": [
+            {
+                "name": "Attacks",
+                "source": "notifications",
+                "channel_id": "1298246888495124511",
+                "types": _ATTACK_TYPES,
+            },
+            {
+                "name": "Abandonment",
+                "source": "notifications",
+                "channel_id": "1298246853783064678",
+                "types": ["StructureImpendingAbandonmentAssetsAtRisk"],
+            },
+            {
+                "name": "Asset safety",
+                "source": "notifications",
+                "channel_id": "1298246659481931858",
+                "types": ["StructureItemsMovedToSafety"],
+            },
+        ],
+    }
+]
+
+
 class RuleError(ValueError):
     """A rule is not valid; the message names the rule."""
 

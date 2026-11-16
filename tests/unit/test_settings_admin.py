@@ -350,3 +350,19 @@ def test_the_bot_settings_come_from_yaml_and_the_environment(tmp_path, monkeypat
     assert (d.guild_id, d.search_character_id) == ("123456789012345678", 2112000010)
     assert (d.command_prefix, d.bot_name) == ("$", "Env Bot")
     assert d.admin_roles == ["Leads", "Fleet Commanders"]  # the environment wins; commas separate, spaces stay
+
+
+def test_the_rule_presets_are_offered_and_every_rule_in_them_is_valid(client):
+    from evedm.config import NOTIFICATION_GROUPS
+    from evedm.discord_rules import PRESETS, normalize_all
+
+    presets = client.get("/api/settings").json()["rule_presets"]
+    assert [p["id"] for p in presets] == [p["id"] for p in PRESETS] == ["structure-notifications"]
+    rules = normalize_all(presets[0]["rules"], list(NOTIFICATION_GROUPS))
+    assert [r["name"] for r in rules] == ["Attacks", "Abandonment", "Asset safety"]
+    assert all(r["source"] == "notifications" and r["enabled"] and r["channel_id"].isdigit() for r in rules)
+    assert rules[1]["types"] == ["StructureImpendingAbandonmentAssetsAtRisk"]
+    assert rules[2]["types"] == ["StructureItemsMovedToSafety"]
+    assert "StructureDestroyed" in rules[0]["types"] and len(rules[0]["types"]) == len(set(rules[0]["types"])) == 13
+    ok = client.put("/api/settings", headers=H, json={"set": {"evedm:discord.rules": presets[0]["rules"]}})
+    assert ok.status_code == 200, ok.text  # saving the preset as it is works

@@ -349,6 +349,17 @@ function addRule(source) {
   restructure();
 }
 
+/* a preset adds its rules (nothing is saved until Save); a rule whose name is already there is not added twice */
+function addPreset(preset) {
+  const have = new Set(rules.map((e) => e.rule.name.trim().toLowerCase()));
+  const fresh = (preset.rules || []).filter((r) => !have.has(String(r.name).trim().toLowerCase()));
+  fresh.forEach((r) => rules.push(newEntry(canon(r), null, false)));
+  restructure();
+  status("ok", fresh.length
+    ? `Added ${fresh.length} rule(s) from the preset: check the channels, then Save.`
+    : "Every rule of this preset is already there.");
+}
+
 function renderRules() {
   const card = $("#s-rules");
   card.hidden = !rulesF;
@@ -368,7 +379,14 @@ function renderRules() {
     reset.title = "go back to the rules from the configuration files";
     bar.append(reset);
   }
-  card.replaceChildren(el("h2", null, "Discord rules"), el("p", "small", RULES_HINT), regions, list, bar);
+  const presets = el("div", "s-drow");
+  for (const p of data.rule_presets || []) {
+    const b = button(`Add preset: ${p.title}`, "btn small-btn", () => addPreset(p));
+    b.title = p.note || "";
+    presets.append(b);
+  }
+  card.replaceChildren(el("h2", null, "Discord rules"), el("p", "small", RULES_HINT), regions, list, bar,
+    ...(presets.childElementCount ? [presets] : []));
 }
 
 function render() {
