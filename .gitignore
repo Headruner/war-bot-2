@@ -14,3 +14,31 @@ dist/
 *.tar.gz
 image/
 
+
+# secrets: bot tokens, SSO client secrets, the Fernet key, session keys, ESI tokens
+.env
+.env.*
+!.env.example
+*.env
+config/evedm.yaml
+config/evedm.yml
+config/*.local.yaml
+config/*.local.yml
+config/*.secret.yaml
+config/*.secrets.yaml
+# administrator overrides (data/settings.yaml): secrets are stored there, encrypted
+**/settings.yaml
+secrets/
+*.secret
+*.secrets
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+docker-compose.override.yml
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+# the demo database is committed on purpose
+!/data/demo/*.sqlite3
