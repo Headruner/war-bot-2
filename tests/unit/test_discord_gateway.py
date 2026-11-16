@@ -69,6 +69,16 @@ def ready(guilds: int = 2, username: str = "evedm") -> dict:
     }
 
 
+def guilds_api(request: httpx.Request) -> httpx.Response:
+    if request.method == "GET" and request.url.path.endswith("/users/@me/guilds"):
+        return httpx.Response(200, json=[{"id": "111", "name": "Alliance HQ"}, {"id": "222", "name": "Test server"}])
+    return httpx.Response(404)
+
+
+API = httpx.MockTransport(guilds_api)
+NO_SERVERS = httpx.MockTransport(lambda request: httpx.Response(200, json=[]))
+
+
 async def wait_for(cond, seconds: float = 3.0) -> None:
     for _ in range(int(seconds / 0.01)):
         if cond():
@@ -79,14 +89,17 @@ async def wait_for(cond, seconds: float = 3.0) -> None:
 
 async def test_the_bot_identifies_with_its_game_comes_online_and_beats() -> None:
     gw = FakeGateway([ready(guilds=2)])
-    bot = DiscordPresence(TOKEN, game="Watching structures", connect=gw)
+    bot = DiscordPresence(TOKEN, game="Watching structures", guild_id="111", connect=gw, transport=API)
     bot.start()
     await wait_for(lambda: bot.state["online"])
     identify = next(m for m in gw.sent if m["op"] == 2)["d"]
     assert identify["token"] == TOKEN and identify["intents"] == 0
     assert identify["presence"]["status"] == "online"
     assert identify["presence"]["activities"] == [{"name": "Watching structures", "type": 0}]
+    await wait_for(lambda: bot.state["server_list"])
     assert bot.state["user"] == "evedm" and bot.state["servers"] == 2
+    assert bot.state["server_list"] == [{"id": "111", "name": "Alliance HQ"}, {"id": "222", "name": "Test server"}]
+    assert bot.state["allowed_guild"] == "111"  # the Settings page marks the other one
     assert bot.state["invite_url"] == invite_url("1234567890123456") and "scope=bot" in bot.state["invite_url"]
     await wait_for(lambda: any(m["op"] == 1 for m in gw.sent))  # heartbeats go out
     assert gw.headers["User-Agent"].startswith("DiscordBot")
@@ -96,7 +109,7 @@ async def test_the_bot_identifies_with_its_game_comes_online_and_beats() -> None
 
 async def test_no_game_means_no_activity_and_a_gateway_reconnect_request_starts_over() -> None:
     gw = FakeGateway([ready(0), {"op": 7, "d": None}])
-    bot = DiscordPresence(TOKEN, connect=gw, backoff_max_s=0.01)
+    bot = DiscordPresence(TOKEN, connect=gw, backoff_max_s=0.01, transport=NO_SERVERS)
     bot.start()
     await wait_for(lambda: gw.opened >= 2)
     assert next(m for m in gw.sent if m["op"] == 2)["d"]["presence"]["activities"] == []
@@ -109,12 +122,21 @@ async def test_a_rejected_token_is_reported_and_not_retried_at_once() -> None:
     from websockets.frames import Close
 
     gw = FakeGateway([], close=ConnectionClosedError(Close(4004, "Authentication failed"), None))
-    bot = DiscordPresence(TOKEN, connect=gw, fatal_wait_s=3600)
+    bot = DiscordPresence(TOKEN, connect=gw, fatal_wait_s=3600, transport=API)
     bot.start()
     await wait_for(lambda: bot.state["last_error"])
     assert "rejected the bot token" in bot.state["last_error"] and TOKEN not in bot.state["last_error"]
     await asyncio.sleep(0.1)
     assert gw.opened == 1 and not bot.state["online"]
+    await bot.stop()
+
+
+async def test_a_failed_server_list_does_not_stop_the_bot_coming_online() -> None:
+    down = httpx.MockTransport(lambda request: httpx.Response(500))
+    bot = DiscordPresence(TOKEN, connect=FakeGateway([ready(3)]), transport=down)
+    bot.start()
+    await wait_for(lambda: bot.state["online"])
+    assert bot.state["servers"] == 3 and bot.state["server_list"] == []  # the count from READY stays
     await bot.stop()
 
 
@@ -136,6 +158,8 @@ async def test_the_bot_name_is_set_once_when_it_differs() -> None:
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return guilds_api(request)
         seen.append(request)
         return httpx.Response(200, json={"username": "Distance Meter"})
 

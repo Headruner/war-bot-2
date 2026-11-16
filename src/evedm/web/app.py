@@ -287,13 +287,14 @@ def apply_presence(settings: Settings, ws: WarsSettings, svc: Services) -> None:
     token = settings.discord.bot_token or ws.discord.bot_token
     d = settings.discord
     old = svc.presence
-    if old is not None and (old.token, old.game, old.name) == (token, d.bot_game, d.bot_name) and d.online:
+    wanted = (token, d.bot_game, d.bot_name, str(d.guild_id or ""))
+    if old is not None and (old.token, old.game, old.name, old.guild_id) == wanted and d.online:
         return  # nothing that matters changed
     if old is not None:
         asyncio.ensure_future(old.stop())
         svc.presence = None
     if token and d.online and not settings.demo:
-        svc.presence = DiscordPresence(token, game=d.bot_game, name=d.bot_name)
+        svc.presence = DiscordPresence(token, game=d.bot_game, name=d.bot_name, guild_id=d.guild_id)
         svc.presence.start()
 
 

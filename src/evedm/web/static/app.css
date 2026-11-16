@@ -475,3 +475,5 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
 .s-chars .perm.missing { color: var(--bad); border-color: var(--bad); }
 .s-chars .perm.more { color: var(--muted); cursor: help; }
 .s-chars .sub { color: var(--muted); font-size: 12px; }
+
+.s-drow .warn { color: var(--warn); }

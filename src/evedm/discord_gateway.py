@@ -52,6 +52,7 @@ class DiscordPresence:
         *,
         game: str = "",
         name: str = "",
+        guild_id: str = "",
         url: str = GATEWAY_URL,
         api_base: str = API_BASE,
         connect: Any = None,
@@ -62,6 +63,7 @@ class DiscordPresence:
         self.token = token
         self.game = game
         self.name = name
+        self.guild_id = str(guild_id or "")
         self.url = url
         self.api_base = api_base.rstrip("/")
         self._connect = connect or ws_connect
@@ -74,6 +76,8 @@ class DiscordPresence:
             "user": None,
             "user_id": None,
             "servers": None,
+            "server_list": [],
+            "allowed_guild": str(guild_id or "") or None,
             "invite_url": None,
             "last_error": None,
             "connects": 0,
@@ -189,11 +193,36 @@ class DiscordPresence:
             last_error=None,
             connects=self.state["connects"] + 1,
         )
+        await self._list_servers()
         log.info("Discord bot online as %s in %s server(s)", user.get("username"), self.state["servers"])
         if self.state["servers"] == 0:
             log.warning("the bot is in no Discord server yet: invite it with %s", self.state["invite_url"])
         if self.name and user.get("username") != self.name:
             await self._rename()
+
+    async def _list_servers(self) -> None:
+        """Names of the servers the bot is in (the gateway's READY has only their IDs)."""
+        try:
+            async with httpx.AsyncClient(timeout=15, transport=self._transport) as http:
+                r = await http.get(
+                    f"{self.api_base}/users/@me/guilds",
+                    params={"limit": 200},
+                    headers={"Authorization": f"Bot {self.token}", "User-Agent": USER_AGENT},
+                )
+            if r.status_code == 200:
+                found = [{"id": str(g["id"]), "name": str(g.get("name", ""))} for g in r.json()]
+                self.state["server_list"] = found
+                self.state["servers"] = len(found)
+                if self.guild_id and any(g["id"] != self.guild_id for g in found):
+                    log.warning(
+                        "the bot is also in servers other than discord.guild_id %s: %s",
+                        self.guild_id,
+                        ", ".join(f"{g['name']} ({g['id']})" for g in found if g["id"] != self.guild_id),
+                    )
+            else:
+                log.warning("server list not read: Discord answered %s", r.status_code)
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            log.warning("server list not read: %s", redact(str(exc)))
 
     async def _rename(self) -> None:
         """Set the bot's username (Discord allows two changes an hour; a refusal is only logged)."""

@@ -153,6 +153,15 @@ function renderDiscord() {
       ? `online as ${bot.user} in ${bot.servers} server(s)`
       : bot.last_error || "connecting…";
     line.append(el("strong", null, "Bot"), el("span", "small", text));
+    const allowed = bot.allowed_guild;
+    for (const g of bot.server_list || []) {
+      const mine = allowed && g.id === allowed;
+      const tag = mine ? " (the configured server)" : allowed ? " (not the configured server)" : "";
+      line.append(el("span", mine ? "small" : "small warn", `${g.name} [${g.id}]${tag}`));
+    }
+    if (allowed && (bot.server_list || []).length > 1) {
+      line.append(el("span", "small warn", "The bot is in more servers than discord.guild_id: remove it from the others (Server Settings > Integrations)."));
+    }
     if (bot.invite_url && !bot.servers) {
       const a = el("a", null, "Invite the bot to a server");
       a.href = bot.invite_url;
