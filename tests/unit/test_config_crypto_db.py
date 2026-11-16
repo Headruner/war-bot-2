@@ -135,7 +135,7 @@ def test_an_old_database_gets_the_asset_filter_column_in_place(tmp_path):
     con.commit()
     con.close()
     d = Database(path)
-    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 20
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 21
     row = d.query("SELECT checked_at, structures, filter_v FROM scout_characters WHERE character_id=7")[0]
     assert tuple(row) == (5.0, 3, 1)  # the row is kept and counts as read with the first filter: read again at once
     d.close()
@@ -157,7 +157,7 @@ def test_an_old_database_gets_the_dock_search_tables_in_place(tmp_path):
     con.commit()
     con.close()
     d = Database(path)
-    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 20
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 21
     assert d.query("SELECT COUNT(*) FROM structure_access")[0][0] == 0
     assert d.query("SELECT COUNT(*) FROM scout_dock_search")[0][0] == 0
     cols = [r[1] for r in d.query("PRAGMA table_info(scout_dock_search)")]
@@ -186,7 +186,7 @@ def test_an_old_database_gets_the_search_term_and_pass_columns_in_place(tmp_path
     con.commit()
     con.close()
     d = Database(path)
-    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 20
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 21
     row = d.query("SELECT structure_id, character_id, seen_at, term FROM structure_access")[0]
     assert tuple(row) == (1000000000001, 7, 5.0, None)  # existing rows get no term
     state = d.query(
@@ -252,7 +252,12 @@ def test_env_defaults_apply_to_empty_variables(tmp_path, monkeypatch):
     assert load_settings(cfg).eve.callback_url == "http://localhost:8081/sso/callback"
 
 
-def test_discord_webhook_tokens_are_redacted():
+def test_discord_secrets_are_redacted():
+    token = ".".join(("MTIzNDU2Nzg5MDEyMzQ1Njc4OTA", "GabcDE", "abcdefghijklmnopqrstuvwxyz0123456789AB"))
+    for line in (f"headers: Authorization: Bot {token}", f"bot_token={token!r}", f"Bot {token[:30]}"):
+        assert token[:30] not in redact(line) and "redacted" in redact(line)
+    plain = "GET https://discord.com/api/v10/channels/555000111222333444/messages/900 -> 404 at 10.0.0.1"
+    assert redact(plain) == plain  # IDs and addresses are not secrets
     line = "Discord request failed for https://discord.com/api/webhooks/1234567890/AbC-def_123.xyz?wait=true"
     out = redact(line)
     assert "AbC-def_123" not in out and "webhooks/1234567890/<redacted>" in out

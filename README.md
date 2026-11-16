@@ -43,7 +43,7 @@ when you press **Set destination** for an online character.
   structures **firing**, in all space. Combat and firing alerts are kept only for kills with a **battleship or capital
   hull (T2 included)** or a single loss above **500M ISK** (`alerts.big_kills_only`, `alerts.min_value_isk`); the
   *capitals* filter shows only kills with at least one capital on each side. Each alert lists your three closest characters; browser notification, sound
-  and an optional Discord webhook. Attack timers themselves are not public, so these killmail signals are the hint.
+  and an optional Discord post (bot). Attack timers themselves are not public, so these killmail signals are the hint.
   ([screenshot](docs/screenshots/alerts-desktop.png))
 - **Set destination**: one click sets the in-game autopilot destination of an online character (light-green button under the jumps
   on each online row of the Ranking page, and the Alerts page; scope `esi-ui.write_waypoint.v1`).
@@ -74,10 +74,10 @@ when you press **Set destination** for an online character.
   transient ESI errors are retried after 60 s; this removes the up-to-15-minute delays. `evedm notifications lag` shows where the remaining time goes. The characters' reads are
   spread over ESI's 10-minute window (`notifications.stagger_s`), so a notification that several characters receive
   shows up after the earliest of them; the page is told at once when something new is stored (long poll) instead
-  of waiting for its timer. New notifications are also **posted to Discord** through the wars webhook
-  (`EVEDM_WARS_DISCORD_WEBHOOK`, or their own `EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK`): one message per event, edited
+  of waiting for its timer. New notifications are also **posted to Discord** by the Discord bot
+  (wars channel `EVEDM_WARS_DISCORD_CHANNEL_ID`, or their own `EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID`): one message per event, edited
   to list every character that received it; nothing older than an hour is posted; `EVEDM_NOTIFICATIONS_DISCORD_ENABLED=0`
-  switches it off.
+  switches it off. With **Discord rules** (below) the rules decide the channels instead.
   Everything else ESI sends is one tick away in the filters. Tick **Sound** for a short chime when a new notification
   matching your filters arrives while the page is open (tick it again after a reload: browsers only allow sound after
   a click). Needs `esi-characters.read_notifications.v1`.
@@ -87,6 +87,15 @@ when you press **Set destination** for an online character.
 - **Members-only tabs**: Notifications and Structures are visible only when the main that signed in belongs to the
   configured alliance (BB, `access.alliance_ids`, default 99010320; read from ESI at sign-in and every 6 h). For any
   other character both links are hidden and the pages answer 404.
+- **Settings page** (administrator only): a main named in `web.admin_characters` (`EVEDM_ADMIN_CHARACTERS`) sees a
+  **Settings** link that lists every setting of both configuration files, grouped by section, with help text. Changes
+  are validated as a whole, saved to `data/settings.yaml` (secrets encrypted), applied at once where possible (the
+  Discord bot token, channels and switches included, so Discord can be set up without `.env` entries) and marked
+  "restart" otherwise; Reset, Send test message and Restart app are on the page. Everyone else gets 404.
+- **Discord rules** (Settings page): structure alerts and character notifications can go to several Discord channels,
+  each rule being a filter (space, regions, systems, alert kinds, owners, notification groups or types) plus a channel and
+  an optional role to ping. Whatever matches several rules is posted to each channel once; a source with at least one rule
+  no longer uses its single-channel settings; rules apply at once. A channel the bot cannot post to is skipped and logged.
 - **Static roster** (Roster page): upload a JSON file of character names and systems (any number of entries, no tokens,
   nothing read from ESI) and rank it by jumps against the same target on the **Roster** tab of the ranking view.
   Unknown systems are kept with suggestions instead of being thrown away; the closest roster characters also appear
@@ -375,9 +384,11 @@ docker compose stop evedm && cp -a data data-backup-$(date +%F) && docker compos
 | `EVEDM_PUBLISH` | `8080` | host port of `docker compose` (e.g. `8082` when 8080 is taken; change the callback too) |
 | `EVEDM_CPUS`, `EVEDM_MEMORY` | `2`, `1g` | container limits of `docker compose` (`EVEDM_CPUS=1` on a 1-vCPU host) |
 | `EVEDM_ALLOWED_LOGIN_CHARACTERS` | empty (anyone) | comma-separated character IDs allowed to sign in as a main |
+| `EVEDM_ADMIN_CHARACTERS` | empty (nobody; the example config uses `Shadowed Mio`) | comma-separated names or character IDs of the mains who may open the Settings page (needs EVE SSO sign-in); values saved there go to `data/settings.yaml` and override the environment |
 | `EVEDM_WARS_CONFIG` | `config/wars.yaml` next to `EVEDM_CONFIG` | war watcher settings file |
 | `EVEDM_WARS_ENABLED` | `true` in `config/wars.yaml` | `0` switches the war watcher off |
-| `EVEDM_WARS_DISCORD_ENABLED`, `EVEDM_WARS_DISCORD_WEBHOOK` | `0`, empty | post new wars to a Discord channel |
+| `EVEDM_DISCORD_BOT_TOKEN` | empty | secret: token of your Discord application's bot, used for every Discord post (REST only; the bot shows as offline, that is expected). Replaces the removed `EVEDM_*_DISCORD_WEBHOOK` variables, which are ignored with a start-up warning; setup steps: docs/wiki/07-Run-on-Windows.md, section 10 |
+| `EVEDM_WARS_DISCORD_ENABLED`, `EVEDM_WARS_DISCORD_CHANNEL_ID` | `0`, empty | post new wars to a Discord channel (needs the bot token and the channel ID) |
 | `EVEDM_PUBLIC_URL` | from `EVE_CALLBACK_URL` | address of the site, used in Discord links to the Wars page |
 | `EVE_OPTIONAL_SCOPES` | `esi-universe.read_structures.v1 esi-assets.read_assets.v1 esi-ui.write_waypoint.v1 esi-search.search_structures.v1 esi-mail.read_mail.v1` | extra scopes (structure scout, mail scan, Set destination); `none` = only the ranking scopes |
 | `EVEDM_STRUCTURES_ENABLED` | `1` | `0` switches the structure scout and the Structures page off |
@@ -388,11 +399,11 @@ docker compose stop evedm && cp -a data data-backup-$(date +%F) && docker compos
 | `EVEDM_EVESCOUT_URL`, `EVEDM_EVESCOUT_REFRESH_S` | `https://api.eve-scout.com/v2/public/signatures`, `900` | where and how often (15 min, cached) the wormhole list is read |
 | `EVEDM_ALERTS_BIG_KILLS_ONLY`, `EVEDM_ALERTS_MIN_VALUE_ISK` | `1`, `500000000` | combat/firing alerts only for battleship/capital hulls or a loss above this value |
 | `EVEDM_NOTIFICATIONS_MIN_STRUCTURES` | `10` | a character is polled for notifications only with this many player structures holding assets |
-| `EVEDM_NOTIFICATIONS_DISCORD_ENABLED`, `EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK`, `EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID` | `1`, empty, empty | notifications on Discord: on when a webhook exists; empty webhook = the wars webhook; role pinged on "structure attacked" only |
+| `EVEDM_NOTIFICATIONS_DISCORD_ENABLED`, `EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID`, `EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID` | `1`, empty, empty | notifications on Discord: needs the bot token; empty channel = the wars channel, nothing is posted without a token or channel; role pinged on "structure attacked" only |
 | `EVEDM_ANSIBLEX_ENABLED` | `1` | `0` removes the Ansiblex route mode |
 | `EVEDM_ALERTS_CONTACT` | empty | added to the User-Agent zKillboard sees |
 | `EVEDM_ALERTS_GRID_KM` | `1000` | a kill this close to a known structure is "combat" |
-| `EVEDM_ALERTS_DISCORD_ENABLED`, `EVEDM_ALERTS_DISCORD_WEBHOOK`, `EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID` | `0`, empty, empty | post alerts to Discord; the role is pinged on "destroyed" |
+| `EVEDM_ALERTS_DISCORD_ENABLED`, `EVEDM_ALERTS_DISCORD_CHANNEL_ID`, `EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID` | `0`, empty, empty | post alerts to Discord (needs the bot token and the channel ID); the role is pinged on "destroyed" |
 | `EVEDM_DEMO` | `0` | `1` = fictional characters, no EVE application |
 | `EVEDM_DATA_DIR` | `/app/data` (image), `./data` (local) | one-file SQLite DB and logs |
 | `EVEDM_SQLITE_JOURNAL` | `wal` | falls back to `delete` automatically (logged) where WAL is unsupported |

@@ -607,12 +607,19 @@ async def test_the_role_is_pinged_for_attacks_only(ns, services, http):
     ns.s.discord.mention_role_id = ""
 
 
-async def test_the_wars_webhook_is_used_when_notifications_have_none(tmp_path):
+async def test_the_wars_channel_is_used_when_notifications_have_none(tmp_path):
     ws = WarsSettings()
-    ws.discord.webhook_url = "https://discord.example/api/webhooks/1/abc"
+    ws.discord.bot_token, ws.discord.channel_id = "bot-token", "111"
     with TestClient(create_app(web_settings(tmp_path, []), ws)) as c:
         ns = c.app.state.svc.notifications
-        assert ns.notifier is not None and ns.notifier.webhook_url == ws.discord.webhook_url
+        assert ns.notifier is not None and (ns.notifier.bot_token, ns.notifier.channel_id) == ("bot-token", "111")
+    own = web_settings(tmp_path / "own", [])
+    own.notifications.discord.channel_id = "222"
+    with TestClient(create_app(own, ws)) as c:
+        assert c.app.state.svc.notifications.notifier.channel_id == "222"
+    ws.discord.bot_token = ""  # a channel without a bot: nothing is posted
+    with TestClient(create_app(web_settings(tmp_path / "nobot", []), ws)) as c:
+        assert c.app.state.svc.notifications.notifier is None
     with TestClient(create_app(web_settings(tmp_path / "none", []), WarsSettings())) as c:
         assert c.app.state.svc.notifications.notifier is None
 
@@ -646,3 +653,80 @@ def test_notifications_stored_before_the_upgrade_are_not_posted(tmp_path):
         assert [r["notification_id"] for r in db.pending_notification_posts()] == [2]
     finally:
         db.close()
+
+
+# --------------------------------------------------------------------------- Discord rules
+class ChannelNotifier(FakeNotifier):
+    def __init__(self) -> None:
+        super().__init__()
+        self.to: list[str | None] = []
+        self.edit_to: list[str | None] = []
+
+    async def send(self, payload: dict, channel_id: str | None = None) -> dict:
+        self.to.append(channel_id)
+        return await super().send(payload)
+
+    async def edit(self, message_id: str, payload: dict, channel_id: str | None = None) -> dict | None:
+        self.edit_to.append(channel_id)
+        return await super().edit(message_id, payload)
+
+
+def rule(**kw) -> dict:
+    from evedm.config import NOTIFICATION_GROUPS
+    from evedm.discord_rules import normalize
+
+    return normalize({"source": "notifications", "channel_id": "1"} | kw, 1, list(NOTIFICATION_GROUPS))
+
+
+async def test_rules_post_a_notification_to_every_matching_channel(ns, services, http):
+    await add_character(services, A)
+    await add_character(services, B)
+    ns.notifier = ChannelNotifier()
+    ns.s.discord.mention_role_id = "4242"  # the single channel's role: not used with rules
+    ns.rules = lambda: [
+        rule(name="attacks", channel_id="11", groups=["structure_attack"], mention_role_id="9"),
+        rule(name="asset safety", channel_id="22", types=["StructureItemsMovedToSafety"]),
+        rule(name="all of Domain", channel_id="33", regions=["domain"]),
+        rule(name="Jita only", channel_id="44", systems=["Jita"]),
+        rule(name="off", channel_id="55", enabled=False),
+        rule(name="an alerts rule", source="alerts", channel_id="66"),
+    ]
+    when = stamp()
+    await push(http, A, [item(1, timestamp=when), item(2, "StructureItemsMovedToSafety", timestamp=stamp(2))])
+    await ns.poll_once()
+    assert await ns.post_discord() == 2
+    sent = sorted(zip(ns.notifier.to, (p["embeds"][0]["title"] for p in ns.notifier.sent), strict=True))
+    attack, safety = "A structure in Amarr is under attack!", "Your assets in Amarr have been moved to Asset Safety!"
+    assert sent == [("11", attack), ("22", safety), ("33", attack), ("33", safety)]
+    pings = {to: p.get("content") for to, p in zip(ns.notifier.to, ns.notifier.sent, strict=True)}
+    assert pings == {"11": "<@&9>", "22": None, "33": None}  # a rule pings its own role, with every message
+
+    # the same attack reaches a second character: the message in each of its channels is edited
+    await push(http, B, [item(9, timestamp=when)])
+    services["db"].set_notification_check(B, 0)
+    services["esi"]._cache.clear()
+    await ns.poll_once()
+    assert await ns.post_discord() == 1 and len(ns.notifier.sent) == 4
+    assert sorted(ns.notifier.edit_to) == ["11", "33"]
+    by_channel = dict(zip(ns.notifier.to, (f"m{i}" for i in range(1, 5)), strict=False))
+    assert {m for m, _ in ns.notifier.edits} <= set(by_channel.values())
+    for _, payload in ns.notifier.edits:
+        received = {f["name"]: f["value"] for f in payload["embeds"][0]["fields"]}["Received by"]
+        assert received.count(",") == 1
+    assert await ns.post_discord() == 0
+
+
+async def test_a_rule_that_matches_nothing_posts_nothing(ns, services, http):
+    await add_character(services, A)
+    ns.notifier = ChannelNotifier()
+    ns.rules = lambda: [rule(channel_id="44", systems=["Jita"])]  # the notification is from Amarr
+    await push(http, A, [item(1, timestamp=stamp())])
+    await ns.poll_once()
+    assert await ns.post_discord() == 0 and ns.notifier.sent == []
+    assert [r["posted"] for r in services["db"].notifications([A])] == [2]
+    ns.rules = lambda: [rule(source="alerts", channel_id="66")]  # no rule for notifications: the single channel
+    await push(http, A, [item(1, timestamp=stamp()), item(2, timestamp=stamp(3))])
+    services["db"].set_notification_check(A, 0)
+    services["esi"]._cache.clear()
+    await ns.poll_once()
+    assert await ns.post_discord() == 1 and ns.notifier.to == [None]

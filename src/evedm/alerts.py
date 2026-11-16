@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import math
 import time
@@ -31,8 +32,9 @@ from .activity import activity
 from .config import AlertSettings
 from .crypto import redact
 from .db import Database
+from .discord_rules import Target, alert_matches, of_source, targets
 from .esi import EsiClient, EsiError
-from .universe import GateGraph
+from .universe import GateGraph, space_of
 
 log = logging.getLogger("evedm.alerts")
 
@@ -171,6 +173,7 @@ class AlertService:
         self.scout = scout
         self.structure_index = structure_index
         self.notifier = notifier
+        self.rules: Any = list  # () -> discord.rules as they are now (set by the web app)
         self.page_url = page_url
         contact = f"; {settings.contact}" if settings.contact else ""
         self.feed = R2Z2Feed(
@@ -409,37 +412,74 @@ class AlertService:
         """Post unposted alerts of the configured kinds; combat/firing at most once per structure per cooldown."""
         if self.notifier is None:
             return 0
-        from .wars.discord import NotifyError, WebhookInvalid
+        from .wars.discord import DiscordRejected, NotifyError
 
         d = self.s.discord
+        rules = of_source(self.rules(), "alerts")
         rows = self.db.query("SELECT * FROM structure_alerts WHERE posted=0 ORDER BY alert_id LIMIT 50")
+        alliances = self._alliances() if any(r["owners"] or r["exclude_owners"] for r in rules) else {}
         posted = 0
         cooldown = time.time() - d.combat_cooldown_min * 60
         for r in rows:
-            skip = r["kind"] not in d.kinds
-            if not skip and r["kind"] != "destroyed" and r["structure_id"]:
-                recent = self.db.query(
-                    "SELECT 1 FROM structure_alerts WHERE posted=1 AND kind IN ('combat','firing') AND structure_id=? "
-                    "AND created_at > ? LIMIT 1",
-                    (r["structure_id"], cooldown),
-                )
-                skip = bool(recent)
-            if skip:
+            before = self.db.query("SELECT channel_id FROM alert_posts WHERE alert_id=?", (r["alert_id"],))
+            done = {x[0] for x in before}
+            sent = bool(done)
+            for target in self._targets(r, rules, alliances):
+                channel = target.channel or ""
+                if channel in done:  # sent before a failure further on: not again
+                    continue
+                if r["kind"] != "destroyed" and r["structure_id"]:  # one combat/firing post per structure and channel
+                    recent = self.db.query(
+                        "SELECT 1 FROM alert_posts p JOIN structure_alerts a ON a.alert_id=p.alert_id "
+                        "WHERE p.channel_id=? AND a.kind IN ('combat','firing') AND a.structure_id=? "
+                        "AND a.created_at > ? LIMIT 1",
+                        (channel, r["structure_id"], cooldown),
+                    )
+                    if recent:
+                        continue
+                payload = self.embed_payload(r, target.role)
+                try:
+                    if target.channel is None:
+                        message = await self.notifier.send(payload)
+                    else:
+                        message = await self.notifier.send(payload, channel_id=target.channel)
+                except DiscordRejected as exc:
+                    self.state["last_error"] = redact(f"Discord rejected the bot: {exc}")
+                    if target.channel is None or exc.status not in (403, 404):
+                        return posted  # the bot itself: everything waits until it is fixed
+                    log.error("alert %s is not posted to channel %s: %s", r["alert_id"], channel, redact(str(exc)))
+                    continue  # that channel only (no access, deleted): the other channels still get it
+                except NotifyError as exc:
+                    log.warning("alert post failed (retried next poll): %s", exc)
+                    return posted
                 self.db.execute(
-                    "UPDATE structure_alerts SET posted=2 WHERE alert_id=?", (r["alert_id"],)
-                )  # 2: not posted
-                continue
-            try:
-                await self.notifier.send(self.embed_payload(r))
-            except WebhookInvalid as exc:
-                self.state["last_error"] = redact(f"Discord webhook invalid: {exc}")
-                return posted
-            except NotifyError as exc:
-                log.warning("alert post failed (retried next poll): %s", exc)
-                return posted
-            self.db.execute("UPDATE structure_alerts SET posted=1 WHERE alert_id=?", (r["alert_id"],))
-            posted += 1
+                    "INSERT OR REPLACE INTO alert_posts(alert_id, channel_id, message_id, created_at) VALUES(?,?,?,?)",
+                    (r["alert_id"], channel, str((message or {}).get("id") or ""), time.time()),
+                )
+                sent = True
+            # 1: posted somewhere; 2: not posted (no rule or kind wanted it, or the cooldown)
+            self.db.execute("UPDATE structure_alerts SET posted=? WHERE alert_id=?", (1 if sent else 2, r["alert_id"]))
+            posted += int(sent)
         return posted
+
+    def _alliances(self) -> dict[int, set[int]]:
+        """corporation -> the alliances it is in, from the member lists the war census keeps."""
+        out: dict[int, set[int]] = {}
+        for alliance_id, corps in self.db.query("SELECT alliance_id, corps FROM alliance_corps"):
+            for corp in json.loads(corps):
+                out.setdefault(int(corp), set()).add(int(alliance_id))
+        return out
+
+    def _targets(self, r: Any, rules: list[dict[str, Any]], alliances: dict[int, set[int]]) -> list[Target]:
+        """The channels of one alert: every matching rule's, or the single channel while there are no rules."""
+        if not rules:
+            return [Target(None, None)] if r["kind"] in self.s.discord.kinds else []
+        idx = self.g.index.get(r["solar_system_id"])
+        place = None if idx is None else self.g.describe(idx) | {"space": space_of(self.g, idx)}
+        owner = int(r["owner_id"] or 0)
+        owners = ({owner} | alliances.get(owner, set())) if owner else set()
+        alert = {"kind": r["kind"], "isk": r["isk"], "core_drop": r["core_drop"], "capitals": r["capitals"]}
+        return targets([rule for rule in rules if alert_matches(rule, alert, place, owners)])
 
     def describe(self, r: Any) -> dict[str, Any]:
         """Human view of a stored alert (names from the shared name table)."""
@@ -486,7 +526,8 @@ class AlertService:
             "zkill": f"{ZKILL}/kill/{r['killmail_id']}/",
         }
 
-    def embed_payload(self, r: Any) -> dict[str, Any]:
+    def embed_payload(self, r: Any, role: str | None = None) -> dict[str, Any]:
+        """``role``: the role a rule pings with every message; None = the single channel's role, on "destroyed"."""
         a = self.describe(r)
         if a["kind"] == "destroyed":
             title = f"💥 {a['structure']['type']} destroyed" + (" - quantum core drop" if a["core_drop"] else "")
@@ -526,9 +567,11 @@ class AlertService:
             "timestamp": a["time"],
         }
         payload: dict[str, Any] = {"embeds": [embed]}
-        if self.s.discord.mention_role_id and a["kind"] == "destroyed":
-            payload["content"] = f"<@&{self.s.discord.mention_role_id}>"
-            payload["allowed_mentions"] = {"roles": [str(self.s.discord.mention_role_id)]}
+        if role is None:
+            role = self.s.discord.mention_role_id if a["kind"] == "destroyed" else ""
+        if role:
+            payload["content"] = f"<@&{role}>"
+            payload["allowed_mentions"] = {"roles": [str(role)]}
         return payload
 
     # -- reading ------------------------------------------------------------------------------------------
@@ -547,9 +590,9 @@ class AlertService:
         return self.db.query(sql, tuple(params))
 
     def purge(self) -> int:
-        return self.db.execute(
-            "DELETE FROM structure_alerts WHERE created_at < ?", (time.time() - self.s.retention_days * 86400,)
-        )
+        cutoff = time.time() - self.s.retention_days * 86400
+        self.db.execute("DELETE FROM alert_posts WHERE created_at < ?", (cutoff,))
+        return self.db.execute("DELETE FROM structure_alerts WHERE created_at < ?", (cutoff,))
 
     # -- background ---------------------------------------------------------------------------------------
     async def poll_once(self) -> int:

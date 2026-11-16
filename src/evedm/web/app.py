@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import json
 import logging
+import os
+import signal
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -26,10 +29,11 @@ from ..alerts import AlertService, seed_demo_alerts
 from ..ansiblex import AnsiblexService, seed_demo_gates
 from ..bundle import BundleRejected, export_bundle, import_bundle, report
 from ..characters import REAUTH, CharacterService
-from ..config import WAYPOINT_SCOPE, ConfigError, Settings
-from ..crypto import TokenCipher
+from ..config import NOTIFICATION_GROUPS, WAYPOINT_SCOPE, ConfigError, Settings
+from ..crypto import TokenCipher, redact
 from ..db import Database
 from ..demo import seed_demo, seed_demo_notifications, seed_demo_roster
+from ..discord_rules import KINDS, SPACES, of_source
 from ..esi import EsiClient, EsiError
 from ..evescout import EveScout
 from ..logs import LaunchRecorder, peak_rss_mb, rss_mb, setup_logging, trim_memory
@@ -40,6 +44,7 @@ from ..resolver import TargetResolver
 from ..roster import RosterRejected, RosterService
 from ..scout import SEARCH_MAX_IDS, SUGGEST_MAX_CHARS, ResolveError, StructureScout, seed_demo_structures
 from ..selfcheck import check
+from ..settings_admin import SettingsAdmin
 from ..sso import AuthService, SsoError
 from ..universe import GateGraph
 from ..wars.config import WarsSettings, load_wars_settings
@@ -200,11 +205,9 @@ def build_alerts(settings: Settings, ws: WarsSettings, svc: Services) -> AlertSe
     """Structure alerts from zKillboard's live killmail feed (demo mode: sample alerts, no feed)."""
     if not settings.alerts.enabled:
         return None
-    from ..wars.discord import DiscordNotifier
     from ..wars.service import public_base
 
-    d = settings.alerts.discord
-    notifier = DiscordNotifier(d.webhook_url, 2) if d.enabled and not settings.demo else None
+    notifier = alert_notifier(settings, ws)
     base = public_base(settings, ws)
     alerts = AlertService(
         settings.alerts,
@@ -216,39 +219,128 @@ def build_alerts(settings: Settings, ws: WarsSettings, svc: Services) -> AlertSe
         notifier=notifier,
         page_url=f"{base}/alerts" if base else None,
     )
+    alerts.rules = lambda: settings.discord.rules
     if settings.demo:
         seed_demo_alerts(svc.db, svc.graph)
     return alerts
 
 
+def apply_discord(settings: Settings, ws: WarsSettings, svc: Services) -> None:
+    """Build the three Discord notifiers again from the settings as they are now (after a save on the Settings
+    page): a new token, channel or on/off switch is used by the next post, without a restart."""
+    from ..wars.discord import DiscordNotifier
+
+    token = settings.discord.bot_token or ws.discord.bot_token
+    if svc.wars is not None:
+        d = ws.discord
+        ready = d.enabled and (d.dry_run or bool(token and d.channel_id))
+        svc.wars.notifier = (
+            DiscordNotifier(token, d.channel_id, d.min_seconds_between_posts, dry_run=d.dry_run) if ready else None
+        )
+    if svc.alerts is not None:
+        svc.alerts.notifier = alert_notifier(settings, ws)
+    attach_notification_discord(settings, ws, svc)
+
+
+def has_rules(settings: Settings, source: str) -> bool:
+    return bool(of_source(settings.discord.rules, source))
+
+
+def alert_notifier(settings: Settings, ws: WarsSettings) -> Any:
+    """The notifier of the structure alerts: for the Discord rules when there are any, else for the single channel
+    of ``alerts.discord`` when that is on; None in demo mode or when neither applies."""
+    from ..wars.discord import DiscordNotifier
+
+    token, a = settings.discord.bot_token or ws.discord.bot_token, settings.alerts.discord
+    if settings.demo:
+        return None
+    if has_rules(settings, "alerts"):
+        return DiscordNotifier(token, "", 2) if token else None
+    return DiscordNotifier(token, a.channel_id, 2) if a.enabled else None
+
+
+def discord_status(settings: Settings, ws: WarsSettings, svc: Services) -> dict[str, dict[str, Any]]:
+    """What the Settings page shows per target: is posting on, and can a test message be sent."""
+
+    def row(service: Any, enabled: bool) -> dict[str, Any]:
+        notifier = getattr(service, "notifier", None)
+        if service is None:
+            detail = "the feature itself is off"
+        elif notifier is None:
+            detail = "on, but the bot token or the channel is missing" if enabled else "off"
+        elif getattr(notifier, "dry_run", False):
+            detail = "dry run: messages are only logged"
+        else:
+            detail = f"posting to channel {getattr(notifier, 'channel_id', '?')}"
+        return {"enabled": enabled, "ready": notifier is not None, "detail": detail}
+
+    def ruled(source: str, service: Any, enabled: bool) -> dict[str, Any]:
+        rules = of_source(settings.discord.rules, source)
+        if not rules or service is None:
+            return row(service, enabled)
+        on = [r for r in rules if r["enabled"]]
+        channels = len({r["channel_id"] for r in on})
+        detail = f"{len(on)} of {len(rules)} rule(s) on, {channels} channel(s)"
+        if getattr(service, "notifier", None) is None:
+            detail += "; the bot token is missing"
+        # a test message goes to one channel: with rules, each rule has its own button
+        return {"enabled": bool(on), "ready": False, "detail": detail}
+
+    return {
+        "wars": row(svc.wars, ws.discord.enabled),
+        "notifications": ruled("notifications", svc.notifications, settings.notifications.discord.enabled),
+        "alerts": ruled("alerts", svc.alerts, settings.alerts.discord.enabled),
+    }
+
+
+REMOVED_ENV = ("EVEDM_WARS_DISCORD_WEBHOOK", "EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK", "EVEDM_ALERTS_DISCORD_WEBHOOK")
+
+
 def attach_notification_discord(settings: Settings, ws: WarsSettings, svc: Services) -> None:
-    """Post notifications to Discord: through their own webhook, else through the wars webhook."""
+    """Post notifications to Discord as the bot: by the Discord rules when there are any, else to their own
+    channel, else to the wars channel."""
     ns = svc.notifications
     d = settings.notifications.discord
-    if ns is None or not d.enabled or settings.demo:
+    if ns is None:
+        return
+    ns.notifier = None
+    ns.rules = lambda: settings.discord.rules
+    ruled = has_rules(settings, "notifications")  # the rules name the channels; the single channel is not used
+    if settings.demo or not (ruled or d.enabled):
         return
     from ..wars.discord import DiscordNotifier
     from ..wars.service import public_base
 
-    url = d.webhook_url or ws.discord.webhook_url
-    if not url:
-        log.info("notifications are not posted to Discord: no webhook (EVEDM_WARS_DISCORD_WEBHOOK)")
+    token = settings.discord.bot_token or ws.discord.bot_token
+    channel = "" if ruled else d.channel_id or ws.discord.channel_id
+    if not token or not (ruled or channel):
+        log.info(
+            "notifications are not posted to Discord: no bot token or channel"
+            " (EVEDM_DISCORD_BOT_TOKEN, EVEDM_WARS_DISCORD_CHANNEL_ID)"
+        )
         return
     base = public_base(settings, ws)
-    ns.notifier = DiscordNotifier(url, ws.discord.min_seconds_between_posts, dry_run=ws.discord.dry_run)
+    ns.notifier = DiscordNotifier(
+        token, channel, ws.discord.min_seconds_between_posts, dry_run=ws.discord.dry_run
+    )
     ns.page_url = f"{base}/notifications" if base else None
     ns.evescout = svc.evescout
-    log.info("notifications are posted to Discord (%s webhook)", "their own" if d.webhook_url else "the wars")
+    where = "by the rules" if ruled else "their own channel" if d.channel_id else "the wars channel"
+    log.info("notifications are posted to Discord (%s)", where)
 
 
 def create_app(settings: Settings, wars_settings: WarsSettings | None = None) -> FastAPI:
-    settings.validate_for_serve()
-    ws = wars_settings if wars_settings is not None else load_wars_settings()
+    ws = wars_settings if wars_settings is not None else load_wars_settings(validate=False)
+    admin = SettingsAdmin(settings, ws)
+    admin.load()  # the Settings page's file on top of the configuration; validates both (ConfigError)
     startup = check(settings)  # dependencies + fully qualified, verified resource paths
     if not startup.ok:
         raise ConfigError("startup check failed: " + "; ".join(startup.problems))
     setup_logging(settings)
     log.info("resolved paths: %s", startup.paths)
+    for name in REMOVED_ENV:
+        if os.environ.get(name):
+            log.warning("%s is no longer used: Discord posts go through the bot (EVEDM_DISCORD_BOT_TOKEN)", name)
     holder: dict[str, Any] = {}
     alliance_cache: dict[int, tuple[float, list[int]]] = {}  # alliance -> (valid until, member corporations)
 
@@ -391,6 +483,20 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         if gate is None or not gate.allowed(uid):
             raise HTTPException(status_code=404, detail="this section is open to one alliance only")
 
+    def is_admin(request: Request) -> bool:
+        """True for a main named in ``web.admin_characters`` (name or ID) who signed in through EVE SSO."""
+        user = user_of(request)
+        if user is None or settings.web.auth != "sso":
+            return False
+        mine = {str(user["id"]), str(user.get("name") or "").strip().lower()} - {""}
+        return any(str(a).strip().lower() in mine for a in settings.web.admin_characters)
+
+    def require_admin(request: Request) -> dict[str, Any]:
+        user = require_user(request)
+        if not is_admin(request):
+            raise HTTPException(status_code=404, detail="Not Found")  # the page does not exist for anyone else
+        return user
+
     def page(request: Request, name: str, **ctx: Any) -> HTMLResponse:
         svc = svc_of(request)
         member = is_member(request)
@@ -413,6 +519,7 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             "ansiblex_enabled": svc.ansiblex is not None,
             "min_structures": settings.notifications.min_structures,
             "notifications_enabled": svc.notifications is not None and member,
+            "is_admin": is_admin(request),
         }
         return templates.TemplateResponse(request, name, base | ctx)
 
@@ -477,6 +584,13 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         if svc_of(request).wars is None:
             raise HTTPException(status_code=404, detail="the war watcher is disabled (config/wars.yaml)")
         return page(request, "wars.html", census=svc_of(request).wars.census is not None)
+
+    @app.get("/settings", response_class=HTMLResponse)
+    async def settings_page(request: Request) -> Response:
+        if user_of(request) is None:
+            return RedirectResponse("/login", status_code=303)
+        require_admin(request)
+        return page(request, "settings.html")
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request) -> Response:
@@ -1310,6 +1424,106 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         return JSONResponse(item)
 
     # ------------------------------------------------------------------ API: account
+    # ------------------------------------------------------------------ settings (administrator only)
+    def settings_state(request: Request) -> dict[str, Any]:
+        graph = svc_of(request).graph
+        options = {
+            "kinds": list(KINDS),
+            "spaces": list(SPACES),
+            "groups": NOTIFICATION_GROUPS,
+            "regions": sorted(set(graph.regions.values()) - {""}),
+        }
+        return admin.state() | {"discord": discord_status(settings, ws, svc_of(request)), "rule_options": options}
+
+    def named_places(rules: Any, graph: GateGraph) -> Any:
+        """The rules with their system and region names as the universe spells them; 400 for an unknown one."""
+        if not isinstance(rules, list):
+            return rules  # refused with its own message when it is saved
+        regions = {name.lower(): name for name in graph.regions.values()}
+        out = []
+        for number, rule in enumerate(rules, 1):
+            if isinstance(rule, dict):
+                rule = dict(rule)
+                for key in ("systems", "exclude_systems", "regions", "exclude_regions"):
+                    names = rule.get(key) if isinstance(rule.get(key), list) else []
+                    found = []
+                    for name in (str(n).strip() for n in names if str(n).strip()):
+                        idx = graph.find(name) if "systems" in key else None
+                        known = graph.names[idx] if idx is not None else regions.get(name.lower())
+                        if known is None or ("systems" in key) != (idx is not None):
+                            what = "solar system" if "systems" in key else "region"
+                            raise HTTPException(status_code=400, detail=f"rule {number}: unknown {what} '{name}'")
+                        found.append(known)
+                    if names:
+                        rule[key] = found
+            out.append(rule)
+        return out
+
+    @app.get("/api/settings")
+    async def settings_get(request: Request) -> JSONResponse:
+        require_admin(request)
+        return JSONResponse(settings_state(request))
+
+    @app.put("/api/settings")
+    async def settings_put(request: Request) -> JSONResponse:
+        user = require_admin(request)
+        require_csrf(request)
+        body = await json_body(request)
+        changes, reset = body.get("set") or {}, body.get("reset") or []
+        if not isinstance(changes, dict) or not isinstance(reset, list):
+            raise HTTPException(status_code=400, detail="'set' must be an object and 'reset' a list")
+        if "evedm:discord.rules" in changes:
+            changes = changes | {
+                "evedm:discord.rules": named_places(changes["evedm:discord.rules"], svc_of(request).graph)
+            }
+        try:
+            result = admin.save(changes, reset, int(user["id"]))
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail=redact(str(exc))) from None
+        apply_discord(settings, ws, svc_of(request))
+        log.warning("settings changed by %s: %s", user["name"], ", ".join(result["changed"]) or "nothing")
+        return JSONResponse(settings_state(request) | result)
+
+    @app.post("/api/settings/discord/test")
+    async def settings_discord_test(request: Request) -> JSONResponse:
+        from ..wars.discord import DiscordNotifier, NotifyError
+
+        user = require_admin(request)
+        require_csrf(request)
+        body = await json_body(request)
+        target, channel = body.get("target"), str(body.get("channel_id") or "").strip()
+        svc = svc_of(request)
+        services = {"wars": svc.wars, "notifications": svc.notifications, "alerts": svc.alerts}
+        if channel:  # the channel of a rule (saved or not), with the saved bot token
+            token = settings.discord.bot_token or ws.discord.bot_token
+            if not channel.isdigit() or not token:
+                problem = "save the bot token first" if channel.isdigit() else "channel_id must be a numeric ID"
+                raise HTTPException(status_code=400, detail=problem)
+            notifier, target = DiscordNotifier(token, channel, 0), "this rule's messages"
+        elif target not in services:
+            raise HTTPException(status_code=400, detail="target must be wars, notifications or alerts")
+        else:
+            notifier = getattr(services[target], "notifier", None)
+        if notifier is None:
+            raise HTTPException(status_code=400, detail=f"Discord posting for {target} is off or not complete")
+        text = f"Sent from the Settings page by {user['name']}: the bot can post {target} to this channel."
+        try:
+            embed = {"title": "EVE Distance Meter: test message", "description": text}
+            message = await notifier.send({"embeds": [embed]})
+        except NotifyError as exc:
+            raise HTTPException(status_code=400, detail=redact(str(exc))) from None
+        dry = message.get("id") == "dry_run"
+        return JSONResponse({"ok": True, "detail": "dry run: nothing was sent" if dry else "message posted"})
+
+    @app.post("/api/settings/restart")
+    async def settings_restart(request: Request) -> JSONResponse:
+        user = require_admin(request)
+        require_csrf(request)
+        log.warning("restart requested by %s on the Settings page", user["name"])
+        # a clean stop; Docker (restart: unless-stopped) starts the container again, a bare process stays down
+        asyncio.get_running_loop().call_later(0.5, os.kill, os.getpid(), signal.SIGTERM)
+        return JSONResponse({"restarting": True})
+
     @app.get("/api/me")
     async def me(request: Request) -> JSONResponse:
         user = require_user(request)

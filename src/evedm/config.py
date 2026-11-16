@@ -126,6 +126,7 @@ class WebSettings:
     port: int = 8080
     auth: str = "sso"  # sso | none
     allowed_login_characters: list[int] = field(default_factory=list)
+    admin_characters: list[str] = field(default_factory=list)  # names or IDs of the mains that get the Settings page
     session_days: int = 90  # rolling: the cookie is renewed on every visit
     cookie_secure: bool = False
     auto_refresh_s: int = 30
@@ -166,9 +167,18 @@ class StructureScoutSettings:
 
 
 @dataclass
+class DiscordBotSettings:
+    """The registered Discord application every post goes through (REST only: no gateway connection is kept)."""
+
+    bot_token: str = ""  # the bot token of the application (Developer Portal > Bot); a secret, kept in .env
+    # filters with a channel each for alerts and notifications (see discord_rules.py); none = the single channels
+    rules: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
 class AlertDiscordSettings:
     enabled: bool = False
-    webhook_url: str = ""  # secret: EVEDM_ALERTS_DISCORD_WEBHOOK (a different channel from the wars one is fine)
+    channel_id: str = ""  # EVEDM_ALERTS_DISCORD_CHANNEL_ID (a different channel from the wars one is fine)
     mention_role_id: str = ""
     kinds: list[str] = field(default_factory=lambda: ["destroyed", "combat", "firing"])
     combat_cooldown_min: float = 30.0  # one combat/firing post per structure within this time
@@ -228,11 +238,11 @@ class AccessSettings:
 
 @dataclass
 class NotificationDiscordSettings:
-    """Notifications posted to Discord. Without a webhook of its own the wars webhook is used
-    (``EVEDM_WARS_DISCORD_WEBHOOK``); with neither, nothing is posted."""
+    """Notifications posted to Discord by the bot. Without a channel of its own the wars channel is used
+    (``EVEDM_WARS_DISCORD_CHANNEL_ID``); with neither, or without a bot token, nothing is posted."""
 
     enabled: bool = True
-    webhook_url: str = ""  # secret: EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK; empty = the wars webhook
+    channel_id: str = ""  # EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID; empty = the wars channel
     mention_role_id: str = ""  # pinged on "structure attacked" notifications only
     groups: list[str] = field(default_factory=list)  # which groups are posted; empty = notifications.groups
     max_age_min: float = 60.0  # older notifications are never posted (the history ESI returns on a first read)
@@ -306,6 +316,7 @@ class Settings:
     structures: StructureScoutSettings = field(default_factory=StructureScoutSettings)
     alerts: AlertSettings = field(default_factory=AlertSettings)
     notifications: NotificationSettings = field(default_factory=NotificationSettings)
+    discord: DiscordBotSettings = field(default_factory=DiscordBotSettings)
     access: AccessSettings = field(default_factory=AccessSettings)
     evescout: EveScoutSettings = field(default_factory=EveScoutSettings)
     ansiblex: AnsiblexSettings = field(default_factory=AnsiblexSettings)
@@ -336,6 +347,7 @@ class Settings:
             "structure_scout": self.structures.enabled,
             "alerts": self.alerts.enabled,
             "alerts_discord": self.alerts.discord.enabled,
+            "discord_bot_token_set": bool(self.discord.bot_token),
             "notifications": self.notifications.enabled,
             "access_alliances": self.access.alliance_ids,
             "evescout": self.evescout.enabled,
@@ -370,6 +382,12 @@ class Settings:
                 raise ConfigError("structures.dock_search_punctuated must be 'prefix' or 'full'")
         if sc.mail_enabled and (sc.mail_refresh_minutes <= 0 or sc.mail_max_pages < 1 or sc.mail_max_age_days <= 0):
             raise ConfigError("structures.mail_refresh_minutes > 0, mail_max_pages >= 1 and mail_max_age_days > 0")
+        from .discord_rules import RuleError, normalize_all
+
+        try:
+            self.discord.rules = normalize_all(self.discord.rules, list(NOTIFICATION_GROUPS))
+        except RuleError as exc:
+            raise ConfigError(f"discord.rules: {exc}") from None
         a = self.alerts
         if a.enabled and a.poll_s < 6:
             raise ConfigError("alerts.poll_s must be at least 6 (zKillboard's rule)")
@@ -380,9 +398,14 @@ class Settings:
         bad = [k for k in a.discord.kinds if k not in ("destroyed", "combat", "firing")]
         if bad:
             raise ConfigError(f"alerts.discord.kinds: unknown {bad}; use destroyed, combat, firing")
-        if a.enabled and a.discord.enabled and not a.discord.webhook_url:
-            raise ConfigError("alerts.discord.enabled needs a webhook (EVEDM_ALERTS_DISCORD_WEBHOOK)")
+        a.discord.channel_id = str(a.discord.channel_id or "").strip()  # YAML reads an unquoted ID as a number
+        if a.enabled and a.discord.enabled and not (self.discord.bot_token and is_snowflake(a.discord.channel_id)):
+            raise ConfigError(
+                "alerts.discord.enabled needs the bot token (EVEDM_DISCORD_BOT_TOKEN) and a numeric channel ID"
+                " (EVEDM_ALERTS_DISCORD_CHANNEL_ID)"
+            )
         n = self.notifications
+        n.discord.channel_id = str(n.discord.channel_id or "").strip()
         if n.enabled:
             if n.poll_s < 30:
                 raise ConfigError("notifications.poll_s must be at least 30 (ESI caches notifications 600 s)")
@@ -390,6 +413,8 @@ class Settings:
                 raise ConfigError("notifications.retention_days > 0 and character_interval_s >= 60")
             if n.min_structures < 0 or n.min_interval_s < 1 or n.retry_s < 5:
                 raise ConfigError("notifications.min_structures >= 0, min_interval_s >= 1 and retry_s >= 5")
+            if n.discord.channel_id and not is_snowflake(n.discord.channel_id):
+                raise ConfigError("notifications.discord.channel_id must be a numeric Discord channel ID")
             unknown_d = [g for g in n.discord.groups if g not in NOTIFICATION_GROUPS]
             if unknown_d or n.discord.max_age_min <= 0:
                 raise ConfigError(
@@ -431,11 +456,21 @@ def _legacy_access(raw: dict[str, Any]) -> dict[str, Any]:
     return {**raw, "access": moved} if moved else raw
 
 
+def is_snowflake(value: Any) -> bool:
+    """A Discord ID (channel, role, message): digits only. YAML reads an unquoted one as a number."""
+    return str(value or "").strip().isdigit()
+
+
 def _truthy(value: str | None) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
-REMOVED_KEYS = {(StructureScoutSettings, "dock_search_term"): "ESI matches name prefixes: see dock_search_prefix_len"}
+_NO_WEBHOOK = "Discord posts go through the bot: see discord.bot_token and channel_id"
+REMOVED_KEYS = {
+    (StructureScoutSettings, "dock_search_term"): "ESI matches name prefixes: see dock_search_prefix_len",
+    (AlertDiscordSettings, "webhook_url"): _NO_WEBHOOK,
+    (NotificationDiscordSettings, "webhook_url"): _NO_WEBHOOK,
+}
 
 
 def _apply(obj: Any, data: dict[str, Any]) -> None:
@@ -443,7 +478,7 @@ def _apply(obj: Any, data: dict[str, Any]) -> None:
         if not hasattr(obj, key):  # unknown keys are skipped without a word, except the ones that were removed
             if (type(obj), key) in REMOVED_KEYS:
                 why = REMOVED_KEYS[type(obj), key]
-                log.info("setting structures.%s is no longer used and is ignored (%s)", key, why)
+                log.info("setting %s is no longer used and is ignored (%s)", key, why)
             continue
         current = getattr(obj, key)
         nested = (
@@ -452,6 +487,7 @@ def _apply(obj: Any, data: dict[str, Any]) -> None:
             StructureScoutSettings,
             AlertSettings,
             AlertDiscordSettings,
+            DiscordBotSettings,
             NotificationSettings,
             NotificationDiscordSettings,
             NotificationZkbSettings,
@@ -493,6 +529,7 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
     "EVEDM_WEB_AUTH": ("web", "auth"),
     "EVEDM_COOKIE_SECURE": ("web", "cookie_secure"),
     "EVEDM_ALLOWED_LOGIN_CHARACTERS": ("web", "allowed_login_characters"),
+    "EVEDM_ADMIN_CHARACTERS": ("web", "admin_characters"),
     "EVEDM_REFRESH_INTERVAL_S": ("web", "refresh_interval_s"),
     "EVEDM_MAX_WAIT_AGE_S": ("web", "max_wait_age_s"),
     "EVE_OPTIONAL_SCOPES": ("eve", "optional_scopes"),
@@ -503,7 +540,8 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
     "EVEDM_ALERTS_GRID_KM": ("alerts", "grid_km"),
     "EVEDM_ALERTS_CONTACT": ("alerts", "contact"),
     "EVEDM_ALERTS_DISCORD_ENABLED": ("alerts", "discord", "enabled"),
-    "EVEDM_ALERTS_DISCORD_WEBHOOK": ("alerts", "discord", "webhook_url"),
+    "EVEDM_DISCORD_BOT_TOKEN": ("discord", "bot_token"),
+    "EVEDM_ALERTS_DISCORD_CHANNEL_ID": ("alerts", "discord", "channel_id"),
     "EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID": ("alerts", "discord", "mention_role_id"),
     "EVEDM_NOTIFICATIONS_ENABLED": ("notifications", "enabled"),
     "EVEDM_NOTIFICATIONS_ALLIANCES": ("access", "alliance_ids"),  # 0.8.x name; EVEDM_ACCESS_ALLIANCES wins
@@ -517,7 +555,7 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
     "EVEDM_NOTIFICATIONS_DISCORD_ENABLED": ("notifications", "discord", "enabled"),
     "EVEDM_NOTIFICATIONS_ZKB_CHECK_ENABLED": ("notifications", "zkb_check", "enabled"),
     "EVEDM_NOTIFICATIONS_ZKB_CHECK_API_ENABLED": ("notifications", "zkb_check", "api_enabled"),
-    "EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK": ("notifications", "discord", "webhook_url"),
+    "EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID": ("notifications", "discord", "channel_id"),
     "EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID": ("notifications", "discord", "mention_role_id"),
     "EVEDM_ACCESS_ALLIANCES": ("access", "alliance_ids"),
     "EVEDM_ACCESS_AFFILIATION_HOURS": ("access", "affiliation_hours"),
@@ -553,6 +591,8 @@ def _load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
             setattr(obj, target[-1], [int(v) for v in value.replace(";", ",").split(",") if v.strip()])
         elif target[-1] == "groups":
             setattr(obj, target[-1], [v for v in value.replace(",", " ").split() if v.strip()])
+        elif target[-1] == "admin_characters":  # names contain spaces: commas only
+            setattr(obj, target[-1], [v.strip() for v in value.replace(";", ",").split(",") if v.strip()])
         elif target[-1] == "allowed_login_characters":
             setattr(obj, target[-1], [int(v) for v in value.replace(";", ",").split(",") if v.strip()])
         elif target[-1] == "optional_scopes":  # comma or space separated; "none" asks for no extra scope
@@ -561,6 +601,9 @@ def _load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
         else:
             _apply(obj, {target[-1]: value})
     settings.web.allowed_login_characters = [int(v) for v in settings.web.allowed_login_characters]
+    admins = settings.web.admin_characters  # one name from ${EVEDM_ADMIN_CHARACTERS:-...} arrives as text
+    admins = admins.replace(";", ",").split(",") if isinstance(admins, str) else admins
+    settings.web.admin_characters = [str(v).strip() for v in admins if str(v).strip()]
     settings.access.alliance_ids = [int(v) for v in settings.access.alliance_ids]
     if (
         settings.demo

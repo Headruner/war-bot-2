@@ -26,9 +26,10 @@ from .characters import REAUTH, CharacterService
 from .config import NOTIFICATION_GROUPS, NOTIFICATION_SCOPE, NotificationSettings
 from .crypto import redact
 from .db import Database
+from .discord_rules import Target, notification_matches, of_source, targets
 from .esi import EsiClient, EsiError
 from .sso import SsoError
-from .universe import GateGraph
+from .universe import GateGraph, space_of
 from .zkb_check import ZkbApi, ZkbError, kill_url, listed, match_feed, parse_time
 from .zkb_check import line as zkb_line
 
@@ -192,6 +193,7 @@ class NotificationService:
         evescout: Any = None,
     ):
         self.notifier = notifier  # DiscordNotifier, or None when nothing is posted
+        self.rules: Any = list  # () -> discord.rules as they are now (set by the web app)
         self.page_url = page_url
         self.evescout = evescout  # for the Thera / Turnur line of a Discord post
         self._post_pending = True  # look for unposted notifications on the first round
@@ -431,8 +433,9 @@ class NotificationService:
         except ValueError:
             return 0.0
 
-    def embed_payload(self, row: Any, characters: list[str]) -> dict[str, Any]:
-        """The Discord message of one event: title as in game, system, nearest hub, who received it.
+    def embed_payload(self, row: Any, characters: list[str], role: str | None = None) -> dict[str, Any]:
+        """The Discord message of one event: title as in game, system, nearest hub, who received it. ``role``:
+        the role a rule pings with every message; None = the single channel's role, on attacks only.
 
         The system, structure type and kill link are marked and bold; a found kill is linked under the title."""
         d = self.describe(row)
@@ -490,8 +493,9 @@ class NotificationService:
         if row["timestamp"]:
             embed["timestamp"] = row["timestamp"]
         payload: dict[str, Any] = {"embeds": [embed]}
-        role = self.s.discord.mention_role_id
-        if role and d["group"] in ("structure_attack", "tower"):
+        if role is None:
+            role = self.s.discord.mention_role_id if d["group"] in ("structure_attack", "tower") else ""
+        if role:
             payload["content"] = f"<@&{role}>"
             payload["allowed_mentions"] = {"roles": [str(role)]}
         return payload
@@ -508,11 +512,12 @@ class NotificationService:
             return await self._post_rows()
 
     async def _post_rows(self) -> int:
-        from .wars.discord import NotifyError, WebhookInvalid
+        from .wars.discord import DiscordRejected, NotifyError
 
         d = self.s.discord
         self._post_pending = False  # anything stored while this runs sets it again
         allowed = {t for g in (d.groups or self.s.groups) for t in NOTIFICATION_GROUPS.get(g, [])}
+        rules = of_source(self.rules(), "notifications")
         rows = self.db.pending_notification_posts()
         names = self.db.character_names(sorted({r["character_id"] for r in rows}))
         if rows and self.evescout is not None:
@@ -521,38 +526,45 @@ class NotificationService:
         done = 0
         for r in rows:
             cid, nid = r["character_id"], r["notification_id"]
-            if r["type"] not in allowed or self._age_s(r["timestamp"]) > d.max_age_min * 60:
+            goes_to = self._targets(r, rules, allowed) if self._age_s(r["timestamp"]) <= d.max_age_min * 60 else []
+            if not goes_to:
                 self.db.mark_notification_posted(cid, nid, 2)  # 2: not posted (filtered out, or history)
                 continue
             key = self.event_key(r)
             name = names.get(cid, str(cid))
-            post = self.db.notification_post(key)
-            characters = json.loads(post["characters"]) if post is not None else []
-            if name in characters:  # this character's copy is already in the message
-                self.db.mark_notification_posted(cid, nid, 1)
-                continue
-            characters.append(name)
-            payload = self.embed_payload(r, characters)
-            try:
-                message = None
-                if post is not None and post["message_id"]:
-                    message = await self.notifier.edit(post["message_id"], payload)
-                if message is None:  # a new event, or the message was deleted in Discord
-                    message = await self.notifier.send(payload)
-            except WebhookInvalid as exc:
-                self.state["last_error"] = redact(f"Discord webhook invalid: {exc}")
-                log.error("notifications: %s", self.state["last_error"])
-                self._post_pending = False  # nothing to gain from asking again until something new arrives
-                return done
-            except NotifyError as exc:
-                log.warning("notification post failed (retried in %.0f s): %s", self.s.retry_s, redact(str(exc)))
-                self._post_retry_at = time.time() + self.s.retry_s
-                self._post_pending = True
-                return done
-            message_id = str(message.get("id") or (post["message_id"] if post is not None else "") or "")
-            self.db.save_notification_post(key, message_id or None, characters)
+            sent = False
+            for target in goes_to:
+                channel = target.channel or ""
+                post = self.db.notification_post(key, channel)
+                characters = json.loads(post["characters"]) if post is not None else []
+                if name in characters:  # this character's copy is already in the message
+                    continue
+                characters.append(name)
+                payload = self.embed_payload(r, characters, target.role)
+                to = {} if target.channel is None else {"channel_id": target.channel}
+                try:
+                    message = None
+                    if post is not None and post["message_id"]:
+                        message = await self.notifier.edit(post["message_id"], payload, **to)
+                    if message is None:  # a new event, or the message was deleted in Discord
+                        message = await self.notifier.send(payload, **to)
+                except DiscordRejected as exc:
+                    self.state["last_error"] = redact(f"Discord rejected the bot: {exc}")
+                    log.error("notifications: %s", self.state["last_error"])
+                    if target.channel is not None and exc.status in (403, 404):
+                        continue  # that channel only (no access, deleted): the other channels still get it
+                    self._post_pending = False  # nothing to gain from asking again until something new arrives
+                    return done
+                except NotifyError as exc:
+                    log.warning("notification post failed (retried in %.0f s): %s", self.s.retry_s, redact(str(exc)))
+                    self._post_retry_at = time.time() + self.s.retry_s
+                    self._post_pending = True
+                    return done
+                message_id = str(message.get("id") or (post["message_id"] if post is not None else "") or "")
+                self.db.save_notification_post(key, message_id or None, characters, channel)
+                sent = True
             self.db.mark_notification_posted(cid, nid, 1)
-            done += 1
+            done += int(sent)
         self._post_retry_at = 0.0
         self._post_pending = self._post_pending or len(rows) >= 100  # a full page: more may wait
         self.state["posted"] = self.state.get("posted", 0) + done
@@ -790,30 +802,42 @@ class NotificationService:
         self._zkb_unedited.add(key)
         await self._zkb_edit_discord(key)
 
+    def _targets(self, r: Any, rules: list[dict[str, Any]], allowed: set[str]) -> list[Target]:
+        """The channels of one notification: every matching rule's, or the single channel while there are no
+        rules (then for the types of ``discord.groups``)."""
+        if not rules:
+            return [Target(None, None)] if r["type"] in allowed else []
+        idx = self.g.index.get(r["solar_system_id"]) if r["solar_system_id"] else None
+        place = None if idx is None else self.g.describe(idx) | {"space": space_of(self.g, idx)}
+        group = GROUP_OF.get(r["type"], "other")
+        return targets([rule for rule in rules if notification_matches(rule, r["type"], group, place)])
+
     async def _zkb_edit_discord(self, key: str) -> None:
         """The Discord message of the event shows the final zKillboard line: the existing message is edited, no
         message is sent and nobody is pinged again. Nothing posted (Discord off, or not yet): the post made later
         is built from the final state."""
-        from .wars.discord import NotifyError, WebhookInvalid
+        from .wars.discord import NotifyError
 
         if self.notifier is None:
             self._zkb_unedited.discard(key)
             return
         async with self._post_lock:
-            post = self.db.notification_post(key)
+            posts = [(channel, post) for channel, post in self.db.notification_posts_of(key) if post["message_id"]]
             check = self.db.zkb_check(key)
-            if post is None or not post["message_id"] or check is None:
+            row = self.db.notification_row(check["character_id"], check["notification_id"]) if check else None
+            if not posts or row is None:
                 self._zkb_unedited.discard(key)
                 return
-            row = self.db.notification_row(check["character_id"], check["notification_id"])
-            if row is None:
-                self._zkb_unedited.discard(key)
-                return
-            try:
-                await self.notifier.edit(post["message_id"], self.embed_payload(row, json.loads(post["characters"])))
-            except (NotifyError, WebhookInvalid) as exc:  # tried again with the next step
-                log.warning("zKillboard line could not be edited into Discord: %s", redact(str(exc)))
-                return
+            for channel, post in posts:  # the message in every channel the event went to
+                # a rule's role is in the message already: an edit without content leaves it, nobody is pinged again
+                role = "" if channel else None
+                payload = self.embed_payload(row, json.loads(post["characters"]), role)
+                to = {"channel_id": channel} if channel else {}
+                try:
+                    await self.notifier.edit(post["message_id"], payload, **to)
+                except NotifyError as exc:  # tried again with the next step
+                    log.warning("zKillboard line could not be edited into Discord: %s", redact(str(exc)))
+                    return
             self._zkb_unedited.discard(key)
 
     async def poll_once(self, post: bool = False) -> int:

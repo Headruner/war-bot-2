@@ -7,6 +7,7 @@
   <title>{% block title %}EVE Distance Meter{% endblock %}</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/app.css?v={{ asset_v }}">
+  <script defer src="/static/common.js?v={{ asset_v }}"></script>  {# in the head: runs first, before the page scripts #}
 </head>
 <body class="{% block bodyclass %}{% endblock %}">
   <header class="topbar">
@@ -20,6 +21,7 @@
         {% if alerts_enabled %}<a href="/alerts">Alerts</a>{% endif %}
         {% if structures_enabled %}<a href="/structures">Structures</a>{% endif %}
         {% if wars_enabled %}<a href="/wars">Wars</a>{% endif %}
+        {% if is_admin %}<a href="/settings">Settings</a>{% endif %}
         {% if auth == "sso" %}
           <form method="post" action="/logout"><button class="link" type="submit">Sign out {{ user.name }}</button></form>
         {% endif %}
@@ -38,7 +40,7 @@
   {% if demo %}<div class="demo-banner">Demo mode: fictional characters, no EVE login needed.<span class="detail"> Universe data: {{ universe }}</span></div>{% endif %}
   {% block page_tools %}{% endblock %}
   {% block content %}{% endblock %}
-  <script src="/static/navigation.js?v={{ asset_v }}"></script>
+  <script defer src="/static/navigation.js?v={{ asset_v }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

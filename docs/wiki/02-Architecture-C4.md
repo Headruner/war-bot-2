@@ -9,7 +9,7 @@ Diagrams are written in PlantUML ([`docs/c4`](../c4)) and rendered to SVG/PNG in
 
 ## C1 · System context
 Actors are the user, EVE SSO, ESI (which also forwards an autopilot destination to the game client on **Set
-destination**), zKillboard's live killmail feed R2Z2 (structure alerts), EVE Ref's structure dataset, Discord webhooks
+destination**), zKillboard's live killmail feed R2Z2 (structure alerts), EVE Ref's structure dataset, the Discord API (bot)
 (optional posts) and CCP static data.
 
 ![C1](../diagrams/c1-system-context.svg)
@@ -64,7 +64,7 @@ Key mechanisms:
   system once per request and never waits for EVE-Scout once a list exists (`ensure_fresh_soon`), and the page
   redraws only when the answer changed. Delivery: reads are spread over ESI's window (`staggered()`), a stored
   notification bumps `version` and wakes the pages holding `GET /api/notifications/wait` (long poll), and
-  `post_discord()` (called as soon as each character is read) sends one embed per event through the wars webhook (`DiscordNotifier.send` / `edit`,
+  `post_discord()` (called as soon as each character is read) sends one embed per event through the wars channel as the bot (`DiscordNotifier.send` / `edit`,
   `notification_posts`, `character_notifications.posted`; schema v11). Schema v12/v13 add `public_structure_history`
   (historical structure details with their source).
 - **Big-kill filter** (`alerts.py`): `hull_class()` maps a hull's ESI group to battleship (Battleship, Black Ops,
@@ -112,8 +112,8 @@ Key mechanisms:
   (`_mail_lock` keeps the two paths apart). `StructureScout.effective()` is the single read path: it applies the
   mail finds below live ESI data and the public datasets below the mail finds, and is cached on `scout.version`
   (a scan that stores something bumps it); `listing()`, `index()` (the structure index of the war lists and alerts,
-  with owner and system) and `search()` all read it. The schema is v20 (`structure_mail_finds`, `mail_reads`,
-  `scout_mail`); `stats()` and `evedm structures stats` have a `mail` block.
+  with owner and system) and `search()` all read it. The schema is v21 (`structure_mail_finds`, `mail_reads`,
+  `scout_mail`, `alert_posts`); `stats()` and `evedm structures stats` have a `mail` block.
 - **Citadel search** (`StructureScout.search`, `suggest_places`, `suggest_owners`, STR-15): the Search tab of the
   Structures page uses two smart-search inputs (`multiselect.js`) that call `GET /api/structures/suggest` (places:
   every system and region ranked exact, prefix, word prefix, inside; owners: `entity_names`, plus an exact-name lookup
@@ -125,6 +125,17 @@ Key mechanisms:
   memory for 6 hours (`alliance_cache` in `create_app`); an alliance that cannot be read is reported in
   `unresolved_alliances`. The wars-side counterpart is `WarCensus.loot()` (all space, `space` and `min_sec` filters,
   WAR-17).
+
+- **Settings page** (`SettingsAdmin`, `settings_admin.py`; routes in `web/app.py`, `settings.html`, `settings.js`): builds the
+  list of settings from the settings dataclasses of `evedm.yaml` and `wars.yaml`, validates the whole resulting
+  configuration with the start-up rules, writes the differences to `<data_dir>/settings.yaml` (secrets encrypted with
+  `EVEDM_SECRET_KEY`; highest precedence), changes the running settings objects in place and rebuilds the three Discord
+  notifiers. Only a main in `web.admin_characters` reaches it (404 for all others); an invalid file is ignored at start.
+  Restart is a SIGTERM to the process (Docker restarts the container).
+- **Discord rules** (`discord_rules.py`, D29, DRL-): `discord.rules` (filter + channel, per source) are normalized and
+  validated at start and before saving; `alerts.py` and `notifications.py` ask `_targets()` for the channels an item
+  goes to and post once per channel (`wars/discord.py` `send` / `edit` take an optional `channel_id`; `alert_posts`,
+  `notification_posts.event_key` with `|<channel id>`). A source without rules uses its single-channel settings.
 
 ## C4 · Code
 

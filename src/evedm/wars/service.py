@@ -18,7 +18,7 @@ from ..db import Database
 from ..universe import GateGraph
 from .census import WarCensus
 from .config import WarsSettings
-from .discord import DiscordNotifier, NotifyError, WebhookInvalid
+from .discord import DiscordNotifier, DiscordRejected, NotifyError
 from .embeds import MAX_EMBEDS_PER_MESSAGE, build_embed, build_payload
 from .esi import WarEsi, WarEsiError
 from .report import build_report
@@ -80,7 +80,8 @@ class WarService:
         notifier = None
         if ws.discord.enabled:
             notifier = DiscordNotifier(
-                ws.discord.webhook_url,
+                ws.discord.bot_token or settings.discord.bot_token,
+                ws.discord.channel_id,
                 ws.discord.min_seconds_between_posts,
                 dry_run=ws.discord.dry_run,
                 transport=kw.get("discord_transport"),
@@ -321,7 +322,7 @@ class WarService:
             payload = build_payload([e for _, e in batch], self.s.discord.mention_role_id)
             try:
                 msg = await self.notifier.send(payload)
-            except WebhookInvalid:
+            except DiscordRejected:
                 raise
             except NotifyError as e:
                 self.store.mark_failed_attempt(ids, str(e))
@@ -359,9 +360,9 @@ class WarService:
                     with activity("wars.cycle"):
                         await self.run_cycle()
                     self.state["last_error"] = None
-                except WebhookInvalid as e:
-                    self.state["last_error"] = redact(f"Discord webhook invalid: {e}")
-                    log.critical("Discord webhook invalid: %s - fix the wars config and restart", e)
+                except DiscordRejected as e:
+                    self.state["last_error"] = redact(f"Discord rejected the bot: {e}")
+                    log.critical("Discord rejected the bot: %s - fix the wars config and restart", redact(str(e)))
                 except WarEsiError as e:
                     self.state["last_error"] = redact(f"ESI: {e}")
                     log.error("ESI error: %s", e)

@@ -422,3 +422,39 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
 .ms-detail { color: var(--muted); white-space: nowrap; }
 .ms-empty { padding: 5px 10px; color: var(--muted); }
 @media (max-width: 640px) { .ms { min-width: 100%; } .ms-field { width: 100%; } }
+
+/* Settings page */
+.settings-page input[type="text"], .settings-page input[type="number"], .settings-page input[type="password"],
+.settings-page input[type="search"] { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 10px; font: inherit; min-width: 0; }
+.settings-page input[type="search"] { width: 240px; }
+.settings-page input:disabled { opacity: .55; }
+.s-discord, .s-group { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 10px 14px; margin-bottom: 14px; }
+.s-discord h2 { font-size: 16px; margin: 0 0 8px; }
+.s-drow { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 4px 0; }
+.s-drow strong { min-width: 110px; }
+.s-group summary { cursor: pointer; }
+.s-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 10px; }
+.s-field { display: flex; flex-direction: column; gap: 4px; padding: 6px 10px; border-left: 3px solid transparent; }
+.s-field[hidden], .s-group[hidden] { display: none; }
+.s-field.dirty { border-left-color: var(--accent); background: var(--panel-2); }
+.s-field.queued input { text-decoration: line-through; opacity: .6; }
+.s-head { display: flex; gap: 8px; align-items: center; }
+.s-label { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+.s-field input[type="checkbox"] { align-self: flex-start; width: 18px; height: 18px; }
+.s-over { display: flex; gap: 10px; align-items: center; }
+.s-mark { color: var(--accent); }
+.s-reset { text-decoration: underline; }
+.s-env { font-family: ui-monospace, Consolas, monospace; }
+.s-rules p { margin: 0 0 10px; }
+.s-rule { border: 1px solid var(--line); border-left: 3px solid transparent; border-radius: 8px; padding: 6px 10px;
+  margin-bottom: 8px; }
+.s-rule.dirty { border-left-color: var(--accent); background: var(--panel-2); }
+.s-rule summary { cursor: pointer; }
+.s-rule summary > * { margin-right: 10px; }
+.s-rule .s-drow { margin-top: 10px; }
+.s-rlist.queued { opacity: .55; }
+.s-checks { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.s-checks label { display: flex; gap: 4px; align-items: center; font-size: 13px; }
+.s-field .s-checks input[type="checkbox"] { width: 14px; height: 14px; }

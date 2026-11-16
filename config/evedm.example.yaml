@@ -8,6 +8,24 @@ sqlite_journal: wal                         # WAL; falls back to delete (logged)
 avoid_systems: [Zarzakh]                    # never used as transit systems
 log_level: INFO
 
+discord:                                    # the registered Discord application that posts wars, notifications and alerts
+  bot_token: ${EVEDM_DISCORD_BOT_TOKEN:-}   # secret: keep it in .env (Developer Portal > your application > Bot)
+  # Discord rules: a filter plus a channel each, for alerts or notifications. A source with at least one rule uses only
+  # its rules (alerts.discord.* / notifications.discord.* channel, switch, kinds and role are then ignored); an empty
+  # list means "any"; what matches several rules is posted to each channel once. Also editable on the Settings page.
+  # rules:
+  #   - name: Null-sec kills
+  #     source: alerts                      # alerts | notifications
+  #     channel_id: "111111111111111111"
+  #     mention_role_id: "333333333333333333"   # pinged with every message of this rule
+  #     kinds: [destroyed]                  # destroyed | combat | firing
+  #     space: [null]                       # high | low | null | wormhole
+  #   - name: Home attacks
+  #     source: notifications
+  #     channel_id: "222222222222222222"
+  #     groups: [structure_attack]
+  #     regions: [Delve, Querious]
+
 eve:
   client_id: ${EVE_CLIENT_ID}               # your application at https://developers.eveonline.com
   client_secret: ${EVE_CLIENT_SECRET}
@@ -33,6 +51,7 @@ web:
   port: 8080
   auth: sso                                 # sso | none (none only on a private network or in demo)
   allowed_login_characters: []              # character IDs allowed to sign in, e.g. [2112345678]
+  admin_characters: ${EVEDM_ADMIN_CHARACTERS:-Shadowed Mio}   # mains (names or IDs, comma-separated) that get the Settings page
   session_days: 90                          # rolling sign-in: renewed on every visit
   cookie_secure: false                      # true when served over HTTPS
   auto_refresh_s: 30
@@ -78,7 +97,7 @@ notifications:                              # notifications of every registered 
   wait_s: 20                                # the page's "anything new?" request is held open this long (new notifications appear at once)
   discord:                                  # post notifications to Discord (one message per event, edited when more characters receive it)
     enabled: ${EVEDM_NOTIFICATIONS_DISCORD_ENABLED:-true}
-    webhook_url: ${EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK:-}   # empty = the wars webhook (EVEDM_WARS_DISCORD_WEBHOOK); none = nothing is posted
+    channel_id: ${EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID:-}   # empty = the wars channel (EVEDM_WARS_DISCORD_CHANNEL_ID); none, or no bot token = nothing is posted
     mention_role_id: ${EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID:-}   # pinged on "structure attacked" only
     groups: []                              # groups to post; [] = the groups shown by default (below)
     max_age_min: 60                         # older notifications are never posted (no history flood)
@@ -107,7 +126,7 @@ alerts:                                     # structure alerts from zKillboard's
   contact: ${EVEDM_ALERTS_CONTACT:-}        # added to the User-Agent zKillboard sees (mail or Discord name)
   discord:                                  # post alerts to a Discord channel too
     enabled: ${EVEDM_ALERTS_DISCORD_ENABLED:-false}
-    webhook_url: ${EVEDM_ALERTS_DISCORD_WEBHOOK:-}   # secret: keep it in .env
+    channel_id: ${EVEDM_ALERTS_DISCORD_CHANNEL_ID:-}   # the channel alerts go to (may differ from the wars one)
     mention_role_id: ${EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID:-}   # pinged on "destroyed" alerts only
     kinds: [destroyed, combat, firing]
     combat_cooldown_min: 30                 # one combat/firing post per structure within this time

@@ -1,5 +1,5 @@
 @startuml data-model
-title Database schema v20 (one file evedm.sqlite3, WAL, on the /app/data volume)
+title Database schema v21 (one file evedm.sqlite3, WAL, on the /app/data volume)
 skinparam shadowing false
 hide circle
 hide methods
@@ -109,8 +109,27 @@ entity character_notifications {
   created_at : REAL
   posted : 0 pending | 1 posted | 2 not posted (Discord, v11)
 }
+entity structure_alerts {
+  * alert_id : INTEGER <<PK>>
+  --
+  kind : destroyed | combat | firing
+  killmail_id : INTEGER
+  solar_system_id : INTEGER
+  structure_id : INTEGER
+  owner_id : INTEGER
+  isk : REAL
+  created_at : REAL
+  posted : 0 pending | 1 posted | 2 not posted (Discord)
+}
+entity alert_posts {
+  * alert_id : INTEGER <<PK>>
+  * channel_id : TEXT <<PK>> ('' = the single channel, else a Discord rule's channel, v21)
+  --
+  message_id : TEXT (Discord message)
+  created_at : REAL
+}
 entity notification_posts {
-  * event_key : TEXT <<PK>> (type : structure or system : time)
+  * event_key : TEXT <<PK>> (type : structure or system : time, with |channel id for a rule's channel, v21)
   --
   message_id : TEXT (Discord message, edited for more recipients)
   characters : TEXT (JSON names)
@@ -267,6 +286,7 @@ characters ||--o{ character_notifications
 characters ||--o| notification_characters
 characters ||--o{ notification_reads
 notification_posts ||--o| notification_zkb : same event_key
+structure_alerts ||--o{ alert_posts
 characters ||--o| scout_characters
 characters ||--o| scout_mail
 known_structures ||--o| structure_mail_finds : same structure_id

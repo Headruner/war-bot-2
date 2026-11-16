@@ -12,7 +12,7 @@ participant "NotificationService" as ntf
 participant "StructureScout" as scout
 participant "CharacterService" as chars
 participant "ESI" as esi
-participant "Discord\n(wars webhook)" as discord
+participant "Discord\n(wars channel, bot)" as discord
 database "SQLite" as db
 
 == sign-in: the alliance of the main is read ==

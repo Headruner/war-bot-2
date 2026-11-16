@@ -17,7 +17,7 @@ from evedm.config import WAYPOINT_SCOPE, AlertSettings, ConfigError, Settings, l
 from evedm.esi import EsiError
 from evedm.sso import SsoError
 from evedm.wars.config import WarsSettings
-from evedm.wars.discord import NotifyError, WebhookInvalid
+from evedm.wars.discord import DiscordRejected, NotifyError
 from evedm.wars.structures import Structure, StructureIndex
 from evedm.web.app import create_app
 from fake_eve import ALL_SCOPES, GROUPS, TYPES
@@ -426,8 +426,8 @@ async def test_discord_failures_keep_alerts_queued(make, db):
     await svc.handle(package(60, ASTRAHUS, corp=CORP))
     note.error = NotifyError("timeout")
     assert await svc.post() == 0 and alerts(db)[0]["posted"] == 0
-    note.error = WebhookInvalid("404")
-    assert await svc.post() == 0 and "webhook invalid" in svc.state["last_error"]
+    note.error = DiscordRejected("404")
+    assert await svc.post() == 0 and "rejected the bot" in svc.state["last_error"]
     note.error = None
     assert await svc.post() == 1 and alerts(db)[0]["posted"] == 1
     assert await make(notifier=None).post() == 0  # Discord off
@@ -502,7 +502,7 @@ def serve_settings(**alerts) -> Settings:
         ({"grid_km": 0}, "grid_km"),
         ({"max_per_poll": 0}, "max_per_poll"),
         ({"discord_kinds": ["boom"]}, r"unknown \['boom'\]"),
-        ({"discord_enabled": True}, "needs a webhook"),
+        ({"discord_enabled": True}, "needs the bot token"),
     ],
 )
 def test_alert_settings_are_validated(values, message):
@@ -513,16 +513,19 @@ def test_alert_settings_are_validated(values, message):
 def test_alert_settings_from_yaml_and_environment(monkeypatch, tmp_path):
     cfg = tmp_path / "evedm.yaml"
     cfg.write_text("alerts:\n  grid_km: 250\n  discord:\n    kinds: [destroyed]\n    combat_cooldown_min: 5\n")
-    monkeypatch.setenv("EVEDM_ALERTS_DISCORD_WEBHOOK", "https://discord.test/hook")
+    monkeypatch.setenv("EVEDM_DISCORD_BOT_TOKEN", "bot-token-secret")
+    monkeypatch.setenv("EVEDM_ALERTS_DISCORD_CHANNEL_ID", "555000111222333444")
+    monkeypatch.setenv("EVEDM_ALERTS_DISCORD_WEBHOOK", "https://discord.test/hook")  # removed: ignored
     monkeypatch.setenv("EVEDM_ALERTS_DISCORD_ENABLED", "true")
     monkeypatch.setenv("EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID", "123")
     monkeypatch.setenv("EVEDM_ALERTS_CONTACT", "ops@example.org")
     s = load_settings(cfg)
     assert s.alerts.grid_km == 250 and s.alerts.discord.kinds == ["destroyed"]
     assert s.alerts.discord.combat_cooldown_min == 5.0
-    assert s.alerts.discord.enabled and s.alerts.discord.webhook_url == "https://discord.test/hook"
+    assert s.alerts.discord.enabled and s.alerts.discord.channel_id == "555000111222333444"
+    assert s.discord.bot_token == "bot-token-secret" and not hasattr(s.alerts.discord, "webhook_url")
     assert s.alerts.discord.mention_role_id == "123" and s.alerts.contact == "ops@example.org"
-    assert "discord.test" not in str(s.summary())  # the webhook is a secret
+    assert "bot-token-secret" not in str(s.summary())  # the bot token is a secret
     monkeypatch.setenv("EVEDM_ALERTS_ENABLED", "false")
     assert load_settings(cfg).alerts.enabled is False
     assert WAYPOINT_SCOPE in Settings().eve.optional_scopes
@@ -683,3 +686,84 @@ async def test_esi_post_auth_sets_the_waypoint_in_the_fake(services, fake_app):
             "/ui/autopilot/waypoint", await services["chars"].access_token(2100000003), params
         )
     assert err.value.status == 403
+
+
+# --------------------------------------------------------------------------- Discord rules
+class ChannelNotifier(FakeNotifier):
+    """Records the channel of every message; ``broken`` channels refuse the bot, ``down_after`` fails later sends."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.channels: list[str | None] = []
+        self.broken: set[str] = set()
+        self.down_after: int | None = None
+
+    async def send(self, payload: dict, channel_id: str | None = None) -> dict:
+        if channel_id in self.broken:
+            raise DiscordRejected("Discord rejected the bot (403): Missing Access", 403)
+        if self.down_after is not None and len(self.sent) >= self.down_after:
+            raise NotifyError("Discord error 502")
+        self.channels.append(channel_id)
+        return await super().send(payload)
+
+
+def rule(**kw) -> dict:
+    from evedm.config import NOTIFICATION_GROUPS
+    from evedm.discord_rules import normalize
+
+    return normalize({"source": "alerts", "channel_id": "1"} | kw, 1, list(NOTIFICATION_GROUPS))
+
+
+RULES = [
+    rule(name="kills", channel_id="11", kinds=["destroyed"], mention_role_id="5"),
+    rule(name="jita", channel_id="22", systems=["jita"]),
+    rule(name="jita fights, same channel", channel_id="22", kinds=["combat"], mention_role_id="6"),
+    rule(name="another region", channel_id="33", regions=["Domain"]),
+    rule(name="switched off", channel_id="44", enabled=False),
+    rule(name="their structures", channel_id="55", owners=[99000001]),
+    rule(name="not theirs", channel_id="66", exclude_owners=[CORP]),
+    rule(name="expensive", channel_id="77", min_isk=5e9),
+    rule(name="for notifications", source="notifications", channel_id="88"),
+]
+
+
+async def test_rules_post_an_alert_to_every_matching_channel(make, db):
+    note = ChannelNotifier()
+    svc = make(notifier=note, discord={"kinds": ["firing"], "mention_role_id": "777"})  # not used with rules
+    svc.rules = lambda: RULES
+    db.execute("INSERT INTO alliance_corps(alliance_id, corps, updated_at) VALUES(99000001, ?, 0)", (f"[{CORP}]",))
+    await svc.handle(package(70, ASTRAHUS, corp=CORP, pos=near(P_FORT, 0)))  # the Fort is destroyed
+    await svc.handle(package(71, RIFTER, pos=near(P_FORT2, 10)))  # combat at the second Fort
+    await svc.handle(package(72, RIFTER, pos=near(P_FORT2, 20)))  # again, within the cooldown
+    assert await svc.post() == 2
+    assert note.channels == ["11", "22", "55", "22", "55"]  # once per channel, whatever the number of rules
+    assert [p.get("content") for p in note.sent] == ["<@&5>", None, None, "<@&6>", None]  # the rule's own role
+    assert [r["posted"] for r in alerts(db)] == [1, 1, 2]
+    assert await svc.post() == 0
+
+
+async def test_a_broken_channel_does_not_hold_back_the_others(make, db):
+    note = ChannelNotifier()
+    svc = make(notifier=note)
+    svc.rules = lambda: RULES
+    note.broken = {"22"}
+    await svc.handle(package(73, ASTRAHUS, corp=CORP, pos=near(P_FORT, 0)))
+    assert await svc.post() == 1 and note.channels == ["11"]  # 22 refused the bot; nobody else matched
+    assert "rejected the bot" in svc.state["last_error"] and alerts(db)[0]["posted"] == 1
+
+    note.broken, note.down_after = set(), 2  # Discord goes down after the first channel of the next alert
+    await svc.handle(package(74, ASTRAHUS, corp=CORP, pos=near(P_FORT2, 0)))
+    assert await svc.post() == 0 and note.channels == ["11", "11"] and alerts(db)[1]["posted"] == 0
+    note.down_after = None
+    assert await svc.post() == 1 and note.channels == ["11", "11", "22"]  # only the channel still missing
+
+
+async def test_no_rule_for_alerts_keeps_the_single_channel(make, db):
+    note = ChannelNotifier()
+    svc = make(notifier=note, discord={"kinds": ["destroyed"]})
+    svc.rules = lambda: [r for r in RULES if r["source"] == "notifications"]
+    await svc.handle(package(75, ASTRAHUS, corp=CORP, pos=near(P_FORT, 0)))
+    assert await svc.post() == 1 and note.channels == [None]  # the notifier's own channel
+    svc.rules = lambda: [rule(channel_id="99", kinds=["firing"])]  # a rule exists and nothing matches: not posted
+    await svc.handle(package(76, ASTRAHUS, corp=CORP, pos=near(P_FORT2, 0)))
+    assert await svc.post() == 0 and alerts(db)[1]["posted"] == 2

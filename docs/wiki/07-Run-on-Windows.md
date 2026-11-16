@@ -71,16 +71,19 @@ EVE_CLIENT_SECRET=<secret key>
 EVE_CALLBACK_URL=http://localhost:8080/sso/callback
 EVEDM_PUBLISH=8080          # port 8080 taken: 8081 here, and :8081 in EVE_CALLBACK_URL and on the EVE application
 EVEDM_ALLOWED_LOGIN_CHARACTERS=<your main character ID, comma-separated for several>
+EVEDM_ADMIN_CHARACTERS=Shadowed Mio   # optional: main character(s) who may open the Settings page (names or IDs)
 EVEDM_DEMO=0
 EVEDM_SQLITE_JOURNAL=wal
 EVEDM_WARS_ENABLED=1
 EVEDM_WARS_CONTACT=<your e-mail or character name, sent to ESI>
 # optional: also post new wars to Discord
 EVEDM_WARS_DISCORD_ENABLED=0
-EVEDM_WARS_DISCORD_WEBHOOK=
+EVEDM_DISCORD_BOT_TOKEN=
+EVEDM_WARS_DISCORD_CHANNEL_ID=
 ```
 Character ID: the number in your character's URL on zkillboard.com or evewho.com.
 Empty `EVEDM_ALLOWED_LOGIN_CHARACTERS` = any EVE character can sign in and get its own account (see section 9).
+`EVEDM_ADMIN_CHARACTERS` names the main(s) who see the **Settings** page; empty = nobody (see section 10).
 To reach the app from this PC only, bind it to the loopback address: `EVEDM_PUBLISH=127.0.0.1:8081`.
 
 ## 5. Start
@@ -166,10 +169,25 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
   auto-refresh interval are remembered in a cookie of your browser (`evedm_prefs`, one year); nothing is stored on
   the server, so another browser starts with the defaults.
 - Settings: `config\wars.yaml` (its own file). Switch it off with `EVEDM_WARS_ENABLED=0` in `.env`.
-- Discord posting (what the old bot did): set `EVEDM_WARS_DISCORD_ENABLED=1` and `EVEDM_WARS_DISCORD_WEBHOOK=<url>`
-  in `.env`, then `docker compose up -d --force-recreate`. Messages link back to the Wars page; set
+- Discord posting (what the old bot did): set `EVEDM_WARS_DISCORD_ENABLED=1`, `EVEDM_DISCORD_BOT_TOKEN=<token>` and
+  `EVEDM_WARS_DISCORD_CHANNEL_ID=<id>` in `.env` (setup below), then `docker compose up -d --force-recreate`. Messages link back to the Wars page; set
   `EVEDM_PUBLIC_URL` (for example your Tailscale address) so the link works for others.
 - Stop the old eve-war-bot-2 container if both would post to the same channel.
+- Discord setup (one bot for wars, notifications and alerts; webhooks are no longer supported, and a leftover
+  `EVEDM_*_DISCORD_WEBHOOK` is ignored with a warning at start-up):
+  1. https://discord.com/developers/applications -> New Application -> Bot -> Reset Token; copy the token into `.env`
+     as `EVEDM_DISCORD_BOT_TOKEN`.
+  2. Installation / OAuth2 URL generator: scope `bot`, permissions View Channels, Send Messages, Embed Links (and
+     Mention Everyone if the role to ping is not marked "mentionable"); open the URL and add the bot to your server.
+     Make sure the bot can see the target channel(s). No privileged intents are needed.
+  3. Discord -> User Settings -> Advanced -> Developer Mode on; right-click the channel -> Copy Channel ID; put it into
+     `EVEDM_WARS_DISCORD_CHANNEL_ID` (and optionally the notifications / alerts ones, below).
+  The bot only calls Discord's REST API and never connects to the gateway, so it shows as **offline** in the member
+  list; that is expected. Messages the old webhook posted cannot be edited by the bot and stay as they are.
+  Instead of `.env`, the administrator can enter the bot token, the channel IDs, the role and the switches on the
+  **Settings** page (menu entry visible only to the main named in `EVEDM_ADMIN_CHARACTERS`; the token is stored
+  encrypted in `data\settings.yaml`, takes effect at once and is used for wars, notifications and alerts). Each target
+  has a **Send test message** button. `.env` values still work as the base; the page overrides them.
 
 ## 11. Structures page (structure scout)
 
@@ -250,11 +268,13 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
 - **Notifications**: the page refreshes every 30 seconds. "Desktop notifications" asks your browser for permission
   and then shows a notice for every new alert while the page is open (in a background tab too); "sound" adds a beep.
   The filters (kinds, core drops only, space, period) and these choices are remembered in your browser.
-- **Discord**: in `.env` set `EVEDM_ALERTS_DISCORD_ENABLED=1` and `EVEDM_ALERTS_DISCORD_WEBHOOK=<url>` (another
-  channel than the wars one is fine), optionally `EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID=<role id>` to ping a role on
+- **Discord**: in `.env` set `EVEDM_ALERTS_DISCORD_ENABLED=1` and `EVEDM_ALERTS_DISCORD_CHANNEL_ID=<id>` (another
+  channel than the wars one is fine; the bot token is the same, see section 10), optionally `EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID=<role id>` to ping a role on
   destroyed structures, then `docker compose up -d --force-recreate`. Combat and firing are posted at most once per
   structure per 30 minutes; each post links to the Alerts page (set `EVEDM_PUBLIC_URL` so the link works for others).
-  Which kinds are posted: `alerts.discord.kinds` in `config/evedm.example.yaml`.
+  Which kinds are posted: `alerts.discord.kinds` in `config/evedm.example.yaml`. To send alerts to several channels with
+  their own filters, add **Discord rules** on the Settings page; once alerts have a rule, these single-channel values are
+  not used (see `06-Operations.md`).
 - Put your mail or Discord name into `EVEDM_ALERTS_CONTACT` so zKillboard can reach you about your traffic. Switch
   alerts off with `EVEDM_ALERTS_ENABLED=0`. Alerts are kept 7 days.
 - **Big kills only**: combat and firing alerts are kept only when the kill has a battleship (Black Ops and Marauders
@@ -296,11 +316,12 @@ to the system, and the three closest characters from *your* **Characters** set a
 - **Fast delivery**: the page keeps one request open and reloads the moment a new notification is stored; the
   characters' reads are spread over ESI's 10-minute window, so an event several characters receive appears after
   the earliest of them. ESI's 10-minute cache per character remains the limit.
-- **Discord**: new notifications are posted through the wars webhook (`EVEDM_WARS_DISCORD_WEBHOOK`), one message per
-  event, edited to list every character that received it. Own channel: `EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK`; ping a
+- **Discord**: new notifications are posted by the bot to the wars channel (`EVEDM_WARS_DISCORD_CHANNEL_ID`), one message per
+  event, edited to list every character that received it. Own channel: `EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID`; ping a
   role on attacks: `EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID`; off: `EVEDM_NOTIFICATIONS_DISCORD_ENABLED=0`.
   Nothing older than an hour is posted, so switching it on does not flood the channel. Everyone in that channel
-  sees the notifications of all registered characters.
+  sees the notifications of all registered characters. **Discord rules** on the Settings page can send groups or types
+  to different channels; once notifications have a rule, the single-channel values above are not used.
 - **Structure type**: every notification that names a structure shows its type (Astrahus, Fortizar...), "Unknown" if
   neither the notification nor the structures the app knows give it.
 - **zKillboard check** (only "items moved to asset safety"): the card and the Discord message say whether a killmail

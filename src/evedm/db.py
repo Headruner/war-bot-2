@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 20  # v14: structure_refusals; v15: scout filter_v; v16: dock search; v17: search term and passes
-# v18: notification_reads; v19: notification_zkb; v20: structure_mail_finds, mail_reads, scout_mail
+SCHEMA_VERSION = 21  # v14: structure_refusals; v15: scout filter_v; v16: dock search; v17: search term and passes
+# v18: notification_reads; v19: notification_zkb; v20: structure_mail_finds, mail_reads, scout_mail; v21: alert_posts
 READS_RETENTION_DAYS = 7  # notification_reads rows are kept this long (the hourly purge)
 log = logging.getLogger("evedm.db")
 
@@ -181,6 +181,14 @@ CREATE TABLE IF NOT EXISTS structure_alerts (
 CREATE UNIQUE INDEX IF NOT EXISTS structure_alerts_unique ON structure_alerts(
     kind, killmail_id, COALESCE(structure_id, 0), COALESCE(structure_type_id, 0), COALESCE(owner_id, 0));
 CREATE INDEX IF NOT EXISTS structure_alerts_by_time ON structure_alerts(created_at);
+-- the channels an alert was posted to (Discord rules: one alert can go to several)
+CREATE TABLE IF NOT EXISTS alert_posts (
+    alert_id   INTEGER NOT NULL,
+    channel_id TEXT NOT NULL,                   -- '' = the single channel of alerts.discord
+    message_id TEXT,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (alert_id, channel_id)
+);
 -- Ansiblex jump gates (UC-16): the gate itself, and which characters may see (= use) it
 CREATE TABLE IF NOT EXISTS ansiblex_gates (
     structure_id    INTEGER PRIMARY KEY,
@@ -764,15 +772,35 @@ class Database:
             (state, character_id, notification_id),
         )
 
-    def notification_post(self, event_key: str) -> sqlite3.Row | None:
-        rows = self.query("SELECT * FROM notification_posts WHERE event_key=?", (event_key,))
-        return rows[0] if rows else None
+    @staticmethod
+    def _post_key(event_key: str, channel_id: str) -> str:
+        """The message of an event in one channel of the Discord rules; '' is the single notifications channel
+        (the key as it always was)."""
+        return f"{event_key}|{channel_id}" if channel_id else event_key
 
-    def save_notification_post(self, event_key: str, message_id: str | None, characters: list[str]) -> None:
+    def notification_post(self, event_key: str, channel_id: str = "") -> sqlite3.Row | None:
+        """The message of the event in that channel. A rule's channel without one falls back to the message of
+        the single channel: an event posted before the rules existed is edited there, not posted twice."""
+        keys = (self._post_key(event_key, channel_id), event_key)
+        rows = self.query("SELECT * FROM notification_posts WHERE event_key IN (?,?)", keys)
+        return max(rows, key=lambda r: r["event_key"] == keys[0]) if rows else None
+
+    def notification_posts_of(self, event_key: str) -> list[tuple[str, sqlite3.Row]]:
+        """Every message of the event: (channel, row), '' for the single channel."""
+        prefix = event_key + "|"
+        rows = self.query(
+            "SELECT * FROM notification_posts WHERE event_key=? OR substr(event_key, 1, ?)=?",
+            (event_key, len(prefix), prefix),
+        )
+        return [(r["event_key"][len(prefix) :] if r["event_key"] != event_key else "", r) for r in rows]
+
+    def save_notification_post(
+        self, event_key: str, message_id: str | None, characters: list[str], channel_id: str = ""
+    ) -> None:
         self.execute(
             "INSERT INTO notification_posts(event_key,message_id,characters,created_at) VALUES(?,?,?,?) "
             "ON CONFLICT(event_key) DO UPDATE SET message_id=excluded.message_id, characters=excluded.characters",
-            (event_key, message_id, json.dumps(characters), time.time()),
+            (self._post_key(event_key, channel_id), message_id, json.dumps(characters), time.time()),
         )
 
     def notification_ids(self, character_id: int) -> set[int]:

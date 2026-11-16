@@ -1,4 +1,8 @@
-"""Discord webhook notifier (from eve-war-bot-2): throttled, honours 429 retry_after, confirms with ?wait=true."""
+"""Discord notifier: posts and edits channel messages as a registered application (bot token, REST only).
+
+No gateway connection is kept, so the bot shows as offline. In the channel it needs View Channel, Send Messages and
+Embed Links (and Mention Everyone to ping a role that is not mentionable). Throttled, honours 429 retry_after.
+"""
 
 from __future__ import annotations
 
@@ -8,75 +12,117 @@ import time
 
 import httpx
 
+from .. import __version__
+
 log = logging.getLogger("evedm.wars.discord")
 
+API_BASE = "https://discord.com/api/v10"
+USER_AGENT = f"DiscordBot (https://github.com/Headruner/war-bot-2, {__version__})"  # the form Discord asks of bots
 MAX_RATE_LIMIT_RETRIES = 3
+UNKNOWN_CHANNEL = 10003
+NOT_THE_AUTHOR = 50005  # "Cannot edit a message authored by another user"
 
 
 class NotifyError(Exception):
     """A post failed (the wars stay queued and are retried)."""
 
 
-class WebhookInvalid(NotifyError):
-    """Discord rejected the webhook itself (401/403/404): fix the configuration."""
+class DiscordRejected(NotifyError):
+    """Discord rejected the bot itself (401 token, 403 no access to the channel, 404 no such channel): fix the
+    configuration. ``status`` is Discord's answer (None: nothing was sent, the bot is not configured)."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+def _code(response: httpx.Response) -> int:
+    """Discord's own error code of a failed request (0 when the body has none)."""
+    try:
+        return int(response.json().get("code", 0))
+    except (ValueError, TypeError, AttributeError):
+        return 0
 
 
 class DiscordNotifier:
     def __init__(
         self,
-        webhook_url: str,
+        bot_token: str,
+        channel_id: str | int,
         min_seconds_between_posts: float = 2,
         dry_run: bool = False,
         timeout: float = 20.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        api_base: str = API_BASE,
     ):
-        self.webhook_url = webhook_url
+        self.bot_token = str(bot_token or "").strip()
+        self.channel_id = str(channel_id or "").strip()
         self.min_seconds_between_posts = min_seconds_between_posts
         self.dry_run = dry_run
         self.timeout = timeout
         self.transport = transport
+        self.api_base = api_base.rstrip("/")
         self.last_post_time = 0.0
+
+    def messages_url(self, channel_id: str | int | None = None) -> str:
+        """The channel given (a rule's), else the notifier's own."""
+        channel = str(channel_id or "").strip() or self.channel_id
+        if not channel:
+            raise DiscordRejected("the channel ID is not configured")
+        return f"{self.api_base}/channels/{channel}/messages"
 
     async def _throttle(self) -> None:
         wait = self.min_seconds_between_posts - (time.monotonic() - self.last_post_time)
         if wait > 0:
             await asyncio.sleep(wait)
 
-    async def edit(self, message_id: str, payload: dict) -> dict | None:
-        """Replace a message this webhook posted earlier. None when the message no longer exists."""
-        if self.dry_run or message_id == "dry_run":
-            titles = [e.get("title") for e in payload.get("embeds", [])]
-            log.info("DRY RUN: would edit message %s: %s", message_id, titles)
-            return {"id": message_id}
-        if not self.webhook_url:
-            raise WebhookInvalid("webhook_url is not configured")
-        url = f"{self.webhook_url.split('?')[0].rstrip('/')}/messages/{message_id}"
+    async def _request(self, method: str, url: str, payload: dict) -> httpx.Response:
+        """One call as the bot; a 429 is waited out and tried again a few times."""
+        if not self.bot_token:
+            raise DiscordRejected("the bot token is not configured")
+        headers = {"Authorization": f"Bot {self.bot_token}", "User-Agent": USER_AGENT}
         for _ in range(MAX_RATE_LIMIT_RETRIES):
             await self._throttle()
             try:
                 async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
-                    response = await client.patch(url, json=payload)
+                    response = await client.request(method, url, json=payload, headers=headers)
             except httpx.HTTPError as e:
                 raise NotifyError(f"Discord request failed: {e!r}") from e
             self.last_post_time = time.monotonic()
-            if response.status_code == 429:
-                try:
-                    retry_after = float(response.json().get("retry_after", 1))
-                except ValueError:
-                    retry_after = 1.0
-                await asyncio.sleep(min(retry_after, 60))
-                continue
-            if response.status_code == 404:
-                return None  # the message was deleted in Discord
-            if response.status_code in (401, 403):
-                raise WebhookInvalid(f"Discord rejected the webhook ({response.status_code}): {response.text[:200]}")
-            if response.status_code >= 400:
-                raise NotifyError(f"Discord error {response.status_code}: {response.text[:500]}")
-            return response.json() if response.content else {}
+            if response.status_code != 429:
+                return response
+            try:
+                retry_after = float(response.json().get("retry_after", 1))
+            except (ValueError, TypeError, AttributeError):
+                retry_after = 1.0
+            log.warning("Discord rate limited; retrying in %.1fs", retry_after)
+            await asyncio.sleep(min(retry_after, 60))
         raise NotifyError("Discord rate limit: giving up for this cycle")
 
-    async def send(self, payload: dict) -> dict:
-        """Post a message and return Discord's message object."""
+    async def edit(self, message_id: str, payload: dict, channel_id: str | None = None) -> dict | None:
+        """Replace a message the bot posted earlier. None when the message no longer exists.
+
+        A message of the webhook used before the bot cannot be edited (only its author may): it is left as it
+        is and reported as done, so nothing is posted a second time."""
+        if self.dry_run or message_id == "dry_run":
+            titles = [e.get("title") for e in payload.get("embeds", [])]
+            log.info("DRY RUN: would edit message %s: %s", message_id, titles)
+            return {"id": message_id}
+        response = await self._request("PATCH", f"{self.messages_url(channel_id)}/{message_id}", payload)
+        status, code = response.status_code, _code(response)
+        if status == 403 and code == NOT_THE_AUTHOR:
+            log.info("message %s was not posted by the bot (the old webhook?): left as it is", message_id)
+            return {"id": message_id}
+        if status == 404 and code != UNKNOWN_CHANNEL:
+            return None  # the message was deleted in Discord
+        if status in (401, 403, 404):
+            raise DiscordRejected(f"Discord rejected the bot ({status}): {response.text[:200]}", status)
+        if status >= 400:
+            raise NotifyError(f"Discord error {status}: {response.text[:500]}")
+        return response.json() if response.content else {}
+
+    async def send(self, payload: dict, channel_id: str | None = None) -> dict:
+        """Post a message to the channel (the notifier's own unless one is given) and return Discord's message."""
         if self.dry_run:
             log.info(
                 "DRY RUN: would post %d embed(s): %s",
@@ -84,27 +130,10 @@ class DiscordNotifier:
                 [e.get("title") for e in payload.get("embeds", [])],
             )
             return {"id": "dry_run"}
-        if not self.webhook_url:
-            raise WebhookInvalid("webhook_url is not configured")
-        for _ in range(MAX_RATE_LIMIT_RETRIES):
-            await self._throttle()
-            try:
-                async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
-                    response = await client.post(self.webhook_url, params={"wait": "true"}, json=payload)
-            except httpx.HTTPError as e:
-                raise NotifyError(f"Discord request failed: {e!r}") from e
-            self.last_post_time = time.monotonic()
-            if response.status_code == 429:
-                try:
-                    retry_after = float(response.json().get("retry_after", 1))
-                except ValueError:
-                    retry_after = 1.0
-                log.warning("Discord rate limited; retrying in %.1fs", retry_after)
-                await asyncio.sleep(min(retry_after, 60))
-                continue
-            if response.status_code in (401, 403, 404):
-                raise WebhookInvalid(f"Discord rejected the webhook ({response.status_code}): {response.text[:200]}")
-            if response.status_code >= 400:
-                raise NotifyError(f"Discord error {response.status_code}: {response.text[:500]}")
-            return response.json() if response.content else {}
-        raise NotifyError("Discord rate limit: giving up for this cycle")
+        response = await self._request("POST", self.messages_url(channel_id), payload)
+        status = response.status_code
+        if status in (401, 403, 404):
+            raise DiscordRejected(f"Discord rejected the bot ({status}): {response.text[:200]}", status)
+        if status >= 400:
+            raise NotifyError(f"Discord error {status}: {response.text[:500]}")
+        return response.json() if response.content else {}

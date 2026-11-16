@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Settings · EVE Distance Meter{% endblock %}
+{% block page_help %}
+<p class="small">This page is only available to the administrator character. Secrets are never shown: leave a secret
+    field empty to keep it, type to replace it. A wrong value is rejected before anything is saved. Settings marked
+    <b>restart</b> take effect after the app is restarted.</p>
+{% endblock %}
+{% block content %}
+<div class="page settings-page">
+  <h1>Settings</h1>
+  <p id="s-intro" class="small"></p>
+  <div class="toolbar">
+    <label class="small" for="s-filter">Filter</label>
+    <input id="s-filter" type="search" placeholder="label, key or help text" autocomplete="off">
+    <label class="small"><input id="s-changed" type="checkbox"> changed here only</label>
+    <button id="s-save" class="btn primary" type="button" disabled>Save changes</button>
+    <button id="s-discard" class="btn" type="button">Discard</button>
+    <button id="s-restart" class="btn danger" type="button">Restart app</button>
+    <button id="s-restart-ok" class="btn danger" type="button" hidden>Confirm restart</button>
+    <button id="s-restart-no" class="btn" type="button" hidden>Cancel</button>
+  </div>
+  <div id="s-status" role="status"></div>
+  <div id="s-discord" class="s-discord"></div>
+  <div id="s-rules" class="s-discord s-rules" hidden></div>
+  <div id="s-groups"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script defer src="/static/settings.js?v={{ asset_v }}"></script>
+{% endblock %}

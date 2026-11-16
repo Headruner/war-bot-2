@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from ..config import ConfigError, _apply, _expand
+from ..config import ConfigError, _apply, _expand, is_snowflake
 
 WAR_TYPES = ("none", "mutual", "open_for_allies")
 
@@ -20,7 +20,8 @@ WAR_TYPES = ("none", "mutual", "open_for_allies")
 @dataclass
 class DiscordSettings:
     enabled: bool = False
-    webhook_url: str = ""  # secret: prefer ${EVEDM_WARS_DISCORD_WEBHOOK}
+    bot_token: str = ""  # secret: ${EVEDM_DISCORD_BOT_TOKEN} (the one application posts wars, notifications, alerts)
+    channel_id: str = ""  # the channel the bot posts wars to: ${EVEDM_WARS_DISCORD_CHANNEL_ID}
     mention_role_id: str = ""
     dry_run: bool = False  # log the payloads instead of posting
     batch_embeds: int = 5  # wars per Discord message (max 10)
@@ -68,8 +69,15 @@ class WarsSettings:
             raise ConfigError("wars.discord.batch_embeds must be between 1 and 10")
         if self.public_url and not self.public_url.startswith(("http://", "https://")):
             raise ConfigError("wars.public_url must start with http:// or https://")
-        if self.enabled and self.discord.enabled and not self.discord.dry_run and not self.discord.webhook_url:
-            raise ConfigError("wars.discord.enabled needs discord.webhook_url (or EVEDM_WARS_DISCORD_WEBHOOK)")
+        d = self.discord
+        d.channel_id = str(d.channel_id or "").strip()  # YAML reads an unquoted ID as a number
+        if d.channel_id and not is_snowflake(d.channel_id):
+            raise ConfigError("wars.discord.channel_id must be a numeric Discord channel ID")
+        if self.enabled and d.enabled and not d.dry_run and not (d.bot_token and d.channel_id):
+            raise ConfigError(
+                "wars.discord.enabled needs discord.bot_token (EVEDM_DISCORD_BOT_TOKEN) and discord.channel_id"
+                " (EVEDM_WARS_DISCORD_CHANNEL_ID)"
+            )
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -82,7 +90,8 @@ class WarsSettings:
             "census_max_ids": self.census_max_ids,
             "discord": self.discord.enabled,
             "discord_dry_run": self.discord.dry_run,
-            "webhook_set": bool(self.discord.webhook_url),
+            "bot_token_set": bool(self.discord.bot_token),
+            "channel_set": bool(self.discord.channel_id),
         }
 
 
@@ -93,7 +102,8 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
     "EVEDM_WARS_STATUSES": ("statuses",),
     "EVEDM_PUBLIC_URL": ("public_url",),
     "EVEDM_WARS_DISCORD_ENABLED": ("discord", "enabled"),
-    "EVEDM_WARS_DISCORD_WEBHOOK": ("discord", "webhook_url"),
+    "EVEDM_DISCORD_BOT_TOKEN": ("discord", "bot_token"),
+    "EVEDM_WARS_DISCORD_CHANNEL_ID": ("discord", "channel_id"),
     "EVEDM_WARS_DISCORD_MENTION_ROLE_ID": ("discord", "mention_role_id"),
     "EVEDM_WARS_DISCORD_DRY_RUN": ("discord", "dry_run"),
 }
@@ -134,7 +144,8 @@ def default_path() -> Path | None:
     return Path("config/wars.yaml")
 
 
-def load_wars_settings(path: str | os.PathLike[str] | None = None) -> WarsSettings:
+def load_wars_settings(path: str | os.PathLike[str] | None = None, validate: bool = True) -> WarsSettings:
+    """``validate=False``: the caller validates later (the web app, after the Settings page's file is applied)."""
     s = WarsSettings()
     cfg = Path(path) if path else default_path()
     try:
@@ -162,5 +173,6 @@ def load_wars_settings(path: str | os.PathLike[str] | None = None) -> WarsSettin
         if isinstance(exc, ConfigError):
             raise
         raise ConfigError(f"wars settings: invalid value ({exc})") from exc
-    s.validate()
+    if validate:
+        s.validate()
     return s

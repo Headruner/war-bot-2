@@ -40,6 +40,85 @@
 | Ansiblex mode shows no gates | the character has not granted `esi-search.search_structures.v1` (Add character again) or sees no gate in the structure search; `ansiblex.refresh_hours` (6) controls re-reading |
 | `data directory /app/data is not writable by uid 10001` | Linux host folder owned by another user: `sudo chown -R 10001:10001 data`, or use a named volume |
 
+## Settings page
+
+The **Settings** page (`/settings`) changes the configuration without editing files. Only a main named in
+`web.admin_characters` (names or character IDs; `EVEDM_ADMIN_CHARACTERS`, comma-separated; the shipped example sets
+`Shadowed Mio`) can see it, and only when signed in through EVE SSO; with `web.auth: none` nobody can. Everyone else
+gets 404 for the page and `/api/settings` and sees no menu entry.
+
+- **Where the values go**: `data/settings.yaml` on the host (`/app/data/settings.yaml` in the container), next to the
+  database. It holds only the values that differ from the configuration files. Precedence, lowest to highest: defaults,
+  YAML files, environment variables (`.env`), `settings.yaml`.
+- **Undo**: **Reset** next to a field (then Save), or stop the app, delete `data/settings.yaml` and start it: the
+  configuration files apply again. If the file makes the configuration invalid at start-up (edited by hand, or after an
+  upgrade), the whole file is ignored, an error is logged and the page shows a note.
+- **Applied at once**: most values, and the three Discord notifiers are rebuilt after every save (new token, channel,
+  role or switch is used by the next post). A **restart** badge marks a setting read only at start-up (for example
+  `log_level`, `eve.client_id`, `web.session_days`, the `enabled` switches of whole features); the save result lists
+  the changed ones that need a restart.
+- **Restart app**: stops the process cleanly (SIGTERM). Under Docker Compose (`restart: unless-stopped`) the container
+  is back within seconds; a process run outside Docker just stops and must be started by hand.
+- **Not editable here**: `data_dir`, `universe_file`, `demo`, `sqlite_journal`, `web.host`, `web.port`, `web.auth`,
+  `web.admin_characters`; `web.allowed_login_characters` must keep the administrator's own character ID.
+- **Secrets** (`discord.bot_token`, `eve.client_secret`) are never sent to the browser and are stored encrypted with
+  `EVEDM_SECRET_KEY`. Every save is logged at WARNING level with the administrator's name and the names (not the
+  values) of the changed settings.
+- **Backup**: copy `data/settings.yaml` with the database. Its secrets can be decrypted only with the same
+  `EVEDM_SECRET_KEY`.
+
+## Discord rules
+
+**Discord rules** send structure alerts or character notifications to several channels, each with its own filter. Edit
+them on the Settings page, in the **Discord rules** editor (add alerts rule / add notifications rule, duplicate, move,
+delete), or as `discord.rules` in `evedm.yaml`; the page saves them to `data/settings.yaml` like every other setting and
+they take effect at once, without a restart.
+
+- **Rules and the single-channel settings**: while a source (alerts, notifications) has no rule, its single channel
+  (`alerts.discord.*`, `notifications.discord.*`) works as before. As soon as a source has one rule, even a switched-off
+  one, only the rules count for that source: the single channel, its switch, its kinds / groups and its role are not
+  used. Wars are not affected (one channel). Delete all rules of a source to go back to its single channel.
+- **Keys** (an empty list means "any"): `name`, `source` (`alerts` or `notifications`), `enabled`, `channel_id`
+  (numeric), `mention_role_id` (pinged with every message of the rule), `space` (high, low, null, wormhole), `regions`,
+  `exclude_regions`, `systems`, `exclude_systems` (names; unknown names are refused on the page; exclusions always win;
+  an item without a solar system passes only rules that ask for no place). Alerts only: `kinds` (destroyed, combat,
+  firing), `min_isk`, `core_drops_only`, `capitals_only`, `owners`, `exclude_owners` (corporation or alliance IDs of the
+  structure's owner; alliance members come from the war census, so an alliance it has never seen does not match yet).
+  Notifications only: `groups` (for example `asset_safety`, `structure_attack`, `structure_state`, `tower`,
+  `other_attacks`) and `types` (single ESI notification types); a notification passes when its group or its type is
+  listed, both empty = every notification. At most 50 rules.
+- **Example**:
+
+  ```yaml
+  discord:
+    rules:
+      - name: Null-sec kills
+        source: alerts
+        channel_id: "111111111111111111"
+        mention_role_id: "333333333333333333"
+        kinds: [destroyed]
+        space: [null]
+      - name: Home attacks
+        source: notifications
+        channel_id: "222222222222222222"
+        groups: [structure_attack]
+        regions: [Delve, Querious]
+  ```
+
+- **Several rules**: what matches several rules is posted to each of their channels, once per channel (two rules with the
+  same channel give one message). A notification keeps one message per event and channel, edited when more characters
+  receive it or the zKillboard line changes. `alerts.big_kills_only`, `alerts.min_value_isk`, the combat cooldown (now per
+  structure and channel) and `notifications.discord.max_age_min` still apply before the rules.
+- **A broken channel**: a channel that refuses the bot (403 no access, 404 deleted) is skipped for that item and logged
+  (`discord`, WARNING); the other channels still get it. A temporary Discord failure or a rejected token keeps the item
+  queued and the retry posts only to the channels still missing. Fix the channel or the bot's permissions
+  (View Channel, Send Messages, Embed Links) and use the rule's **Send test message**.
+- **Test a rule**: press **Send test message** on the rule (it posts to the rule's channel); then wait for a matching alert
+  or notification. A rule that is wrong is refused on save, and the message names it ("rule 2 (Home attacks): ...");
+  the same check runs at start-up for `evedm.yaml`.
+- **Data**: `alert_posts` records where each alert was posted (schema v21; channel empty = the single channel); for
+  notifications `notification_posts.event_key` ends with `|<channel id>` for a rule's channel.
+
 ## Structure scout diagnostics
 
 `docker exec evedm evedm structures stats` prints the resolver's numbers from the database (no network). `docker exec evedm evedm structures probe` reads the asset pages of a few characters (`--characters 5`, `--character ID`, `--max-pages 50`, `--samples 5`) and prints, per `location_type` and `location_flag`, how many distinct location IDs are resolved, refused, new, gone or unknown to the database, and how many are the character's own items, to show which asset locations are really Upwell structures; it only reads ESI asset pages and writes nothing to the structure tables.

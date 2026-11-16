@@ -811,7 +811,7 @@ def test_an_old_database_gets_the_mail_tables_in_place(tmp_path):
     con.commit()
     con.close()
     d = Database(path)
-    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 20
+    assert d.query("PRAGMA user_version")[0][0] == SCHEMA_VERSION == 21
     for table in ("structure_mail_finds", "mail_reads", "scout_mail"):
         assert d.query(f"SELECT COUNT(*) FROM {table}")[0][0] == 0  # noqa: S608
     assert d.query("SELECT COUNT(*) FROM known_structures")[0][0] == 1  # existing rows are kept

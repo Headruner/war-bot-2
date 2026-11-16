@@ -25,10 +25,13 @@ pytestmark = pytest.mark.anyio
 FIRST_ID = 763600
 JITA, PERIMETER, TAMA, DQ = 30000142, 30000144, 30002813, 30004759
 
+BOT_TOKEN = ".".join(("MTIzNDU2Nzg5MDEyMzQ1Njc4OTA", "GabcDE", "abcdefghijklmnopqrstuvwxyz0123456789AB"))
+CHANNEL = "555000111222333444"
+
 
 class CapturingNotifier(DiscordNotifier):
     def __init__(self, fail: bool = False):
-        super().__init__("https://discord.invalid/webhook", 0)
+        super().__init__(BOT_TOKEN, CHANNEL, 0)
         self.fail = fail
         self.payloads = []
 
@@ -264,18 +267,57 @@ async def test_esi_names_posts_bare_array_with_compatibility_date():
     assert seen == {"body": [99010015], "compat": "2025-09-30"}
 
 
-async def test_notifier_waits_for_message_and_honours_429():
+async def test_notifier_posts_as_the_bot_and_honours_429():
     calls = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(request.url.params.get("wait"))
+        calls.append((request.method, str(request.url), request.headers["Authorization"]))
+        assert request.headers["User-Agent"].startswith("DiscordBot (")
         if len(calls) == 1:
             return httpx.Response(429, json={"retry_after": 0.01})
         return httpx.Response(200, json={"id": "123"})
 
-    notifier = DiscordNotifier("https://discord.test/api/webhooks/1/x", 0, transport=httpx.MockTransport(handler))
+    notifier = DiscordNotifier(BOT_TOKEN, CHANNEL, 0, transport=httpx.MockTransport(handler))
     assert (await notifier.send({"embeds": []}))["id"] == "123"
-    assert calls == ["true", "true"]
+    assert calls == [("POST", f"https://discord.com/api/v10/channels/{CHANNEL}/messages", f"Bot {BOT_TOKEN}")] * 2
+
+
+async def test_bot_posts_and_edits_in_the_channel():
+    """The message the bot posted is edited in place; a deleted one is reported as gone (it is posted anew)."""
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, json.loads(request.content)))
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": "900"})
+        if request.url.path.endswith("/900"):
+            return httpx.Response(200, json={"id": "900"})
+        return httpx.Response(404, json={"message": "Unknown Message", "code": 10008})
+
+    notifier = DiscordNotifier(BOT_TOKEN, int(CHANNEL), 0, transport=httpx.MockTransport(handler))
+    message = await notifier.send({"embeds": [{"title": "first"}]})
+    assert await notifier.edit(message["id"], {"embeds": [{"title": "second"}]}) == {"id": "900"}
+    assert await notifier.edit("901", {"embeds": []}) is None
+    base = f"/api/v10/channels/{CHANNEL}/messages"
+    assert [(m, p) for m, p, _ in seen] == [("POST", base), ("PATCH", f"{base}/900"), ("PATCH", f"{base}/901")]
+    assert seen[1][2] == {"embeds": [{"title": "second"}]}
+
+
+async def test_message_of_the_old_webhook_is_left_alone():
+    """Only the author may edit: a message the webhook posted before the switch is neither edited nor reposted."""
+    from evedm.wars.discord import DiscordRejected
+
+    answers = {
+        "1": httpx.Response(403, json={"message": "Cannot edit a message authored by another user", "code": 50005}),
+        "2": httpx.Response(403, json={"message": "Missing Access", "code": 50001}),
+        "3": httpx.Response(404, json={"message": "Unknown Channel", "code": 10003}),
+    }
+    transport = httpx.MockTransport(lambda r: answers[r.url.path.rsplit("/", 1)[1]])
+    notifier = DiscordNotifier(BOT_TOKEN, CHANNEL, 0, transport=transport)
+    assert await notifier.edit("1", {"embeds": []}) == {"id": "1"}  # done as far as the caller is concerned
+    for message_id in ("2", "3"):  # the bot cannot reach the channel: a configuration problem, not a lost message
+        with pytest.raises(DiscordRejected):
+            await notifier.edit(message_id, {"embeds": []})
 
 
 # --------------------------------------------------------------------------- config
@@ -283,20 +325,28 @@ def test_wars_config_file_env_and_validation(tmp_path, monkeypatch):
     cfg = tmp_path / "wars.yaml"
     cfg.write_text(
         "enabled: ${EVEDM_WARS_ENABLED:-true}\npoll_interval_min: 5\nstatuses: [mutual]\n"
-        "discord:\n  enabled: true\n  webhook_url: ${EVEDM_WARS_DISCORD_WEBHOOK}\n  batch_embeds: 3\n"
+        "discord:\n  enabled: true\n  channel_id: 555000111222333444\n  bot_token: ${EVEDM_DISCORD_BOT_TOKEN}\n"
+        "  batch_embeds: 3\n"
     )
-    monkeypatch.setenv("EVEDM_WARS_DISCORD_WEBHOOK", "https://discord.test/hook")
+    monkeypatch.setenv("EVEDM_DISCORD_BOT_TOKEN", BOT_TOKEN)
     ws = load_wars_settings(cfg)
     assert ws.enabled and ws.poll_interval_min == 5 and ws.statuses == ["mutual"]
-    assert ws.discord.webhook_url == "https://discord.test/hook" and ws.discord.batch_embeds == 3
-    assert ws.summary()["webhook_set"] is True and "discord.test" not in json.dumps(ws.summary())
+    assert ws.discord.bot_token == BOT_TOKEN and ws.discord.batch_embeds == 3
+    assert ws.discord.channel_id == CHANNEL  # YAML reads an unquoted ID as a number
+    assert ws.summary()["bot_token_set"] is True and BOT_TOKEN not in json.dumps(ws.summary())
+    monkeypatch.setenv("EVEDM_WARS_DISCORD_CHANNEL_ID", "42")
+    assert load_wars_settings(cfg).discord.channel_id == "42"
+    monkeypatch.setenv("EVEDM_WARS_DISCORD_CHANNEL_ID", "#wars")
+    with pytest.raises(ConfigError, match="numeric|invalid value"):
+        load_wars_settings(cfg)
+    monkeypatch.delenv("EVEDM_WARS_DISCORD_CHANNEL_ID")
 
     monkeypatch.setenv("EVEDM_WARS_ENABLED", "0")
     assert load_wars_settings(cfg).enabled is False
 
     monkeypatch.delenv("EVEDM_WARS_ENABLED")
-    monkeypatch.setenv("EVEDM_WARS_DISCORD_WEBHOOK", "")
-    with pytest.raises(ConfigError, match="webhook_url"):
+    monkeypatch.setenv("EVEDM_DISCORD_BOT_TOKEN", "")
+    with pytest.raises(ConfigError, match="bot_token"):
         load_wars_settings(cfg)
     cfg.write_text("statuses: [peace]\n")
     with pytest.raises(ConfigError, match="unknown war type"):
@@ -427,23 +477,22 @@ async def test_new_wars_beyond_the_cycle_limit_wait_for_the_next_cycle(db, graph
     assert svc.store.stats() == {"ready": 5}
 
 
-async def test_invalid_webhook_keeps_wars_queued_and_visible(db, graph):
+async def test_rejected_bot_keeps_wars_queued_and_visible(db, graph):
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(404, json={"message": "Unknown Webhook"})
+        return httpx.Response(401, json={"message": "401: Unauthorized", "code": 0})
 
-    hook = "https://discord.com/api/webhooks/123/SECRET-TOKEN"
-    notifier = DiscordNotifier(hook, 0, transport=httpx.MockTransport(handler))
+    notifier = DiscordNotifier(BOT_TOKEN, CHANNEL, 0, transport=httpx.MockTransport(handler))
     svc = service(db, graph, FakeEsi(hourly_wars([1])), notifier)
-    from evedm.wars.discord import WebhookInvalid
+    from evedm.wars.discord import DiscordRejected
 
-    with pytest.raises(WebhookInvalid):
+    with pytest.raises(DiscordRejected):
         await svc.run_cycle()
     assert svc.store.stats() == {"pending": 1}
     assert svc.store.summaries()[0]["post_status"] == "pending"  # still listed on the Wars page
 
 
 async def test_dry_run_marks_wars_posted_without_network(db, graph):
-    notifier = DiscordNotifier("", 0, dry_run=True)
+    notifier = DiscordNotifier("", "", 0, dry_run=True)
     svc = service(db, graph, FakeEsi(hourly_wars([2, 1])), notifier)
     await svc.run_cycle()
     assert svc.store.stats() == {"notified": 2}
@@ -451,27 +500,32 @@ async def test_dry_run_marks_wars_posted_without_network(db, graph):
 
 
 async def test_notifier_errors(monkeypatch):
-    from evedm.wars.discord import WebhookInvalid
+    from evedm.wars.discord import DiscordRejected
 
     async def no_sleep(_):
         return None
 
     monkeypatch.setattr("evedm.wars.discord.asyncio.sleep", no_sleep)
-    with pytest.raises(WebhookInvalid):
-        await DiscordNotifier("", 0).send({"embeds": []})
+    for token, channel in (("", CHANNEL), (BOT_TOKEN, "")):  # not configured: no request is made
+        with pytest.raises(DiscordRejected):
+            await DiscordNotifier(token, channel, 0).send({"embeds": []})
+    for status in (401, 403, 404):  # bad token, no access to the channel, no such channel
+        refused = httpx.MockTransport(lambda r, status=status: httpx.Response(status, json={"message": "no"}))
+        with pytest.raises(DiscordRejected):
+            await DiscordNotifier(BOT_TOKEN, CHANNEL, 0, transport=refused).send({"embeds": []})
     always_429 = httpx.MockTransport(lambda r: httpx.Response(429, json={"retry_after": 0}))
     with pytest.raises(NotifyError, match="rate limit"):
-        await DiscordNotifier("https://d.test/h", 0, transport=always_429).send({"embeds": []})
+        await DiscordNotifier(BOT_TOKEN, CHANNEL, 0, transport=always_429).send({"embeds": []})
     bad = httpx.MockTransport(lambda r: httpx.Response(400, text="Invalid Form Body"))
     with pytest.raises(NotifyError, match="400") as exc:
-        await DiscordNotifier("https://d.test/h", 0, transport=bad).send({"embeds": []})
-    assert not isinstance(exc.value, WebhookInvalid)
+        await DiscordNotifier(BOT_TOKEN, CHANNEL, 0, transport=bad).send({"embeds": []})
+    assert not isinstance(exc.value, DiscordRejected)
 
     def boom(r):
         raise httpx.ConnectError("refused")
 
     with pytest.raises(NotifyError, match="request failed"):
-        await DiscordNotifier("https://d.test/h", 0, transport=httpx.MockTransport(boom)).send({"embeds": []})
+        await DiscordNotifier(BOT_TOKEN, CHANNEL, 0, transport=httpx.MockTransport(boom)).send({"embeds": []})
 
 
 async def test_esi_retries_transient_errors_then_gives_up():
@@ -711,7 +765,7 @@ def test_more_config_cases(tmp_path, monkeypatch):
             load_wars_settings(cfg)
     cfg.write_text("")  # empty file: defaults (watcher off)
     assert load_wars_settings(cfg).enabled is False
-    cfg.write_text("discord:\n  enabled: true\n  dry_run: true\nenabled: true\n")  # dry run needs no webhook
+    cfg.write_text("discord:\n  enabled: true\n  dry_run: true\nenabled: true\n")  # dry run needs no bot
     assert load_wars_settings(cfg).discord.dry_run is True
 
 

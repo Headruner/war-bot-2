@@ -30,6 +30,9 @@ class TokenCipher:
 
 _JWT = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 _WEBHOOK = re.compile(r"(?i)(discord(?:app)?\.com/api/(?:v\d+/)?webhooks/\d+/)[A-Za-z0-9_\-.]+")
+# a bot token: three dot-separated parts (application ID, timestamp, signature), also after "Bot " in a header
+_BOT_TOKEN = re.compile(r"(?<![A-Za-z0-9_\-.])[A-Za-z0-9_-]{22,}\.[A-Za-z0-9_-]{6,8}\.[A-Za-z0-9_-]{25,}")
+_BOT_HEADER = re.compile(r"(?i)(\bBot )[A-Za-z0-9_\-.]{20,}")
 _LONG_SECRET = re.compile(r"(?i)((?:refresh_token|access_token|client_secret|code)[\"'=: ]+)([A-Za-z0-9_\-+/=.]{12,})")
 
 
@@ -37,6 +40,8 @@ def redact(text: str) -> str:
     """Mask JWTs and token-looking values (TOK-05, IMP-09)."""
     text = _JWT.sub("<jwt:redacted>", text)
     text = _WEBHOOK.sub(lambda m: m.group(1) + "<redacted>", text)
+    text = _BOT_HEADER.sub(lambda m: m.group(1) + "<redacted>", text)
+    text = _BOT_TOKEN.sub("<bot-token:redacted>", text)
     return _LONG_SECRET.sub(lambda m: m.group(1) + "<redacted>", text)
 
 

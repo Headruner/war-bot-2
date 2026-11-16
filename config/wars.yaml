@@ -1,10 +1,10 @@
 # EVE Distance Meter - war watcher (the eve-war-bot-2 logic), kept apart from evedm.yaml.
 # Location: config/wars.yaml (repo), /app/config/wars.yaml (image), or $EVEDM_WARS_CONFIG.
 # Values like ${NAME} or ${NAME:-default} are read from the environment; EVEDM_WARS_* variables override this file.
-# Secrets (the Discord webhook) belong in .env, not here.
+# Secrets (the Discord bot token) belong in .env, not here.
 
 enabled: ${EVEDM_WARS_ENABLED:-true}       # poll ESI for new war declarations and show them on the Wars page
-poll_interval_min: 15                      # how often to check ESI for new wars
+poll_interval_min: 5                      # how often to check ESI for new wars
 max_new_per_cycle: 50
 bootstrap_hours: 24                        # on a clean database, also show wars declared in the last N hours
 max_war_age_hours: 48                      # skip "new" war IDs declared longer ago (ESI re-issues old wars)
@@ -34,7 +34,8 @@ census_concurrency: 8                      # parallel ESI requests
 
 discord:
   enabled: ${EVEDM_WARS_DISCORD_ENABLED:-false}   # also post new wars to a Discord channel
-  webhook_url: ${EVEDM_WARS_DISCORD_WEBHOOK:-}    # Channel settings > Integrations > Webhooks
+  bot_token: ${EVEDM_DISCORD_BOT_TOKEN:-}          # the registered application's bot token (Developer Portal > Bot)
+  channel_id: ${EVEDM_WARS_DISCORD_CHANNEL_ID:-}  # the channel wars are posted to (right-click the channel > Copy Channel ID)
   mention_role_id: ${EVEDM_WARS_DISCORD_MENTION_ROLE_ID:-}
   dry_run: false                                  # log the messages instead of posting
   batch_embeds: 5                                 # wars per message (max 10)
