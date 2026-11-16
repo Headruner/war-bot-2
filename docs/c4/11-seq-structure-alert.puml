@@ -5,14 +5,22 @@ actor "Player" as user
 participant "Browser\n(alerts.js)" as ui
 participant "Web app\n(app.py)" as web
 participant "AlertService" as alerts
-participant "zKillboard R2Z2" as zkb
+participant "zKillboard\nwebsocket" as zkb
+participant "zKillboard R2Z2\n(fallback)" as r2z2
 participant "ESI" as esi
 participant "Discord" as discord
 database "SQLite" as db
 
-== background, every poll_s (>= 6 s) ==
-alerts -> zkb : GET {sequence}.json (User-Agent)
-zkb --> alerts : killmail package (or 404 = caught up)
+== background ==
+alerts -> zkb : connect, {"action":"sub","channel":"killstream"}
+zkb --> alerts : full killmail, as it is processed (handled at once)
+alt websocket down or silent for 120 s
+  alerts -> r2z2 : GET {sequence}.json, {n}.json every poll_s (>= 6 s)
+  r2z2 --> alerts : killmail package (or 404 = caught up)
+else websocket delivering
+  alerts -> r2z2 : GET sequence.json every poll_s (keeps the position for a fallback)
+end
+alerts -> alerts : kill older than alerts.max_age_min (60 min)? -> obsolete, skipped
 alerts -> esi : /universe/types, /universe/groups (cached in type_groups)
 alerts -> alerts : victim is a structure? -> destroyed (+ core drop)\nkill within grid_km of a known structure? -> combat\nstructure among attackers? -> firing
 alerts -> alerts : combat / firing kept only with a battleship or capital hull (T2 included)\nor zkb.totalValue > min_value_isk (500M); capitals = a capital on both sides

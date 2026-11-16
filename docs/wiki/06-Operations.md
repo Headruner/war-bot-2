@@ -22,7 +22,7 @@
 | Sign-in refused (`not_allowed`) | add your character ID to `EVEDM_ALLOWED_LOGIN_CHARACTERS` |
 | `invalid_state` after sign-in | the login took longer than 10 minutes or the page was reloaded; start again |
 | Log says `journal_mode=WAL unavailable` | the mounted filesystem cannot share WAL memory (some Windows bind mounts); the app already fell back to `delete`. Use a named volume to get WAL |
-| Alerts page says "live feed not running" or shows `last error` | `docker logs evedm` for `zKillboard`: no internet from the container, or 403/429 (the feed pauses 10 minutes by itself). `GET /api/health` shows `alerts.polls` growing while it works |
+| Alerts page says "live feed not running" or shows `last error` | `docker logs evedm` for `zKillboard`: no internet from the container, or 403/429 (the feed pauses 10 minutes by itself). `GET /api/health` shows `alerts.polls` growing while it works. `GET /api/alerts` has `feed.source` (`websocket` or `r2z2`) and `feed.socket` (connected, last error, counters): a Cloudflare 403 or a refused connection keeps `r2z2` as the source, alerts continue; `alerts.websocket: false` switches the websocket off |
 | No **combat** alerts for a structure | combat needs the structure's position: it comes from the Structures page (a registered character has assets there) or the public dataset. Destroyed and firing work without it |
 | **Set destination** greyed out | offline character, or it has not granted `esi-ui.write_waypoint.v1`: tick the scope on the EVE application, then Add character again |
 | **Set destination** answers "ESI refused (404): is the character online?" | ESI only accepts waypoints for a logged-in character; the online state shown can be up to a minute old |

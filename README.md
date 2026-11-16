@@ -41,7 +41,8 @@ when you press **Set destination** for an online character.
 - **Known, no assets** (third tab of the Structures page, members only): structures that are known - a character may
   dock there, an in-game mail names them or a public dataset lists them - but where no registered character has an asset;
   each row says how it is known (`known_via`: dock, mail, registry). `GET /api/structures/unclaimed?q=&region=&type=&space=&at_war=&via=&sort=&limit=&offset=`.
-- **Structure alerts** (Alerts page): zKillboard's live killmail feed shows structures **destroyed** (citadels,
+- **Structure alerts** (Alerts page): zKillboard's live killmail feed (its websocket, with R2Z2 polling as the fallback;
+  a kill older than `alerts.max_age_min`, 60 minutes by default, is obsolete and skipped) shows structures **destroyed** (citadels,
   engineering complexes and refineries drop their quantum core), **combat** within 1000 km of a known structure, and
   structures **firing**, in all space. Combat and firing alerts are kept only for kills with a **battleship or capital
   hull (T2 included)** or a single loss above **500M ISK** (`alerts.big_kills_only`, `alerts.min_value_isk`); the
@@ -406,6 +407,8 @@ docker compose stop evedm && cp -a data data-backup-$(date +%F) && docker compos
 | `EVEDM_NOTIFICATIONS_MIN_STRUCTURES` | `10` | a character is polled for notifications only with this many player structures holding assets |
 | `EVEDM_NOTIFICATIONS_DISCORD_ENABLED`, `EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID`, `EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID` | `1`, empty, empty | notifications on Discord: needs the bot token; empty channel = the wars channel, nothing is posted without a token or channel; role pinged on "structure attacked" only |
 | `EVEDM_ANSIBLEX_ENABLED` | `1` | `0` removes the Ansiblex route mode |
+| `EVEDM_ALERTS_WEBSOCKET`, `EVEDM_ALERTS_WEBSOCKET_URL` | `1`, `wss://zkillboard.com/websocket/` | main source of alerts; `0` = poll R2Z2 only |
+| `EVEDM_ALERTS_MAX_AGE_MIN` | `60` | a kill older than this is obsolete: no catch-up after a pause, not processed, not posted (1 to 1200) |
 | `EVEDM_ALERTS_CONTACT` | empty | added to the User-Agent zKillboard sees |
 | `EVEDM_ALERTS_GRID_KM` | `1000` | a kill this close to a known structure is "combat" |
 | `EVEDM_ALERTS_DISCORD_ENABLED`, `EVEDM_ALERTS_DISCORD_CHANNEL_ID`, `EVEDM_ALERTS_DISCORD_MENTION_ROLE_ID` | `0`, empty, empty | post alerts to Discord (needs the bot token and the channel ID); the role is pinged on "destroyed" |

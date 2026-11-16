@@ -34,7 +34,7 @@ Key mechanisms:
 - **Tokens**: Fernet-encrypted in SQLite; refreshed when less than 60 s remain; `invalid_grant` marks the character REAUTH.
 - **Structure scout** (`StructureScout`): assets are read page by page and each page's structures (type `other`) are upserted at once; known structures are skipped and kept until a 404; names and owners re-read every 720 h, refused ones every 14 days; stops at 60 ESI errors left.
 - **EVE-Scout** (`EveScout`): public signature list cached 15 minutes (a hub missing from the answer is fetched by name), last list kept on error; `via()` builds character → entry → hub → exit → target for the chosen hub from a multi-source BFS.
-- **Structure alerts** (`AlertService`, 0.7.0): `R2Z2Feed` follows zKillboard's sequence (position kept in the `meta`
+- **Structure alerts** (`AlertService`, 0.7.0): `R2Z2Feed` follows zKillboard's sequence (position kept in the `meta` Since 0.8.0 `KillSocket` is the main source: it subscribes to zKillboard's `killstream` websocket, queues the full killmails and wakes the service at once; `R2Z2Feed` is read only while the socket is down (it keeps the newest position meanwhile, so the fallback resumes there), and a kill older than `alerts.max_age_min` (60) is skipped, never posted and never caught up.
   table, 404 = caught up, 403/429 = 10 min pause). Each killmail is classified against the known structures of its
   system (scout finds + EVE Ref, positions in meters): structure victim → destroyed (core drop for citadels,
   engineering complexes, refineries), kill within `grid_km` → combat, structure attacker → firing. Alerts are stored
