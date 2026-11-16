@@ -289,3 +289,26 @@ def test_discord_rules_are_edited_on_the_page(client, tmp_path):
     assert again.discord.rules == saved
     assert client.put("/api/settings", json={"reset": ["evedm:discord.rules"]}, headers=H).status_code == 200
     assert svc.settings.discord.rules == [] and svc.notifications.notifier is None
+
+
+def test_discord_without_a_bot_is_switched_off_at_start_up_instead_of_stopping_the_app(tmp_path):
+    s = settings(tmp_path)
+    s.alerts.enabled = s.alerts.discord.enabled = True  # a webhook-era configuration: no bot token, no channel ID
+    ws = WarsSettings(enabled=True)
+    ws.discord.enabled = True
+    with TestClient(create_app(s, ws)) as c:
+        assert s.alerts.discord.enabled is False and ws.discord.enabled is False
+        c.app.state.svc.db.upsert_user(MIO, "Shadowed Mio")
+        state = as_user(c, MIO, "Shadowed Mio").get("/api/settings").json()
+        assert "switched off at start-up" in (state["note"] or "")
+        # saving the same combination from the page is still refused
+        bad = c.put("/api/settings", json={"set": {"evedm:alerts.discord.enabled": True}}, headers=H)
+        assert bad.status_code == 422 or "needs the bot token" in bad.text
+
+
+def test_a_complete_discord_setup_is_left_alone(tmp_path):
+    s = settings(tmp_path)
+    s.alerts.enabled = s.alerts.discord.enabled = True
+    s.discord.bot_token, s.alerts.discord.channel_id = TOKEN, "123456789012345678"
+    with TestClient(create_app(s, WarsSettings(enabled=False))):
+        assert s.alerts.discord.enabled is True

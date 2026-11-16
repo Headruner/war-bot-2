@@ -266,7 +266,28 @@ class SettingsAdmin:
                 log.info("%d setting(s) taken from %s", len(saved), self.path)
                 return
         self._apply_to(self.live, {})
+        self._switch_off_unusable_discord()
         self._validate(self.live)
+
+    def _switch_off_unusable_discord(self) -> None:
+        """A configuration written for webhooks (Discord enabled, no bot token or channel ID) must not stop the
+        app: Discord posting of that feature is switched off with a warning, and the administrator fixes it on
+        the Settings page. Saving the same combination from the page is still refused."""
+        main, wars = self.live["evedm"], self.live["wars"]
+        off = []
+        a = main.alerts
+        alerts_ready = bool(main.discord.bot_token) and main_config.is_snowflake(a.discord.channel_id)
+        if a.enabled and a.discord.enabled and not alerts_ready:
+            a.discord.enabled = False
+            off.append("alerts (needs the bot token and alerts.discord.channel_id)")
+        d = wars.discord
+        if wars.enabled and d.enabled and not d.dry_run and not (d.bot_token and str(d.channel_id or "").strip()):
+            d.enabled = False
+            off.append("wars (needs the bot token and wars discord.channel_id)")
+        if off:
+            what = ", ".join(off)
+            log.warning("Discord posting is switched off for %s: set EVEDM_DISCORD_BOT_TOKEN and the channel IDs", what)
+            self.note = f"Discord posting was switched off at start-up for {what}; set them below."
 
     # -- the file ------------------------------------------------------------------------------------
     def _cipher(self) -> TokenCipher:
