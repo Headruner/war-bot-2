@@ -60,6 +60,9 @@ def _no_live_alert_feed(request: pytest.FixtureRequest, monkeypatch: pytest.Monk
     """Apps built in unit tests never poll the real zKillboard feed; tests marked ``alerts_loop`` drive it."""
     if "alerts_loop" not in request.keywords:
         monkeypatch.setattr("evedm.alerts.AlertService.start", lambda self: None)
+    # nor does a test app connect to Discord's gateway; tests of the connection itself pass a fake ``connect``
+    if "discord_gateway" not in request.keywords:
+        monkeypatch.setattr("evedm.discord_gateway.DiscordPresence.start", lambda self: None)
 
 
 @pytest.fixture(scope="session")

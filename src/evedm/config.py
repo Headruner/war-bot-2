@@ -171,8 +171,9 @@ class DiscordBotSettings:
     """The registered Discord application every post goes through (REST only: no gateway connection is kept)."""
 
     bot_token: str = ""  # the bot token of the application (Developer Portal > Bot); a secret, kept in .env
-    bot_name: str = ""  # display name of the bot (up to 32 characters); the posting bot keeps the application's name
-    bot_game: str = ""  # the "playing ..." status text (up to 128 characters); needs a gateway connection, not kept yet
+    bot_name: str = ""  # bot username (up to 32 characters), set on connect; empty = keep (2 changes/hour)
+    online: bool = True  # keep a gateway connection so the bot shows as online (no privileged intent is needed)
+    bot_game: str = ""  # the "Playing ..." status text (up to 128 characters), shown while the bot is online
     command_prefix: str = "!"  # the prefix of chat commands (1 to 3 characters, no spaces); no commands are read yet
     guild_id: str = ""  # the Discord server (guild) ID the bot works in; empty = any (numeric)
     search_character_id: int = 0  # EVE character ID whose token is used for structure searches; 0 = any character
@@ -582,6 +583,7 @@ ENV_MAP: dict[str, tuple[str, ...]] = {
     "EVEDM_ALERTS_CONTACT": ("alerts", "contact"),
     "EVEDM_ALERTS_DISCORD_ENABLED": ("alerts", "discord", "enabled"),
     "EVEDM_DISCORD_BOT_TOKEN": ("discord", "bot_token"),
+    "EVEDM_DISCORD_ONLINE": ("discord", "online"),
     "EVEDM_DISCORD_BOT_NAME": ("discord", "bot_name"),
     "EVEDM_DISCORD_BOT_GAME": ("discord", "bot_game"),
     "EVEDM_DISCORD_COMMAND_PREFIX": ("discord", "command_prefix"),

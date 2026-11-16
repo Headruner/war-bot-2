@@ -146,6 +146,24 @@ const DISCORD = [["wars", "Wars"], ["notifications", "Notifications"], ["alerts"
 function renderDiscord() {
   const card = $("#s-discord");
   card.replaceChildren(el("h2", null, "Discord"));
+  const bot = data.discord_bot;
+  const line = el("div", "s-drow");
+  if (bot) {
+    const text = bot.online
+      ? `online as ${bot.user} in ${bot.servers} server(s)`
+      : bot.last_error || "connecting…";
+    line.append(el("strong", null, "Bot"), el("span", "small", text));
+    if (bot.invite_url && !bot.servers) {
+      const a = el("a", null, "Invite the bot to a server");
+      a.href = bot.invite_url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      line.append(a);
+    }
+  } else {
+    line.append(el("strong", null, "Bot"), el("span", "small", "offline: no token, or discord.online is off"));
+  }
+  card.append(line);
   for (const [target, name] of DISCORD) {
     const st = (data.discord || {})[target];
     if (!st) continue;

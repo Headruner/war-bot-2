@@ -10,8 +10,9 @@ log_level: INFO
 
 discord:                                    # the registered Discord application that posts wars, notifications and alerts
   bot_token: ${EVEDM_DISCORD_BOT_TOKEN:-}   # secret: keep it in .env (Developer Portal > your application > Bot)
-  bot_name: ${EVEDM_DISCORD_BOT_NAME:-}     # display name (up to 32 characters); empty = the application's own name
-  bot_game: ${EVEDM_DISCORD_BOT_GAME:-}     # "playing ..." status text (needs a gateway connection: stored, not used yet)
+  online: ${EVEDM_DISCORD_ONLINE:-true}     # keep a gateway connection so the bot shows as online (invite it to your server)
+  bot_name: ${EVEDM_DISCORD_BOT_NAME:-}     # bot username (up to 32 characters), set when it connects; empty = keep it
+  bot_game: ${EVEDM_DISCORD_BOT_GAME:-}     # "Playing ..." text of the online bot
   command_prefix: "!"                       # prefix of chat commands, 1 to 3 characters (stored, no commands are read yet)
   guild_id: ${EVEDM_DISCORD_GUILD_ID:-}     # the Discord server (guild) ID; empty = any
   search_character_id: ${EVEDM_DISCORD_SEARCH_CHARACTER_ID:-0}   # EVE character whose token searches structures; 0 = any

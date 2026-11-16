@@ -58,6 +58,7 @@ markers = [
   "integration: starts real processes (fake EVE server + evedm server)",
   "perf: resource footprint checks (2 CPU / 1 GB budget)",
   "alerts_loop: lets the structure alert service start its background loop",
+  "discord_gateway: lets the Discord presence start its (fake) gateway connection",
 ]
 addopts = "-ra"
 filterwarnings = ["ignore::DeprecationWarning:starlette.*", "ignore:Using `httpx` with `starlette.testclient`"]

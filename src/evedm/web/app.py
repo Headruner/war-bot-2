@@ -96,6 +96,7 @@ class Services:
     evescout: EveScout | None = None  # Thera / Turnur wormholes for the Ranking filter (UC-15)
     ansiblex: AnsiblexService | None = None  # Ansiblex jump gates per character for the Ranking filter (UC-16)
     looplag: LoopLagMonitor | None = None  # how late the shared event loop wakes up
+    presence: Any = None  # DiscordPresence: the gateway connection that shows the bot online
 
 
 class RequestCounter:
@@ -276,6 +277,24 @@ def apply_discord(settings: Settings, ws: WarsSettings, svc: Services) -> None:
     if svc.alerts is not None:
         svc.alerts.notifier = alert_notifier(settings, ws)
     attach_notification_discord(settings, ws, svc)
+    apply_presence(settings, ws, svc)
+
+
+def apply_presence(settings: Settings, ws: WarsSettings, svc: Services) -> None:
+    """(Re)start the gateway connection that shows the bot online, from the settings as they are now."""
+    from ..discord_gateway import DiscordPresence
+
+    token = settings.discord.bot_token or ws.discord.bot_token
+    d = settings.discord
+    old = svc.presence
+    if old is not None and (old.token, old.game, old.name) == (token, d.bot_game, d.bot_name) and d.online:
+        return  # nothing that matters changed
+    if old is not None:
+        asyncio.ensure_future(old.stop())
+        svc.presence = None
+    if token and d.online and not settings.demo:
+        svc.presence = DiscordPresence(token, game=d.bot_game, name=d.bot_name)
+        svc.presence.start()
 
 
 def has_rules(settings: Settings, source: str) -> bool:
@@ -417,9 +436,12 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             svc.alerts.start()
         if svc.notifications is not None and not settings.demo:
             svc.notifications.start()
+        apply_presence(settings, ws, svc)
         try:
             yield
         finally:
+            if svc.presence is not None:
+                await svc.presence.stop()
             if svc.looplag is not None:
                 await svc.looplag.stop()
             if svc.notifications is not None:
@@ -1509,7 +1531,12 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             "groups": NOTIFICATION_GROUPS,
             "regions": sorted(set(graph.regions.values()) - {""}),
         }
-        extra = {"discord": discord_status(settings, ws, svc_of(request)), "rule_options": options}
+        presence = svc_of(request).presence
+        extra = {
+            "discord": discord_status(settings, ws, svc_of(request)),
+            "discord_bot": presence.state if presence is not None else None,
+            "rule_options": options,
+        }
         return admin.state() | extra | {"rule_presets": PRESETS}
 
     def named_places(rules: Any, graph: GateGraph) -> Any:
