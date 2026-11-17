@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""Publish docs/wiki/*.md and docs/userguide/*.md to the GitHub Wiki of this repository (a separate git repo: <repo>.wiki.git).
+"""Publish docs/wiki/*.md and docs/userguide/*.md to the GitHub Wiki of this repository.
 
-The pages are kept in docs/wiki and docs/userguide (reviewed with the code); this script converts them for the GitHub Wiki:
+The wiki is a separate git repo: <repo>.wiki.git.
+
+The pages are kept in docs/wiki and docs/userguide (reviewed with the code);
+this script converts them for the GitHub Wiki:
   - page links "01-Requirements.md#x"  -> "01-Requirements#x"
   - user guide pages get the wiki names "User-Guide" (docs/userguide/README.md) and "Guide-02-ranking" (02-ranking.md)
   - images and diagrams (../diagrams, ../screenshots) -> raw.githubusercontent.com URLs on the main branch
