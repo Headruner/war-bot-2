@@ -468,7 +468,7 @@ The project follows the [architecture guidelines](docs/guidelines/architecture.m
 
 ## Documentation
 
-[Wiki home](docs/wiki/Home.md) · [Requirements](docs/wiki/01-Requirements.md) · [Architecture (C4)](docs/wiki/02-Architecture-C4.md) ·
+[Wiki home](docs/wiki/Home.md) · [User guide](docs/userguide/README.md) · [Requirements](docs/wiki/01-Requirements.md) · [Architecture (C4)](docs/wiki/02-Architecture-C4.md) ·
 [Testing](docs/wiki/03-Testing.md) · [Deployment](docs/wiki/04-Deployment.md) · [Performance](docs/wiki/05-Performance.md) ·
 [Operations](docs/wiki/06-Operations.md)
 

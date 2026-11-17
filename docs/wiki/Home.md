@@ -15,6 +15,7 @@ structures and structures firing, lists your closest characters and can set an o
 | [05 · Performance](05-Performance.md) | 2 vCPU / 1 GB budget, measurements, tuning log |
 | [06 · Operations](06-Operations.md) | Logs, launch records, backups, universe updates, troubleshooting |
 | [07 · Run on Windows](07-Run-on-Windows.md) | Step-by-step: Docker Desktop, the published image, .env, start, checks, troubleshooting, accounts, Wars, Structures, Alerts |
+| [User guide](../userguide/README.md) | Step-by-step instructions with screenshots for the end user: sign in and characters, ranking, static roster, notifications, structure alerts, structures, wars |
 | [Architecture guidelines](../guidelines/architecture.md) · [Git guidelines](../guidelines/git.md) | Rules the project follows and how each is applied and verified |
 
 ![Ranking view](../screenshots/ranking-desktop.png)
