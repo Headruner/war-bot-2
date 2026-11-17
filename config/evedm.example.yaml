@@ -17,12 +17,13 @@ discord:                                    # the registered Discord application
   guild_id: ${EVEDM_DISCORD_GUILD_ID:-}     # the Discord server (guild) ID; empty = any
   search_character_id: ${EVEDM_DISCORD_SEARCH_CHARACTER_ID:-0}   # EVE character whose token searches structures; 0 = any
   admin_roles: [ADMIN]                      # Discord roles allowed to use admin commands (stored, no commands yet)
-  # Discord rules: a filter plus a channel each, for alerts or notifications. A source with at least one rule uses only
-  # its rules (alerts.discord.* / notifications.discord.* channel, switch, kinds and role are then ignored); an empty
-  # list means "any"; what matches several rules is posted to each channel once. Also editable on the Settings page.
+  # Discord rules: a filter plus a channel each, for structure alerts. With at least one rule only the rules are used
+  # (alerts.discord.* channel, switch, kinds and role are then ignored); an empty list means "any"; what matches several
+  # rules is posted to each channel once. Also editable on the Settings page. (Notifications have a channel per type:
+  # see notifications.discord.channels below.)
   # rules:
   #   - name: Null-sec kills
-  #     source: alerts                      # alerts | notifications
+  #     source: alerts                      # alerts
   #     channel_id: "111111111111111111"
   #     mention_role_id: "333333333333333333"   # pinged with every message of this rule
   #     kinds: [destroyed]                  # destroyed | combat | firing
@@ -106,9 +107,17 @@ notifications:                              # notifications of every registered 
   wait_s: 20                                # the page's "anything new?" request is held open this long (new notifications appear at once)
   discord:                                  # post notifications to Discord (one message per event, edited when more characters receive it)
     enabled: ${EVEDM_NOTIFICATIONS_DISCORD_ENABLED:-true}
-    channel_id: ${EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID:-}   # empty = the wars channel (EVEDM_WARS_DISCORD_CHANNEL_ID); none, or no bot token = nothing is posted
-    mention_role_id: ${EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID:-}   # pinged on "structure attacked" only
-    groups: []                              # groups to post; [] = the groups shown by default (below)
+    # One channel (a numeric ID, posted by the bot) or webhook URL (posted without the bot) per ESI notification type,
+    # with an optional role pinged with every message of that type. A type that is not listed is not posted. Also
+    # editable on the Settings page ("Notification channels").
+    channels: {}
+    #  StructureUnderAttack: {channel_id: "111111111111111111", mention_role_id: "333333333333333333"}
+    #  StructureImpendingAbandonmentAssetsAtRisk: {channel_id: "https://discord.com/api/webhooks/<id>/<token>"}
+    # Deprecated (EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID, ..._MENTION_ROLE_ID, groups): read once to fill channels
+    # while it is empty, then ignored.
+    channel_id: ${EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID:-}
+    mention_role_id: ${EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID:-}
+    groups: []
     max_age_min: 60                         # older notifications are never posted (no history flood)
   zkb_check:                                # asset safety notifications: was a structure of that type killed in that system (zKillboard)?
     enabled: true
@@ -135,6 +144,7 @@ alerts:                                     # structure alerts from zKillboard's
   max_age_min: 60                           # a kill older than this is obsolete: no catch-up after a pause, no post
   big_kills_only: true                      # "combat"/"firing" alerts only for a battleship or capital hull (T2 included) or a loss above min_value_isk
   min_value_isk: 500000000
+  ignore_group_ids: [1924]                  # kills whose victim is of one of these inventory groups raise no alert (1924: strongholds); [] = none
   contact: ${EVEDM_ALERTS_CONTACT:-}        # added to the User-Agent zKillboard sees (mail or Discord name)
   discord:                                  # post alerts to a Discord channel too
     enabled: ${EVEDM_ALERTS_DISCORD_ENABLED:-false}

@@ -274,7 +274,7 @@ Files on the host: `data\evedm.sqlite3`, `data\logs\evedm.log`, `data\logs\launc
   structure per 30 minutes; each post links to the Alerts page (set `EVEDM_PUBLIC_URL` so the link works for others).
   Which kinds are posted: `alerts.discord.kinds` in `config/evedm.example.yaml`. To send alerts to several channels with
   their own filters, add **Discord rules** on the Settings page; once alerts have a rule, these single-channel values are
-  not used (see `06-Operations.md`).
+  not used (see `06-Operations.md`). Kills of the groups in `alerts.ignore_group_ids` (default 1924, strongholds) raise no alert.
 - Put your mail or Discord name into `EVEDM_ALERTS_CONTACT` so zKillboard can reach you about your traffic. Switch
   alerts off with `EVEDM_ALERTS_ENABLED=0`. Alerts are kept 7 days.
 - **Big kills only**: combat and firing alerts are kept only when the kill has a battleship (Black Ops and Marauders
@@ -316,12 +316,12 @@ to the system, and the three closest characters from *your* **Characters** set a
 - **Fast delivery**: the page keeps one request open and reloads the moment a new notification is stored; the
   characters' reads are spread over ESI's 10-minute window, so an event several characters receive appears after
   the earliest of them. ESI's 10-minute cache per character remains the limit.
-- **Discord**: new notifications are posted by the bot to the wars channel (`EVEDM_WARS_DISCORD_CHANNEL_ID`), one message per
-  event, edited to list every character that received it. Own channel: `EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID`; ping a
-  role on attacks: `EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID`; off: `EVEDM_NOTIFICATIONS_DISCORD_ENABLED=0`.
-  Nothing older than an hour is posted, so switching it on does not flood the channel. Everyone in that channel
-  sees the notifications of all registered characters. **Discord rules** on the Settings page can send groups or types
-  to different channels; once notifications have a rule, the single-channel values above are not used.
+- **Discord**: every notification type has its own channel (posted by the bot) or webhook URL (posted without the bot):
+  open **Settings > Notification channels**, fill the rows and press **Save**; an empty row is not posted. One message
+  per event, headed by the short name of its type and edited to list every character that received it; a role per type
+  can be pinged; off: `EVEDM_NOTIFICATIONS_DISCORD_ENABLED=0`. Nothing older than an hour is posted, so switching it on
+  does not flood the channel. Everyone in a channel sees the notifications of all registered characters. Old
+  `EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID` / notification rules are turned into rows once at start-up (see `06-Operations.md`).
 - **Structure type**: every notification that names a structure shows its type (Astrahus, Fortizar...), "Unknown" if
   neither the notification nor the structures the app knows give it.
 - **zKillboard check** (only "items moved to asset safety"): the card and the Discord message say whether a killmail

@@ -68,26 +68,54 @@ gets 404 for the page and `/api/settings` and sees no menu entry.
 - **Backup**: copy `data/settings.yaml` with the database. Its secrets can be decrypted only with the same
   `EVEDM_SECRET_KEY`.
 
+## Notification channels
+
+Every character notification type has **its own channel or webhook**: the **Notification channels** card of the Settings
+page lists the types of the groups (asset safety, structure attacked, structure state, starbases, customs offices /
+skyhooks / dens, sovereignty), each headed by the short name of its Discord message (`ABANDONED`, `ASSET SAFETY`,
+`UNDER ATTACK`, ... ; a type without a short name shows its first two words) with the ESI type under it. Per row:
+
+- a **channel ID** (the bot posts; needs `EVEDM_DISCORD_BOT_TOKEN` and access to the channel) or a **webhook URL**
+  (`https://discord.com/api/webhooks/<id>/<token>`: posted without the bot, so it works with no bot token). A webhook URL
+  holds a token: it is saved to `data/settings.yaml` (mode 600) and, in the database, only its ID is remembered;
+- an optional **role ID**, pinged with every message of that type;
+- **Test**, which posts a test message to that destination.
+
+A row left empty means the type is not posted (there is no fallback to the wars channel). **Fill: Structure
+notifications** fills the empty rows with the example channels, **Reset channels** goes back to the configuration files.
+The same data is `notifications.discord.channels` in `evedm.yaml`:
+
+```yaml
+notifications:
+  discord:
+    channels:
+      StructureUnderAttack: {channel_id: "111111111111111111", mention_role_id: "333333333333333333"}
+      StructureImpendingAbandonmentAssetsAtRisk: {channel_id: "https://discord.com/api/webhooks/<id>/<token>"}
+```
+
+**Upgrading**: when `channels` is empty and the configuration still has notification rules or a single
+`notifications.discord.channel_id`, they are turned into channels once at start-up (the first rule wins; place filters are
+dropped, a type has one channel) and a warning is logged. After that, delete the old values from `evedm.yaml`.
+`notifications.discord.max_age_min` still applies: nothing older than an hour is posted.
+
 ## Discord rules
 
-**Discord rules** send structure alerts or character notifications to several channels, each with its own filter. Edit
-them on the Settings page, in the **Discord rules** editor (add alerts rule / add notifications rule, duplicate, move,
+**Discord rules** send structure **alerts** to several channels, each with its own filter. Edit
+them on the Settings page, in the **Discord rules** editor (add alerts rule, duplicate, move,
 delete), or as `discord.rules` in `evedm.yaml`; the page saves them to `data/settings.yaml` like every other setting and
 they take effect at once, without a restart.
 
-- **Rules and the single-channel settings**: while a source (alerts, notifications) has no rule, its single channel
-  (`alerts.discord.*`, `notifications.discord.*`) works as before. As soon as a source has one rule, even a switched-off
-  one, only the rules count for that source: the single channel, its switch, its kinds / groups and its role are not
-  used. Wars are not affected (one channel). Delete all rules of a source to go back to its single channel.
-- **Keys** (an empty list means "any"): `name`, `source` (`alerts` or `notifications`), `enabled`, `channel_id`
+- **Rules and the single-channel settings**: while alerts have no rule, their single channel (`alerts.discord.*`) works
+  as before. As soon as there is one rule, even a switched-off one, only the rules count for alerts: the single channel,
+  its switch, its kinds and its role are not used. Wars are not affected (one channel). Delete all rules to go back to
+  the single alert channel.
+- **Keys** (an empty list means "any"): `name`, `source` (`alerts`), `enabled`, `channel_id`
   (numeric), `mention_role_id` (pinged with every message of the rule), `space` (high, low, null, wormhole), `regions`,
   `exclude_regions`, `systems`, `exclude_systems` (names; unknown names are refused on the page; exclusions always win;
   an item without a solar system passes only rules that ask for no place). Alerts only: `kinds` (destroyed, combat,
   firing), `min_isk`, `core_drops_only`, `capitals_only`, `owners`, `exclude_owners` (corporation or alliance IDs of the
   structure's owner; alliance members come from the war census, so an alliance it has never seen does not match yet).
-  Notifications only: `groups` (for example `asset_safety`, `structure_attack`, `structure_state`, `tower`,
-  `other_attacks`) and `types` (single ESI notification types); a notification passes when its group or its type is
-  listed, both empty = every notification. At most 50 rules.
+  At most 50 rules.
 - **Example**:
 
   ```yaml
@@ -99,17 +127,17 @@ they take effect at once, without a restart.
         mention_role_id: "333333333333333333"
         kinds: [destroyed]
         space: [null]
-      - name: Home attacks
-        source: notifications
+      - name: Home kills
+        source: alerts
         channel_id: "222222222222222222"
-        groups: [structure_attack]
+        kinds: [destroyed, combat]
         regions: [Delve, Querious]
   ```
 
 - **Several rules**: what matches several rules is posted to each of their channels, once per channel (two rules with the
   same channel give one message). A notification keeps one message per event and channel, edited when more characters
-  receive it or the zKillboard line changes. `alerts.big_kills_only`, `alerts.min_value_isk`, the combat cooldown (now per
-  structure and channel) and `notifications.discord.max_age_min` still apply before the rules.
+  receive it or the zKillboard line changes. `alerts.big_kills_only`, `alerts.min_value_isk`, `alerts.ignore_group_ids`
+  and the combat cooldown (now per structure and channel) still apply before the rules.
 - **A broken channel**: a channel that refuses the bot (403 no access, 404 deleted) is skipped for that item and logged
   (`discord`, WARNING); the other channels still get it. A temporary Discord failure or a rejected token keeps the item
   queued and the retry posts only to the channels still missing. Fix the channel or the bot's permissions

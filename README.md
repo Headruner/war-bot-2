@@ -44,7 +44,8 @@ when you press **Set destination** for an online character.
 - **Structure alerts** (Alerts page): zKillboard's live killmail feed shows structures **destroyed** (citadels,
   engineering complexes and refineries drop their quantum core), **combat** within 1000 km of a known structure, and
   structures **firing**, in all space. Combat and firing alerts are kept only for kills with a **battleship or capital
-  hull (T2 included)** or a single loss above **500M ISK** (`alerts.big_kills_only`, `alerts.min_value_isk`); the
+  hull (T2 included)** or a single loss above **500M ISK** (`alerts.big_kills_only`, `alerts.min_value_isk`); kills
+  whose victim is of an inventory group in `alerts.ignore_group_ids` (default `[1924]`, strongholds) raise no alert; the
   *capitals* filter shows only kills with at least one capital on each side. Each alert lists your three closest characters; browser notification, sound
   and an optional Discord post (bot). Attack timers themselves are not public, so these killmail signals are the hint.
   ([screenshot](docs/screenshots/alerts-desktop.png))
@@ -78,9 +79,10 @@ when you press **Set destination** for an online character.
   spread over ESI's 10-minute window (`notifications.stagger_s`), so a notification that several characters receive
   shows up after the earliest of them; the page is told at once when something new is stored (long poll) instead
   of waiting for its timer. New notifications are also **posted to Discord** by the Discord bot
-  (wars channel `EVEDM_WARS_DISCORD_CHANNEL_ID`, or their own `EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID`): one message per event, edited
-  to list every character that received it; nothing older than an hour is posted; `EVEDM_NOTIFICATIONS_DISCORD_ENABLED=0`
-  switches it off. With **Discord rules** (below) the rules decide the channels instead.
+  (each notification type has **its own channel or webhook**, set in the **Notification channels** table of the Settings
+  page; a type without one is not posted): one message per event, headed by the short name of its type (`ABANDONED`,
+  `ASSET SAFETY`, `UNDER ATTACK`, ...) and edited to list every character that received it; nothing older than an hour
+  is posted; `EVEDM_NOTIFICATIONS_DISCORD_ENABLED=0` switches it off.
   Everything else ESI sends is one tick away in the filters. Tick **Sound** for a short chime when a new notification
   matching your filters arrives while the page is open (tick it again after a reload: browsers only allow sound after
   a click). Needs `esi-characters.read_notifications.v1`.
@@ -105,13 +107,18 @@ when you press **Set destination** for an online character.
 - **Terms of Service and Privacy Policy** (`/terms`, `/privacy`): two static pages that anyone can open without signing in, for the
   Discord Developer Portal (General Information: paste `https://<your host>/terms` and `https://<your host>/privacy`). They are
   linked from no page of the site.
-- **Discord rules** (Settings page): structure alerts and character notifications can go to several Discord channels,
-  each rule being a filter (space, regions, systems, alert kinds, owners, notification groups or types) plus a channel and
-  an optional role to ping. Whatever matches several rules is posted to each channel once; a source with at least one rule
-  no longer uses its single-channel settings; rules apply at once. A channel the bot cannot post to is skipped and logged.
-  Under the rules, the button **Add preset: Structure notifications** adds three rules at once (attacks, impending
-  abandonment, items moved to asset safety), each with its own channel and the notifications source; a rule whose name
-  is already there is not added twice, and nothing is saved until you press **Save**.
+- **Notification channels** (Settings page, card above the Discord rules): one row per notification type, headed by the
+  short name its Discord message shows (the ESI type is written under it). In each row enter a **channel ID** (posted by
+  the bot) or a **webhook URL** (posted without the bot, so it also works with no bot token), an optional **role ID**
+  that is pinged with every message of that type, and press **Test** to send a test message to that destination. An
+  empty row means the type is not posted. **Fill: Structure notifications** fills the empty rows with the example channels
+  (attacks, impending abandonment, items moved to asset safety; rows that already have one keep it) and **Reset channels**
+  goes back to the configuration files. Nothing is saved until you press **Save**; it applies at once. Settings from
+  before (notification rules, the single notification channel) are turned into this table once at start-up.
+- **Discord rules** (Settings page): structure **alerts** can go to several Discord channels, each rule being a filter
+  (space, regions, systems, alert kinds, owners) plus a channel and an optional role to ping. Whatever matches several
+  rules is posted to each channel once; with at least one rule the single alert channel is not used; rules apply at once.
+  A channel the bot cannot post to is skipped and logged.
 - **Static roster** (Roster page): upload a JSON file of character names and systems (any number of entries, no tokens,
   nothing read from ESI) and rank it by jumps against the same target on the **Roster** tab of the ranking view.
   Unknown systems are kept with suggestions instead of being thrown away; the closest roster characters also appear
@@ -421,7 +428,8 @@ docker compose stop evedm && cp -a data data-backup-$(date +%F) && docker compos
 | `EVEDM_EVESCOUT_URL`, `EVEDM_EVESCOUT_REFRESH_S` | `https://api.eve-scout.com/v2/public/signatures`, `900` | where and how often (15 min, cached) the wormhole list is read |
 | `EVEDM_ALERTS_BIG_KILLS_ONLY`, `EVEDM_ALERTS_MIN_VALUE_ISK` | `1`, `500000000` | combat/firing alerts only for battleship/capital hulls or a loss above this value |
 | `EVEDM_NOTIFICATIONS_MIN_STRUCTURES` | `10` | a character is polled for notifications only with this many player structures holding assets |
-| `EVEDM_NOTIFICATIONS_DISCORD_ENABLED`, `EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID`, `EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID` | `1`, empty, empty | notifications on Discord: needs the bot token; empty channel = the wars channel, nothing is posted without a token or channel; role pinged on "structure attacked" only |
+| `EVEDM_NOTIFICATIONS_DISCORD_ENABLED` | `1` | notifications on Discord: each type needs a channel or webhook in `notifications.discord.channels` (Settings page); a channel needs the bot token, a webhook does not |
+| `EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID`, `EVEDM_NOTIFICATIONS_DISCORD_MENTION_ROLE_ID` | empty, empty | deprecated: only read once, to fill `notifications.discord.channels` while that is empty |
 | `EVEDM_ANSIBLEX_ENABLED` | `1` | `0` removes the Ansiblex route mode |
 | `EVEDM_ALERTS_CONTACT` | empty | added to the User-Agent zKillboard sees |
 | `EVEDM_ALERTS_GRID_KM` | `1000` | a kill this close to a known structure is "combat" |

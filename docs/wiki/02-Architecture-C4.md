@@ -141,10 +141,15 @@ Key mechanisms:
   `EVEDM_SECRET_KEY`; highest precedence), changes the running settings objects in place and rebuilds the three Discord
   notifiers. Only a main in `web.admin_characters` reaches it (404 for all others); an invalid file is ignored at start.
   Restart is a SIGTERM to the process (Docker restarts the container).
-- **Discord rules** (`discord_rules.py`, D29, DRL-): `discord.rules` (filter + channel, per source) are normalized and
-  validated at start and before saving; `alerts.py` and `notifications.py` ask `_targets()` for the channels an item
-  goes to and post once per channel (`wars/discord.py` `send` / `edit` take an optional `channel_id`; `alert_posts`,
-  `notification_posts.event_key` with `|<channel id>`). A source without rules uses its single-channel settings.
+- **Discord rules** (`discord_rules.py`, D29, DRL-): `discord.rules` (filter + channel, alerts only) are normalized and
+  validated at start and before saving; `alerts.py` asks `_targets()` for the channels an alert goes to and posts once
+  per channel (`wars/discord.py` `send` / `edit` take an optional `channel_id`; `alert_posts`). Without rules the single
+  alert channel is used.
+- **Notification channels** (`discord_rules.py`, D30, NTF-37..39): `notifications.discord.channels` maps a notification
+  type to a channel ID or a webhook URL plus a role (`normalize_channels`; old rules and the single channel are moved
+  into it once by `migrate_notification_rules`). `notifications.py` `_targets()` returns that one destination; a webhook
+  is posted and edited by `wars/discord.py` without the bot header (`is_webhook`), and `notification_posts.event_key`
+  carries `|<channel id>` or `|wh:<webhook id>` (the URL is never stored). `short_name_of()` is the Discord header.
 
 ## C4 · Code
 
