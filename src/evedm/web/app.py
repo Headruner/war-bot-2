@@ -380,6 +380,7 @@ def attach_notification_discord(settings: Settings, ws: WarsSettings, svc: Servi
         token, channel, ws.discord.min_seconds_between_posts, dry_run=ws.discord.dry_run
     )
     ns.page_url = f"{base}/notifications" if base else None
+    ns.site_url = base or None
     ns.evescout = svc.evescout
     where = "by the rules" if ruled else "their own channel" if d.channel_id else "the wars channel"
     log.info("notifications are posted to Discord (%s)", where)

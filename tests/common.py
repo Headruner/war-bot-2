@@ -20,3 +20,19 @@ async def add_character(services, character_id: int, scopes=None, owner_id: int 
     ts = await services["auth"].refresh(tokens["refresh_token"])
     services["chars"].store(ts, owner_id=owner_id)
     return tokens
+
+
+def embed_lines(payload: dict) -> dict[str, str]:
+    """The lines of a notification's Discord embed by label: ``**System** ...`` -> ``{"System": "..."}``; the
+    zKillboard line is ``Kill check`` and the time line ``EVE Time``. Takes a payload or the embed itself."""
+    embed = payload["embeds"][0] if "embeds" in payload else payload
+    out: dict[str, str] = {}
+    for line in embed.get("description", "").split("\n"):
+        if line.startswith("**") and "** " in line[2:]:
+            label, value = line[2:].split("** ", 1)
+            out[label] = value
+        elif line.startswith("zKillboard:"):
+            out["Kill check"] = line
+        elif line.startswith("EVE Time:"):
+            out["EVE Time"] = line
+    return out

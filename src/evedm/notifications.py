@@ -18,6 +18,7 @@ import time
 from bisect import bisect_right
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 
 import yaml
 
@@ -101,7 +102,6 @@ _STRUCTURE_TYPE_KEYS = ("structureTypeID", "structureTypeId", "structure_type_id
 _SHOWINFO = re.compile(r"showinfo:(\d+)//(\d+)")
 TYPE_ID_GROUPS = ("tower", "other_attacks")  # ``typeID`` is the structure itself only in these (towers, orbitals...)
 TYPE_NAME_RETRY_S = 3600.0  # a type ESI could not name is not asked again for this long
-DISCORD_MARK = "\U0001f7e3"  # purple circle: Discord cannot colour embed text, so the key values get a marker and bold
 
 
 def _first(body: dict[str, Any], keys: tuple[str, ...]) -> int | None:
@@ -191,6 +191,88 @@ def title_of(ntype: str, system_name: str) -> str:
     return f"{words} in {system_name}" if system_name else words
 
 
+def eve_time(timestamp: str | None) -> str:
+    """``EVE Time: 2026-11-17 12:34`` as the Notifications page writes it (EVE time is UTC); "" when unreadable."""
+    if not timestamp:
+        return ""
+    try:
+        when = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return f"EVE Time: {when.astimezone(UTC):%Y-%m-%d %H:%M}"
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def discord_embed(
+    d: dict[str, Any],
+    characters: list[str],
+    *,
+    space: str | None = None,
+    hub: dict[str, Any] | None = None,
+    page_url: str | None = None,
+    site_url: str | None = None,
+) -> dict[str, Any]:
+    """The Discord embed of one notification, line by line as its card on the Notifications page:
+
+    title ``<type> · <in-game line>``, then System (Dotlan link, security, region, the closer of Thera / Turnur),
+    Structure (name and type), the zKillboard check, the time in EVE time, Received by (every recipient so far) and
+    Closest characters (the Ranking page with the system as the target; wormhole space has no stargates, so it
+    links the Notifications page instead). ``d`` is ``NotificationService.describe`` of the row."""
+    lines: list[str] = []
+    system = d.get("system")
+    if system:
+        link = f"https://evemaps.dotlan.net/system/{system['name'].replace(' ', '_')}"
+        where = f"**System** **[{system['name']}]({link})** ({system.get('security')})"
+        if system.get("region"):
+            where += f" · {system['region']}"
+        if hub:
+            where += f" · {hub['hub']} {_plural(hub['jumps'], 'jump')} via {hub['entry']['name']}"
+        lines.append(where)
+    else:
+        lines.append("**System** not named in this notification")
+    parts: list[str] = []
+    if d.get("structure_name"):
+        parts.append(f"**{d['structure_name'][:300]}**")
+    if d.get("structure_type"):
+        parts.append(f"**{d['structure_type'][:200]}**")
+    if parts or d.get("show_structure_type"):  # a notification that names no structure has no such line
+        lines.append("**Structure** " + (" · ".join(parts) or "Unknown"))
+    zkb = d.get("zkb")
+    if zkb:
+        line = zkb["text"]
+        if zkb.get("url"):
+            label = zkb["url"].removeprefix("https://").rstrip("/")
+            line += f" — **[{label}]({zkb['url']})**"
+        lines.append(line[:1000])
+    when = eve_time(d.get("timestamp"))
+    if when:
+        lines.append(when)
+    who = ", ".join(characters) or "?"
+    lines.append(f"**Received by** {(who[:1000] + '…') if len(who) > 1000 else who}")
+    if system and site_url and space != "wormhole":
+        route = f"{site_url}/?target={quote(system['name'], safe='')}"
+        lines.append(f"**Closest characters** [Find route to {system['name']}]({route})")
+    elif page_url:
+        lines.append(f"**Closest characters** [Open the Notifications page]({page_url})")
+    colors = {"structure_attack": 0xC0392B, "tower": 0xC0392B, "asset_safety": 0xF39C12}
+    embed: dict[str, Any] = {
+        "title": f"{d['type']} · {d['title']}"[:256],
+        "description": "\n".join(lines)[:4096],
+        "color": colors.get(d["group"], 0x5B6B82),
+        "footer": {"text": f"{GROUP_LABELS.get(d['group'], d['group'])} · EVE Distance Meter"},
+    }
+    if page_url:
+        embed["url"] = page_url
+    if d.get("timestamp"):
+        embed["timestamp"] = d["timestamp"]
+    return embed
+
+
 class NotificationService:
     """Reads, stores and serves the notifications of the registered characters."""
 
@@ -209,7 +291,8 @@ class NotificationService:
     ):
         self.notifier = notifier  # DiscordNotifier, or None when nothing is posted
         self.rules: Any = list  # () -> discord.rules as they are now (set by the web app)
-        self.page_url = page_url
+        self.page_url = page_url  # the Notifications page
+        self.site_url: str | None = None  # the site root: the Closest characters link opens /?target=<system>
         self.evescout = evescout  # for the Thera / Turnur line of a Discord post
         self._post_pending = True  # look for unposted notifications on the first round
         self.s = settings
@@ -452,66 +535,18 @@ class NotificationService:
             return 0.0
 
     def embed_payload(self, row: Any, characters: list[str], role: str | None = None) -> dict[str, Any]:
-        """The Discord message of one event: title as in game, system, nearest hub, who received it. ``role``:
-        the role a rule pings with every message; None = the single channel's role, on attacks only.
-
-        The system, structure type and kill link are marked and bold; a found kill is linked under the title."""
+        """The Discord message of one event, laid out as its card on the Notifications page (``discord_embed``).
+        ``role``: the role a rule pings with every message; None = the single channel's role, on attacks only."""
         d = self.describe(row)
-        system = d["system"]
-        fields: list[dict[str, Any]] = []
-        if d["structure_name"]:  # the structure's own name; unknown to the app: no field
-            fields.append({"name": "Structure", "value": f"{DISCORD_MARK} **{d['structure_name'][:900]}**"})
-        if d["structure_type"]:  # unknown: no field (the page says "Unknown")
-            fields.append(
-                {"name": "Structure type", "value": f"{DISCORD_MARK} **{d['structure_type'][:900]}**", "inline": True}
-            )
-        if system:
-            link = f"https://evemaps.dotlan.net/system/{system['name'].replace(' ', '_')}"
-            fields.append(
-                {
-                    "name": "System",
-                    "value": (
-                        f"{DISCORD_MARK} **[{system['name']}]({link})** ({system.get('security')})"
-                        f" · {system.get('region', '')}"
-                    ),
-                    "inline": True,
-                }
-            )
-            hub = None
-            if self.evescout is not None and d["system_index"] is not None:
-                with contextlib.suppress(Exception):  # the hub line is a nicety: never fail a post over it
+        hub = None
+        space = None
+        if d["system_index"] is not None:
+            space = space_of(self.g, d["system_index"])
+            if self.evescout is not None:
+                with contextlib.suppress(Exception):  # the hub is a nicety: never fail a post over it
                     hub = self.evescout.nearest(d["system_index"])
-            if hub:
-                jumps = hub["jumps"]
-                fields.append(
-                    {
-                        "name": "Nearest hub",
-                        "value": f"{hub['hub']} · {jumps} jump{'' if jumps == 1 else 's'} via {hub['entry']['name']}",
-                        "inline": True,
-                    }
-                )
-        zkb = d["zkb"]
-        if zkb:
-            label = zkb["url"].removeprefix("https://").rstrip("/") if zkb["url"] else ""
-            value = zkb["text"] + (f" — {DISCORD_MARK} **[{label}]({zkb['url']})**" if zkb["url"] else "")
-            fields.append({"name": "Kill check", "value": value[:1000]})
-        who = ", ".join(characters)
-        fields.append({"name": "Received by", "value": (who[:1000] + "…") if len(who) > 1000 else who or "?"})
-        if self.page_url:
-            fields.append({"name": "Closest characters", "value": f"[Open the Notifications page]({self.page_url})"})
-        colors = {"structure_attack": 0xC0392B, "tower": 0xC0392B, "asset_safety": 0xF39C12}
-        embed: dict[str, Any] = {
-            "title": d["title"][:256],
-            "color": colors.get(d["group"], 0x5B6B82),
-            "fields": fields,
-            "footer": {"text": f"{GROUP_LABELS.get(d['group'], d['group'])} · EVE Distance Meter"},
-        }
-        if self.page_url:
-            embed["url"] = self.page_url
-        if zkb and zkb["url"]:
-            embed["description"] = f"\U0001f4a5 **[Killmail on zKillboard]({zkb['url']})**"
-        if row["timestamp"]:
-            embed["timestamp"] = row["timestamp"]
+        site = self.site_url or (self.page_url.removesuffix("/notifications") if self.page_url else None)
+        embed = discord_embed(d, characters, space=space, hub=hub, page_url=self.page_url, site_url=site)
         payload: dict[str, Any] = {"embeds": [embed]}
         if role is None:
             role = self.s.discord.mention_role_id if d["group"] in ("structure_attack", "tower") else ""

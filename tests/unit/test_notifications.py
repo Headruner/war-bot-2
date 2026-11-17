@@ -7,7 +7,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from common import AMARR, JITA, PERIMETER, TAMA, add_character
+from common import AMARR, JITA, PERIMETER, TAMA, add_character, embed_lines
 from evedm.config import NOTIFICATION_SCOPE, Settings
 from evedm.notifications import (
     MIN_SLEEP_S,
@@ -555,10 +555,13 @@ async def test_a_notification_is_posted_once_and_updated_for_the_next_recipient(
     await ns.poll_once()
     assert await ns.post_discord() == 1
     embed = ns.notifier.sent[0]["embeds"][0]
-    assert embed["title"] == "A structure in Amarr is under attack!" and embed["timestamp"] == when
-    fields = {f["name"]: f["value"] for f in embed["fields"]}
+    assert embed["title"] == "StructureUnderAttack · A structure in Amarr is under attack!"
+    assert embed["timestamp"] == when
+    fields = embed_lines(embed)
     assert "Amarr" in fields["System"] and "dotlan" in fields["System"]
-    assert fields["Received by"].count(",") == 0 and "/notifications" in fields["Closest characters"]
+    assert fields["EVE Time"] == f"EVE Time: {when[:10]} {when[11:16]}"
+    assert fields["Received by"].count(",") == 0
+    assert "(https://evedm.example/?target=Amarr)" in fields["Closest characters"]
 
     # the same event reaches a second character: the message is edited, not posted again
     await push(http, B, [item(9, timestamp=when)])
@@ -567,7 +570,7 @@ async def test_a_notification_is_posted_once_and_updated_for_the_next_recipient(
     await ns.poll_once()
     assert await ns.post_discord() == 1
     assert len(ns.notifier.sent) == 1 and ns.notifier.edits[0][0] == "m1"
-    received = {f["name"]: f["value"] for f in ns.notifier.edits[0][1]["embeds"][0]["fields"]}["Received by"]
+    received = embed_lines(ns.notifier.edits[0][1])["Received by"]
     assert received.count(",") == 1
     assert await ns.post_discord() == 0  # nothing left
 
@@ -593,7 +596,7 @@ async def test_history_and_filtered_types_are_never_posted(ns, services, http):
     await ns.poll_once()
     assert await ns.post_discord() == 1
     assert [p["embeds"][0]["title"] for p in ns.notifier.sent] == [
-        "Your assets in Amarr have been moved to Asset Safety!"
+        "StructureItemsMovedToSafety · Your assets in Amarr have been moved to Asset Safety!"
     ]
     states = {r["notification_id"]: r["posted"] for r in services["db"].notifications([A], limit=10)}
     assert states == {1: 2, 2: 2, 3: 1}
@@ -624,8 +627,10 @@ async def test_the_role_is_pinged_for_attacks_only(ns, services, http):
     await ns.poll_once()
     assert await ns.post_discord() == 2
     by_title = {p["embeds"][0]["title"]: p for p in ns.notifier.sent}
-    assert by_title["A structure in Amarr is under attack!"]["content"] == "<@&4242>"
-    assert "content" not in by_title["Your assets in Amarr have been moved to Asset Safety!"]
+    assert by_title["StructureUnderAttack · A structure in Amarr is under attack!"]["content"] == "<@&4242>"
+    assert (
+        "content" not in by_title["StructureItemsMovedToSafety · Your assets in Amarr have been moved to Asset Safety!"]
+    )
     ns.s.discord.mention_role_id = ""
 
 
@@ -718,8 +723,9 @@ async def test_rules_post_a_notification_to_every_matching_channel(ns, services,
     await ns.poll_once()
     assert await ns.post_discord() == 2
     sent = sorted(zip(ns.notifier.to, (p["embeds"][0]["title"] for p in ns.notifier.sent), strict=True))
-    attack, safety = "A structure in Amarr is under attack!", "Your assets in Amarr have been moved to Asset Safety!"
-    assert sent == [("11", attack), ("22", safety), ("33", attack), ("33", safety)]
+    attack = "StructureUnderAttack · A structure in Amarr is under attack!"
+    safety = "StructureItemsMovedToSafety · Your assets in Amarr have been moved to Asset Safety!"
+    assert sent == sorted([("11", attack), ("22", safety), ("33", attack), ("33", safety)])
     pings = {to: p.get("content") for to, p in zip(ns.notifier.to, ns.notifier.sent, strict=True)}
     assert pings == {"11": "<@&9>", "22": None, "33": None}  # a rule pings its own role, with every message
 
@@ -733,7 +739,7 @@ async def test_rules_post_a_notification_to_every_matching_channel(ns, services,
     by_channel = dict(zip(ns.notifier.to, (f"m{i}" for i in range(1, 5)), strict=False))
     assert {m for m, _ in ns.notifier.edits} <= set(by_channel.values())
     for _, payload in ns.notifier.edits:
-        received = {f["name"]: f["value"] for f in payload["embeds"][0]["fields"]}["Received by"]
+        received = embed_lines(payload)["Received by"]
         assert received.count(",") == 1
     assert await ns.post_discord() == 0
 
@@ -769,22 +775,22 @@ async def test_the_abandonment_warning_names_the_structure(ns, services, http):
     await push(http, A, [item(1, ABANDON, body, timestamp=stamp())])
     await ns.poll_once()
     assert await ns.post_discord() == 1
-    fields = {f["name"]: f["value"] for f in ns.notifier.sent[0]["embeds"][0]["fields"]}
+    fields = embed_lines(ns.notifier.sent[0])
     assert "Fluekele - Planta de procesado" in fields["Structure"]
     assert "Days left" not in fields
     d = ns.describe(services["db"].notifications([A])[0])
     assert d["structure_name"] == "Fluekele - Planta de procesado"
 
 
-async def test_an_unknown_name_adds_no_field(ns, services, http):
+async def test_an_unknown_structure_reads_unknown_as_on_the_page(ns, services, http):
     await add_character(services, A)
     ns.notifier = FakeNotifier()
     body = "daysUntilAbandon: 1\nsolarsystemID: 30000142\nstructureID: 1035000000043\n"
     await push(http, A, [item(1, ABANDON, body, timestamp=stamp())])
     await ns.poll_once()
     await ns.post_discord()
-    fields = {f["name"]: f["value"] for f in ns.notifier.sent[0]["embeds"][0]["fields"]}
-    assert "Structure" not in fields and "Days left" not in fields
+    fields = embed_lines(ns.notifier.sent[0])
+    assert fields["Structure"] == "Unknown" and "Days left" not in fields
 
 
 async def test_other_types_show_the_name_but_no_days(ns, services, http):
@@ -826,5 +832,5 @@ async def test_a_name_in_the_body_is_shown_and_the_event_is_one_for_every_charac
     d = ns.describe(services["db"].notifications([A])[0])
     assert d["structure_id"] == 1055812948447 and d["structure_name"] == "C6CG-W - Euphoria HQ"
     last = ns.notifier.edits[-1][1] if ns.notifier.edits else ns.notifier.sent[0]
-    fields = {f["name"]: f["value"] for f in last["embeds"][0]["fields"]}
+    fields = embed_lines(last)
     assert "C6CG-W - Euphoria HQ" in fields["Structure"] and fields["Received by"].count(",") == 1
