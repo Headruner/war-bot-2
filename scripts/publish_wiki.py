@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Publish docs/wiki/*.md to the GitHub Wiki of this repository (a separate git repo: <repo>.wiki.git).
+"""Publish docs/wiki/*.md and docs/userguide/*.md to the GitHub Wiki of this repository (a separate git repo: <repo>.wiki.git).
 
-The pages are kept in docs/wiki (reviewed with the code); this script converts them for the GitHub Wiki:
+The pages are kept in docs/wiki and docs/userguide (reviewed with the code); this script converts them for the GitHub Wiki:
   - page links "01-Requirements.md#x"  -> "01-Requirements#x"
+  - user guide pages get the wiki names "User-Guide" (docs/userguide/README.md) and "Guide-02-ranking" (02-ranking.md)
   - images and diagrams (../diagrams, ../screenshots) -> raw.githubusercontent.com URLs on the main branch
   - other repo links (../c4, ../guidelines/git.md, ../../README.md) -> github.com tree/blob URLs
   - a _Sidebar.md with the page list is generated.
@@ -25,6 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WIKI_SRC = ROOT / "docs" / "wiki"
+GUIDE_SRC = ROOT / "docs" / "userguide"
 BRANCH = "main"
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
 LINK = re.compile(r"(\]\()([^)\s]+)((?:\s+\"[^\"]*\")?\))")
@@ -45,6 +47,19 @@ def repo_http_url() -> str:
     return f"https://github.com/{m.group(1)}"
 
 
+def wiki_name(repo_path: str) -> str | None:
+    """Wiki page name of a source page (repo path without extension logic), None if it is not a published page."""
+    folder, name = posixpath.split(repo_path)
+    if not name.endswith(".md"):
+        return None
+    stem = name[:-3]
+    if folder == "docs/wiki":
+        return stem
+    if folder == "docs/userguide":
+        return "User-Guide" if stem == "README" else f"Guide-{stem}"
+    return None
+
+
 def convert_links(text: str, repo_url: str, raw_base: str, page_dir: str = "docs/wiki") -> str:
     def repl(m: re.Match) -> str:
         target = m.group(2)
@@ -55,8 +70,9 @@ def convert_links(text: str, repo_url: str, raw_base: str, page_dir: str = "docs
         if not path:
             return m.group(0)
         repo_path = posixpath.normpath(posixpath.join(page_dir, path))
-        if posixpath.dirname(repo_path) == "docs/wiki" and repo_path.endswith(".md"):
-            return f"{m.group(1)}{posixpath.basename(repo_path)[:-3]}{suffix}{m.group(3)}"
+        page = wiki_name(repo_path)
+        if page:
+            return f"{m.group(1)}{page}{suffix}{m.group(3)}"
         ext = posixpath.splitext(repo_path)[1].lower()
         if ext in IMAGE_EXT:
             return f"{m.group(1)}{raw_base}/{repo_path}{m.group(3)}"
@@ -71,14 +87,26 @@ def build(out: Path, repo_url: str) -> list[str]:
     pages = sorted(p for p in WIKI_SRC.glob("*.md"))
     if not pages:
         raise RuntimeError(f"no pages in {WIKI_SRC}")
+    guide = sorted(GUIDE_SRC.glob("*.md"), key=lambda f: (f.name != "README.md", f.name))
     for page in pages:
         (out / page.name).write_text(
             convert_links(page.read_text(encoding="utf-8"), repo_url, raw_base), encoding="utf-8", newline="\n")
+    guide_names = []
+    for page in guide:
+        name = wiki_name(f"docs/userguide/{page.name}")
+        (out / f"{name}.md").write_text(
+            convert_links(page.read_text(encoding="utf-8"), repo_url, raw_base, "docs/userguide"),
+            encoding="utf-8", newline="\n")
+        guide_names.append(name)
     names = [p.stem for p in pages if p.stem != "Home"]
     side = ["**[Home](Home)**", ""] + [f"- [{n.replace('-', ' ')}]({n})" for n in names]
+    if guide_names:
+        side += ["", "**User guide**", ""]
+        side += [f"- [{'Overview' if n == 'User-Guide' else n.replace('Guide-', '', 1).replace('-', ' ')}]({n})"
+                 for n in guide_names]
     side += ["", f"[Source code]({repo_url})"]
     (out / "_Sidebar.md").write_text("\n".join(side) + "\n", encoding="utf-8", newline="\n")
-    return [p.name for p in pages] + ["_Sidebar.md"]
+    return [p.name for p in pages] + [f"{n}.md" for n in guide_names] + ["_Sidebar.md"]
 
 
 def main() -> int:
