@@ -213,6 +213,8 @@ class AlertSettings:
     # killmail worth at least ``min_value_isk``. Destroyed structures are always kept. false = keep every kill.
     big_kills_only: bool = True
     min_value_isk: float = 500_000_000.0
+    # Kills whose victim is of one of these ESI inventory groups raise no alert at all (default 1924: strongholds).
+    ignore_group_ids: list[int] = field(default_factory=lambda: [1924])
     discord: AlertDiscordSettings = field(default_factory=AlertDiscordSettings)
 
 

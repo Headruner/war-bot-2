@@ -361,6 +361,14 @@ class AlertService:
         self._types[type_id] = info
         return info
 
+    async def group_id_of(self, type_id: int | None) -> int | None:
+        """The ESI inventory group ID of a type (cached with ``type_info``); None while ESI cannot tell."""
+        if not type_id:
+            return None
+        await self.type_info(type_id)  # fills type_groups
+        row = self.db.query("SELECT group_id FROM type_groups WHERE type_id=?", (type_id,))
+        return int(row[0][0]) if row and row[0][0] is not None else None
+
     async def is_structure(self, type_id: int | None) -> bool:
         return (await self.type_info(type_id))[0] == STRUCTURE_CATEGORY
 
@@ -461,6 +469,8 @@ class AlertService:
             "capitals": 0,
         }
         found: list[dict[str, Any]] = []
+        if self.s.ignore_group_ids and await self.group_id_of(victim.get("ship_type_id")) in self.s.ignore_group_ids:
+            return []  # e.g. a stronghold (group 1924): no alert, no zKillboard message
         if await self.is_structure(victim.get("ship_type_id")):
             _cat, group, _name = await self.type_info(victim.get("ship_type_id"))
             st = self._match(system, victim.get("corporation_id"), victim.get("ship_type_id"), victim.get("position"))

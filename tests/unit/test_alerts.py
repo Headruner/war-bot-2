@@ -340,6 +340,19 @@ async def test_a_destroyed_structure_is_kept_whatever_it_cost(make, db):
     assert [a["kind"] for a in new] == ["destroyed"]
 
 
+async def test_victims_of_an_ignored_group_raise_no_alert(make, db):
+    from evedm.config import AlertSettings
+
+    assert AlertSettings().ignore_group_ids == [1924]  # strongholds are ignored by default
+    svc = make(ignore_group_ids=[1657])  # the group of the Astrahus in the fake ESI
+    assert await svc.group_id_of(ASTRAHUS) == 1657
+    assert await svc.handle(package(93, ASTRAHUS, corp=CORP)) == []  # destroyed: nothing, not even on the page
+    assert [a["kind"] for a in await svc.handle(package(94, ATHANOR, corp=CORP))] == ["destroyed"]  # other groups stay
+    assert alerts(db)[-1]["killmail_id"] == 94
+    open_all = make(ignore_group_ids=[])
+    assert [a["kind"] for a in await open_all.handle(package(95, ASTRAHUS, corp=CORP))] == ["destroyed"]
+
+
 async def test_the_size_filter_can_be_switched_off_and_the_value_limit_changed(make, db):
     pos = near(P_FORT, 5)
     every = make(grid_km=1000, big_kills_only=False)
