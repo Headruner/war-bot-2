@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Read-only check of the ESI scope settings of an evedm install.
 
-Usage (from the repo root):  python scripts/check_scopes.py [--env .env] [--db data/evedm.sqlite3] [--config config/evedm.yaml]
+Usage (from the repo root):
+  python scripts/check_scopes.py [--env .env] [--db data/evedm.sqlite3] [--config config/evedm.yaml]
 
 Checks: the scopes the app will request (.env / YAML override / defaults) against the nine evedm needs,
 the SSO basics (client id, callback URL), and which stored characters lack which scope.
@@ -142,7 +143,7 @@ def main() -> int:
             per_owner[r[0]].append(r)
         for owner, chars in sorted(per_owner.items()):
             missing: dict[str, list[str]] = defaultdict(list)
-            for _, cid, name, status, scopes in chars:
+            for _owner, _cid, name, _status, scopes in chars:
                 have = set(json.loads(scopes or "[]"))
                 for s in wanted:
                     if s not in have:
