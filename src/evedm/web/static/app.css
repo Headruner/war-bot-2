@@ -448,6 +448,11 @@ table.grid input[type=text] { background: var(--bg); color: var(--text); border:
 .s-reset { text-decoration: underline; }
 .s-env { font-family: ui-monospace, Consolas, monospace; }
 .s-rules p { margin: 0 0 10px; }
+.s-chrow { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(220px, 3fr) minmax(110px, 1fr) auto auto;
+  gap: 8px; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.s-chname { display: flex; flex-direction: column; }
+.s-chlist.queued input { text-decoration: line-through; opacity: .6; }
+@media (max-width: 700px) { .s-chrow { grid-template-columns: 1fr; } }
 .s-rule { border: 1px solid var(--line); border-left: 3px solid transparent; border-radius: 8px; padding: 6px 10px;
   margin-bottom: 8px; }
 .s-rule.dirty { border-left-color: var(--accent); background: var(--panel-2); }

@@ -13,6 +13,7 @@ import time
 import httpx
 
 from .. import __version__
+from ..discord_rules import is_webhook
 
 log = logging.getLogger("evedm.wars.discord")
 
@@ -20,6 +21,7 @@ API_BASE = "https://discord.com/api/v10"
 USER_AGENT = f"DiscordBot (https://github.com/Headruner/war-bot-2, {__version__})"  # the form Discord asks of bots
 MAX_RATE_LIMIT_RETRIES = 3
 UNKNOWN_CHANNEL = 10003
+UNKNOWN_WEBHOOK = 10015
 NOT_THE_AUTHOR = 50005  # "Cannot edit a message authored by another user"
 
 
@@ -65,8 +67,10 @@ class DiscordNotifier:
         self.last_post_time = 0.0
 
     def messages_url(self, channel_id: str | int | None = None) -> str:
-        """The channel given (a rule's), else the notifier's own."""
+        """The channel given (a rule's), else the notifier's own. A webhook URL is its own messages URL."""
         channel = str(channel_id or "").strip() or self.channel_id
+        if is_webhook(channel):
+            return channel.split("?")[0].rstrip("/")
         if not channel:
             raise DiscordRejected("the channel ID is not configured")
         return f"{self.api_base}/channels/{channel}/messages"
@@ -77,10 +81,14 @@ class DiscordNotifier:
             await asyncio.sleep(wait)
 
     async def _request(self, method: str, url: str, payload: dict) -> httpx.Response:
-        """One call as the bot; a 429 is waited out and tried again a few times."""
-        if not self.bot_token:
+        """One call as the bot (a webhook URL carries its own token: no bot header); a 429 is waited out and tried
+        again a few times."""
+        hook = is_webhook(url.split("?")[0].split("/messages/")[0])
+        if not hook and not self.bot_token:
             raise DiscordRejected("the bot token is not configured")
-        headers = {"Authorization": f"Bot {self.bot_token}", "User-Agent": USER_AGENT}
+        headers = {"User-Agent": USER_AGENT}
+        if not hook:
+            headers["Authorization"] = f"Bot {self.bot_token}"
         for _ in range(MAX_RATE_LIMIT_RETRIES):
             await self._throttle()
             try:
@@ -108,8 +116,12 @@ class DiscordNotifier:
             titles = [e.get("title") for e in payload.get("embeds", [])]
             log.info("DRY RUN: would edit message %s: %s", message_id, titles)
             return {"id": message_id}
-        response = await self._request("PATCH", f"{self.messages_url(channel_id)}/{message_id}", payload)
+        base = self.messages_url(channel_id)
+        url = f"{base}/messages/{message_id}" if is_webhook(base) else f"{base}/{message_id}"
+        response = await self._request("PATCH", url, payload)
         status, code = response.status_code, _code(response)
+        if status == 404 and code == UNKNOWN_WEBHOOK:
+            raise DiscordRejected("Discord rejected the webhook (404): it was deleted", status)
         if status == 403 and code == NOT_THE_AUTHOR:
             log.info("message %s was not posted by the bot (the old webhook?): left as it is", message_id)
             return {"id": message_id}
@@ -130,7 +142,8 @@ class DiscordNotifier:
                 [e.get("title") for e in payload.get("embeds", [])],
             )
             return {"id": "dry_run"}
-        response = await self._request("POST", self.messages_url(channel_id), payload)
+        url = self.messages_url(channel_id)
+        response = await self._request("POST", f"{url}?wait=true" if is_webhook(url) else url, payload)
         status = response.status_code
         if status in (401, 403, 404):
             raise DiscordRejected(f"Discord rejected the bot ({status}): {response.text[:200]}", status)

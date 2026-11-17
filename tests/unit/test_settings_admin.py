@@ -122,10 +122,9 @@ def test_saving_writes_the_file_and_changes_the_running_app(client, tmp_path):
     assert f["evedm:alerts.poll_s"] == f["evedm:alerts.poll_s"] | {"value": 12.0, "base": 10.0, "overridden": True}
     s = svc.settings
     assert s.alerts.poll_s == 12.0 and s.access.alliance_ids == [99010320, 99000001] and s.discord.bot_token == TOKEN
-    # the running app posts with the new token at once: notifications fall back to the wars channel
-    notifier = svc.notifications.notifier
-    assert (notifier.bot_token, notifier.channel_id) == (TOKEN, "555000111222333444")
-    assert out["discord"]["notifications"]["ready"] is True
+    # notifications need a channel per type (the table on the page): with none, nothing is posted
+    assert svc.notifications.notifier is None
+    assert out["discord"]["notifications"]["ready"] is False
     text = (tmp_path / "data" / "settings.yaml").read_text()
     saved = yaml.safe_load(text)
     assert TOKEN not in text and saved["evedm"]["discord"]["bot_token"].startswith("enc:")
@@ -249,46 +248,91 @@ def test_discord_rules_are_edited_on_the_page(client, tmp_path):
     assert fields(state)["evedm:discord.rules"] == fields(state)["evedm:discord.rules"] | {"type": "rules", "value": []}
     options = state["rule_options"]
     assert options["kinds"] == ["destroyed", "combat", "firing"] and "The Forge" in options["regions"]
-    assert "StructureUnderAttack" in options["groups"]["structure_attack"] and "wormhole" in options["spaces"]
+    assert "wormhole" in options["spaces"]
 
     def put(rules):
         return client.put("/api/settings", json={"set": {"evedm:discord.rules": rules}}, headers=H)
 
-    attacks = {"source": "notifications", "channel_id": "11", "name": "attacks", "groups": ["structure_attack"]}
+    combat = {"source": "alerts", "channel_id": "11", "name": "combat", "kinds": ["combat"]}
     for rules, message in (
-        ([attacks | {"systems": ["Jitta"]}], "rule 1: unknown solar system 'Jitta'"),
-        ([attacks, attacks | {"exclude_regions": ["Mordor"]}], "rule 2: unknown region 'Mordor'"),
-        ([attacks | {"channel_id": "#ops"}], "rule 1 (attacks): channel_id"),
-        ([attacks | {"source": "wars"}], "source must be one of"),
-        ("attacks", "must be a list"),
+        ([combat | {"systems": ["Jitta"]}], "rule 1: unknown solar system 'Jitta'"),
+        ([combat, combat | {"exclude_regions": ["Mordor"]}], "rule 2: unknown region 'Mordor'"),
+        ([combat | {"channel_id": "#ops"}], "rule 1 (combat): channel_id"),
+        ([combat | {"source": "wars"}], "source must be one of"),
+        ("combat", "must be a list"),
     ):
         response = put(rules)
         assert response.status_code == 400 and message in response.json()["detail"], response.text
     assert svc.settings.discord.rules == [] and not (tmp_path / "data" / "settings.yaml").exists()
 
     kills = {"source": "alerts", "channel_id": 22, "kinds": ["destroyed"], "systems": ["jita"], "regions": ["domain"]}
-    response = put([attacks, kills])
+    response = put([combat, kills])
     assert response.status_code == 200 and response.json()["changed"] == ["evedm:discord.rules"], response.text
     saved = svc.settings.discord.rules
     assert [r["channel_id"] for r in saved] == ["11", "22"] and saved[0]["enabled"] is True
     assert saved[1]["systems"] == ["Jita"] and saved[1]["regions"] == ["Domain"]  # as the universe spells them
     on_disk = yaml.safe_load((tmp_path / "data" / "settings.yaml").read_text())["evedm"]["discord"]["rules"]
     assert on_disk == saved and fields(response.json())["evedm:discord.rules"]["overridden"]
-    # the running services see the rules at once; without a bot token nothing can be posted yet
-    assert svc.notifications.rules() == saved and svc.notifications.notifier is None
-    status = response.json()["discord"]["notifications"]
-    assert status["detail"] == "1 of 1 rule(s) on, 1 channel(s); the bot token is missing" and not status["ready"]
     test = client.post("/api/settings/discord/test", json={"channel_id": "11"}, headers=H)
     assert test.status_code == 400 and "bot token" in test.json()["detail"]
-    client.put("/api/settings", json={"set": {"evedm:discord.bot_token": TOKEN}}, headers=H)
-    notifier = svc.notifications.notifier
-    assert (notifier.bot_token, notifier.channel_id) == (TOKEN, "")  # the rules name the channels
 
     again = settings(tmp_path)  # after a restart
     SettingsAdmin(again, WarsSettings(enabled=False)).load()
     assert again.discord.rules == saved
     assert client.put("/api/settings", json={"reset": ["evedm:discord.rules"]}, headers=H).status_code == 200
-    assert svc.settings.discord.rules == [] and svc.notifications.notifier is None
+    assert svc.settings.discord.rules == []
+
+
+def test_notification_channels_are_edited_on_the_page(client, tmp_path):
+    svc = client.app.state.svc
+    state = client.get("/api/settings").json()
+    f = fields(state)["evedm:notifications.discord.channels"]
+    assert f["type"] == "channels" and f["value"] == {}
+    for old in ("channel_id", "mention_role_id", "groups"):  # the old single-channel settings are gone from the page
+        assert f"evedm:notifications.discord.{old}" not in fields(state)
+    rows = {t["type"]: t["short"] for g in state["channel_options"] for t in g["types"]}
+    assert rows["StructureImpendingAbandonmentAssetsAtRisk"] == "ABANDONED"
+    assert rows["StructureUnderAttack"] == "UNDER ATTACK"
+    assert [p["id"] for p in state["channel_presets"]] == ["structure-notifications"]
+
+    def put(channels):
+        return client.put("/api/settings", json={"set": {"evedm:notifications.discord.channels": channels}}, headers=H)
+
+    hook = "https://discord.com/api/webhooks/123/abc-DEF_1"
+    for channels, message in (
+        ({"StructureUnderAttack": {"channel_id": "#ops"}}, "numeric channel ID or a Discord webhook URL"),
+        ({"StructureUnderAttack": {"channel_id": "https://example.com/h"}}, "numeric channel ID or a Discord webhook"),
+        ({"StructureUnderAttack": {"channel_id": "1", "mention_role_id": "@fc"}}, "mention_role_id"),
+        ({"StructureUnderAttack": {"channel_id": "1", "colour": "red"}}, "unknown key"),
+        (["StructureUnderAttack"], "must map notification types"),
+    ):
+        response = put(channels)
+        assert response.status_code == 400 and message in response.json()["detail"], response.text
+    assert svc.settings.notifications.discord.channels == {}
+
+    response = put(
+        {
+            "StructureUnderAttack": {"channel_id": 11, "mention_role_id": "9"},
+            "StructureItemsMovedToSafety": {"channel_id": hook},
+            "StructureFuelAlert": {"channel_id": ""},  # an empty row is simply not posted
+        }
+    )
+    assert response.status_code == 200, response.text
+    saved = svc.settings.notifications.discord.channels
+    assert saved == {
+        "StructureUnderAttack": {"channel_id": "11", "mention_role_id": "9"},
+        "StructureItemsMovedToSafety": {"channel_id": hook, "mention_role_id": ""},
+    }
+    assert svc.notifications.channels() == saved and svc.notifications.notifier is not None  # the webhook needs no bot
+    assert response.json()["discord"]["notifications"]["detail"].startswith("2 notification type(s)")
+    on_disk = yaml.safe_load((tmp_path / "data" / "settings.yaml").read_text())["evedm"]["notifications"]["discord"]
+    assert on_disk["channels"] == saved
+    again = settings(tmp_path)  # after a restart
+    SettingsAdmin(again, WarsSettings(enabled=False)).load()
+    assert again.notifications.discord.channels == saved
+    reset = client.put("/api/settings", json={"reset": ["evedm:notifications.discord.channels"]}, headers=H)
+    assert reset.status_code == 200
+    assert svc.settings.notifications.discord.channels == {} and svc.notifications.notifier is None
 
 
 def test_discord_without_a_bot_is_switched_off_at_start_up_instead_of_stopping_the_app(tmp_path):
@@ -352,19 +396,19 @@ def test_the_bot_settings_come_from_yaml_and_the_environment(tmp_path, monkeypat
     assert d.admin_roles == ["Leads", "Fleet Commanders"]  # the environment wins; commas separate, spaces stay
 
 
-def test_the_rule_presets_are_offered_and_every_rule_in_them_is_valid(client):
-    from evedm.config import NOTIFICATION_GROUPS
-    from evedm.discord_rules import PRESETS, normalize_all
+def test_the_channel_preset_is_offered_and_valid(client):
+    from evedm.discord_rules import CHANNEL_PRESETS, PRESETS, normalize_channels
 
-    presets = client.get("/api/settings").json()["rule_presets"]
-    assert [p["id"] for p in presets] == [p["id"] for p in PRESETS] == ["structure-notifications"]
-    rules = normalize_all(presets[0]["rules"], list(NOTIFICATION_GROUPS))
-    assert [r["name"] for r in rules] == ["Attacks", "Abandonment", "Asset safety"]
-    assert all(r["source"] == "notifications" and r["enabled"] and r["channel_id"].isdigit() for r in rules)
-    assert rules[1]["types"] == ["StructureImpendingAbandonmentAssetsAtRisk"]
-    assert rules[2]["types"] == ["StructureItemsMovedToSafety"]
-    assert "StructureDestroyed" in rules[0]["types"] and len(rules[0]["types"]) == len(set(rules[0]["types"])) == 13
-    ok = client.put("/api/settings", headers=H, json={"set": {"evedm:discord.rules": presets[0]["rules"]}})
+    state = client.get("/api/settings").json()
+    assert state["rule_presets"] == PRESETS == []  # alert rules have no preset
+    presets = state["channel_presets"]
+    assert [p["id"] for p in presets] == [p["id"] for p in CHANNEL_PRESETS] == ["structure-notifications"]
+    channels = normalize_channels(presets[0]["channels"])
+    assert channels["StructureImpendingAbandonmentAssetsAtRisk"]["channel_id"].isdigit()
+    assert channels["StructureItemsMovedToSafety"]["channel_id"] != channels["StructureDestroyed"]["channel_id"]
+    assert len(channels) == 15 and all(c["channel_id"].isdigit() for c in channels.values())
+    body = {"set": {"evedm:notifications.discord.channels": presets[0]["channels"]}}
+    ok = client.put("/api/settings", headers=H, json=body)
     assert ok.status_code == 200, ok.text  # saving the preset as it is works
 
 

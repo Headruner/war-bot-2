@@ -254,13 +254,18 @@ class AccessSettings:
 
 @dataclass
 class NotificationDiscordSettings:
-    """Notifications posted to Discord by the bot. Without a channel of its own the wars channel is used
-    (``EVEDM_WARS_DISCORD_CHANNEL_ID``); with neither, or without a bot token, nothing is posted."""
+    """Notifications posted to Discord: one channel (or webhook) per notification type, set in ``channels``. A type
+    without an entry is not posted. ``channel_id``, ``mention_role_id`` and ``groups`` are the old single-channel
+    settings: they are only read to fill ``channels`` once when that is empty, and are not shown on the Settings
+    page."""
 
     enabled: bool = True
-    channel_id: str = ""  # EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID; empty = the wars channel
-    mention_role_id: str = ""  # pinged on "structure attacked" notifications only
-    groups: list[str] = field(default_factory=list)  # which groups are posted; empty = notifications.groups
+    # {ESI notification type: {channel_id, mention_role_id}}; channel_id is a numeric channel (posted by the bot) or a
+    # Discord webhook URL (posted without the bot); mention_role_id is pinged with every message of that type
+    channels: dict[str, dict[str, str]] = field(default_factory=dict)
+    channel_id: str = ""  # deprecated (EVEDM_NOTIFICATIONS_DISCORD_CHANNEL_ID): the old single channel
+    mention_role_id: str = ""  # deprecated: the old role pinged on attacks
+    groups: list[str] = field(default_factory=list)  # deprecated: the groups the old single channel posted
     max_age_min: float = 60.0  # older notifications are never posted (the history ESI returns on a first read)
 
 
@@ -427,6 +432,7 @@ class Settings:
             self.discord.rules = normalize_all(self.discord.rules, list(NOTIFICATION_GROUPS))
         except RuleError as exc:
             raise ConfigError(f"discord.rules: {exc}") from None
+        self._notification_channels()
         a = self.alerts
         if a.enabled and a.poll_s < 6:
             raise ConfigError("alerts.poll_s must be at least 6 (zKillboard's rule)")
@@ -457,13 +463,8 @@ class Settings:
                 raise ConfigError("notifications.retention_days > 0 and character_interval_s >= 60")
             if n.min_structures < 0 or n.min_interval_s < 1 or n.retry_s < 5:
                 raise ConfigError("notifications.min_structures >= 0, min_interval_s >= 1 and retry_s >= 5")
-            if n.discord.channel_id and not is_snowflake(n.discord.channel_id):
-                raise ConfigError("notifications.discord.channel_id must be a numeric Discord channel ID")
-            unknown_d = [g for g in n.discord.groups if g not in NOTIFICATION_GROUPS]
-            if unknown_d or n.discord.max_age_min <= 0:
-                raise ConfigError(
-                    f"notifications.discord.groups: unknown {unknown_d}; max_age_min must be above 0"
-                )
+            if n.discord.max_age_min <= 0:
+                raise ConfigError("notifications.discord.max_age_min must be above 0")
             z = n.zkb_check
             if z.window_s <= 0 or z.interval_s < 5 or z.duration_s < 0 or z.min_api_gap_s < 0 or z.max_resolve < 0:
                 raise ConfigError(
@@ -478,6 +479,30 @@ class Settings:
                 raise ConfigError(
                     f"notifications.groups: unknown {unknown}; use {', '.join(NOTIFICATION_GROUPS)}"
                 )
+
+    def _notification_channels(self) -> None:
+        """The per-type notification channels, checked; the old notification rules and single channel are turned into
+        them once (when there are none yet) and the notification rules leave ``discord.rules`` (alerts keep theirs)."""
+        from .discord_rules import RuleError, migrate_notification_rules, normalize_channels, of_source
+
+        d = self.notifications.discord
+        try:
+            d.channels = normalize_channels(d.channels)
+        except RuleError as exc:
+            raise ConfigError(f"notifications.discord.channels: {exc}") from None
+        old = of_source(self.discord.rules, "notifications")
+        single = str(d.channel_id or "").strip()
+        if not d.channels and (old or single):
+            if single and not is_snowflake(single):
+                raise ConfigError("notifications.discord.channel_id must be a numeric Discord channel ID")
+            groups = d.groups or self.notifications.groups
+            role = str(d.mention_role_id or "")
+            d.channels = migrate_notification_rules(old, single, groups, role, NOTIFICATION_GROUPS)
+            log.warning(
+                "notifications.discord: %d type(s) moved from the old rules or single channel into channels",
+                len(d.channels),
+            )
+        self.discord.rules = [r for r in self.discord.rules if r.get("source") != "notifications"]
 
 
 def _expand(value: Any) -> Any:

@@ -27,7 +27,7 @@ from .characters import REAUTH, CharacterService
 from .config import NOTIFICATION_GROUPS, NOTIFICATION_SCOPE, NotificationSettings
 from .crypto import redact
 from .db import Database
-from .discord_rules import Target, notification_matches, of_source, targets
+from .discord_rules import Target, is_webhook
 from .esi import EsiClient, EsiError
 from .sso import SsoError
 from .universe import GateGraph, space_of
@@ -93,6 +93,26 @@ TITLES = {
     "SkyhookDestroyed": "A skyhook in {system} has been destroyed",
     "MercenaryDenAttacked": "A mercenary den in {system} is under attack!",
     "MercenaryDenReinforced": "A mercenary den in {system} has been reinforced",
+}
+# The Discord header of a notification (``ABANDONED``): attack types and the asset-safety trio; any other type falls
+# back to its first two CamelCase words (see ``short_name_of``).
+SHORT_NAMES = {
+    "StructureItemsMovedToSafety": "ASSET SAFETY",
+    "StructureItemsDelivered": "ITEMS DELIVERED",
+    "StructureImpendingAbandonmentAssetsAtRisk": "ABANDONED",
+    "StructureUnderAttack": "UNDER ATTACK",
+    "StructureLostShields": "SHIELDS LOST",
+    "StructureLostArmor": "ARMOR LOST",
+    "StructureDestroyed": "DESTROYED",
+    "TowerAlertMsg": "POS ATTACKED",
+    "OrbitalAttacked": "CUSTOMS ATTACKED",
+    "SkyhookUnderAttack": "SKYHOOK ATTACKED",
+    "SkyhookLostShields": "SKYHOOK SHIELDS",
+    "SkyhookDestroyed": "SKYHOOK DESTROYED",
+    "MercenaryDenAttacked": "DEN ATTACKED",
+    "EntosisCaptureStarted": "ENTOSIS",
+    "SovStructureReinforced": "SOV REINFORCED",
+    "SovStructureDestroyed": "SOV DESTROYED",
 }
 _CAMEL = re.compile(r"(?<!^)(?=[A-Z])")
 _SYSTEM_KEYS = ("solarsystemID", "solarSystemID", "solarsystemid", "systemID", "solar_system_id")
@@ -183,6 +203,22 @@ def parse_body(text: str) -> dict[str, Any]:
     return body if isinstance(body, dict) else {}
 
 
+def short_name_of(ntype: str) -> str:
+    """One or two upper-case words for a notification type; an unlisted type is its first two CamelCase words."""
+    name = SHORT_NAMES.get((ntype or "").strip())
+    if name:
+        return name
+    words = _CAMEL.sub(" ", (ntype or "").strip()).replace("Msg", "").split()
+    return " ".join(words[:2]).upper() or "NOTIFICATION"
+
+
+def destination_key(dest: str) -> str:
+    """What is stored for the channel of a post: the channel ID, or ``wh:<webhook ID>`` (the URL holds a token)."""
+    if is_webhook(dest):
+        return "wh:" + dest.split("/webhooks/", 1)[1].split("/", 1)[0]
+    return dest
+
+
 def title_of(ntype: str, system_name: str) -> str:
     template = TITLES.get(ntype)
     if template:
@@ -261,7 +297,7 @@ def discord_embed(
         lines.append(f"**Closest characters** [Open the Notifications page]({page_url})")
     colors = {"structure_attack": 0xC0392B, "tower": 0xC0392B, "asset_safety": 0xF39C12}
     embed: dict[str, Any] = {
-        "title": f"{d['type']} · {d['title']}"[:256],
+        "title": short_name_of(d["type"])[:256],  # the short name is the whole header; the in-game line is in the body
         "description": "\n".join(lines)[:4096],
         "color": colors.get(d["group"], 0x5B6B82),
         "footer": {"text": f"{GROUP_LABELS.get(d['group'], d['group'])} · EVE Distance Meter"},
@@ -290,7 +326,7 @@ class NotificationService:
         evescout: Any = None,
     ):
         self.notifier = notifier  # DiscordNotifier, or None when nothing is posted
-        self.rules: Any = list  # () -> discord.rules as they are now (set by the web app)
+        self.channels: Any = dict  # () -> notifications.discord.channels as they are now (set by the web app)
         self.page_url = page_url  # the Notifications page
         self.site_url: str | None = None  # the site root: the Closest characters link opens /?target=<system>
         self.evescout = evescout  # for the Thera / Turnur line of a Discord post
@@ -536,7 +572,7 @@ class NotificationService:
 
     def embed_payload(self, row: Any, characters: list[str], role: str | None = None) -> dict[str, Any]:
         """The Discord message of one event, laid out as its card on the Notifications page (``discord_embed``).
-        ``role``: the role a rule pings with every message; None = the single channel's role, on attacks only."""
+        ``role``: the role of the type's channel, pinged with every message of the type ("" or None = nobody)."""
         d = self.describe(row)
         hub = None
         space = None
@@ -548,8 +584,7 @@ class NotificationService:
         site = self.site_url or (self.page_url.removesuffix("/notifications") if self.page_url else None)
         embed = discord_embed(d, characters, space=space, hub=hub, page_url=self.page_url, site_url=site)
         payload: dict[str, Any] = {"embeds": [embed]}
-        if role is None:
-            role = self.s.discord.mention_role_id if d["group"] in ("structure_attack", "tower") else ""
+        role = role or ""
         if role:
             payload["content"] = f"<@&{role}>"
             payload["allowed_mentions"] = {"roles": [str(role)]}
@@ -571,8 +606,7 @@ class NotificationService:
 
         d = self.s.discord
         self._post_pending = False  # anything stored while this runs sets it again
-        allowed = {t for g in (d.groups or self.s.groups) for t in NOTIFICATION_GROUPS.get(g, [])}
-        rules = of_source(self.rules(), "notifications")
+        channels = self.channels()
         rows = self.db.pending_notification_posts()
         names = self.db.character_names(sorted({r["character_id"] for r in rows}))
         if rows and self.evescout is not None:
@@ -581,7 +615,7 @@ class NotificationService:
         done = 0
         for r in rows:
             cid, nid = r["character_id"], r["notification_id"]
-            goes_to = self._targets(r, rules, allowed) if self._age_s(r["timestamp"]) <= d.max_age_min * 60 else []
+            goes_to = self._targets(r, channels) if self._age_s(r["timestamp"]) <= d.max_age_min * 60 else []
             if not goes_to:
                 self.db.mark_notification_posted(cid, nid, 2)  # 2: not posted (filtered out, or history)
                 continue
@@ -589,7 +623,7 @@ class NotificationService:
             name = names.get(cid, str(cid))
             sent = False
             for target in goes_to:
-                channel = target.channel or ""
+                channel = destination_key(target.channel or "")  # a webhook URL is never stored, only its ID
                 post = self.db.notification_post(key, channel)
                 characters = json.loads(post["characters"]) if post is not None else []
                 if name in characters:  # this character's copy is already in the message
@@ -606,7 +640,7 @@ class NotificationService:
                 except DiscordRejected as exc:
                     self.state["last_error"] = redact(f"Discord rejected the bot: {exc}")
                     log.error("notifications: %s", self.state["last_error"])
-                    if target.channel is not None and exc.status in (403, 404):
+                    if target.channel is not None and exc.status in (None, 403, 404):
                         continue  # that channel only (no access, deleted): the other channels still get it
                     self._post_pending = False  # nothing to gain from asking again until something new arrives
                     return done
@@ -863,15 +897,19 @@ class NotificationService:
         self._zkb_unedited.add(key)
         await self._zkb_edit_discord(key)
 
-    def _targets(self, r: Any, rules: list[dict[str, Any]], allowed: set[str]) -> list[Target]:
-        """The channels of one notification: every matching rule's, or the single channel while there are no
-        rules (then for the types of ``discord.groups``)."""
-        if not rules:
-            return [Target(None, None)] if r["type"] in allowed else []
-        idx = self.g.index.get(r["solar_system_id"]) if r["solar_system_id"] else None
-        place = None if idx is None else self.g.describe(idx) | {"space": space_of(self.g, idx)}
-        group = GROUP_OF.get(r["type"], "other")
-        return targets([rule for rule in rules if notification_matches(rule, r["type"], group, place)])
+    def _targets(self, r: Any, channels: dict[str, dict[str, str]]) -> list[Target]:
+        """The one channel (or webhook) of a notification's type; none when the type has no entry (not posted)."""
+        entry = channels.get(str(r["type"]).strip())
+        if not entry or not entry.get("channel_id"):
+            return []
+        return [Target(entry["channel_id"], entry.get("mention_role_id") or "")]
+
+    def _destination(self, key: str) -> str | None:
+        """The channel ID or webhook URL a stored message key stands for (None: no longer configured)."""
+        if not key.startswith("wh:"):
+            return key
+        dests = (e["channel_id"] for e in self.channels().values())
+        return next((dest for dest in dests if destination_key(dest) == key), None)
 
     async def _zkb_edit_discord(self, key: str) -> None:
         """The Discord message of the event shows the final zKillboard line: the existing message is edited, no
@@ -890,10 +928,13 @@ class NotificationService:
                 self._zkb_unedited.discard(key)
                 return
             for channel, post in posts:  # the message in every channel the event went to
-                # a rule's role is in the message already: an edit without content leaves it, nobody is pinged again
+                dest = self._destination(channel) if channel else None
+                if channel and dest is None:
+                    continue  # that webhook was removed from the settings
+                # the role is in the message already: an edit without content leaves it, nobody is pinged again
                 role = "" if channel else None
                 payload = self.embed_payload(row, json.loads(post["characters"]), role)
-                to = {"channel_id": channel} if channel else {}
+                to = {"channel_id": dest} if dest else {}
                 try:
                     await self.notifier.edit(post["message_id"], payload, **to)
                 except NotifyError as exc:  # tried again with the next step

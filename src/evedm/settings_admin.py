@@ -25,7 +25,7 @@ import yaml
 from . import config as main_config
 from .config import ConfigError, Settings
 from .crypto import TokenCipher
-from .discord_rules import RuleError, normalize_all
+from .discord_rules import RuleError, normalize_all, normalize_channels
 from .wars import config as wars_config
 from .wars.config import WarsSettings
 
@@ -35,7 +35,16 @@ FILES = ("evedm", "wars")
 SOURCES = {"evedm": "evedm.yaml", "wars": "wars.yaml"}
 ENCRYPTED = "enc:"
 # never shown: the key everything else is encrypted with; the wars copy of the bot token follows discord.bot_token
-HIDDEN = {"evedm": {"secret_key"}, "wars": {"discord.bot_token", "source_path"}}
+HIDDEN = {
+    "evedm": {
+        "secret_key",
+        # the old single notification channel: replaced by notifications.discord.channels
+        "notifications.discord.channel_id",
+        "notifications.discord.mention_role_id",
+        "notifications.discord.groups",
+    },
+    "wars": {"discord.bot_token", "source_path"},
+}
 # shown, not editable: a wrong value here would lock the administrator out or stop the app from starting
 LOCKED = {
     "evedm": {
@@ -52,6 +61,7 @@ LOCKED = {
 }
 SECRET = {"evedm": {"discord.bot_token", "eve.client_secret", "eve.legacy_client_secret"}, "wars": set()}
 RULES = {"evedm": {"discord.rules"}, "wars": set()}  # a list of mappings with an editor of its own on the page
+CHANNELS = {"evedm": {"notifications.discord.channels"}, "wars": set()}  # a table of its own: type -> channel
 # read once at start-up (a constructor argument, an HTTP client, whether a service exists at all)
 RESTART = {
     "evedm": {
@@ -126,7 +136,7 @@ _HEADER = (
 class Field:
     file: str
     path: str
-    kind: str  # bool | int | float | str | secret | list | rules | readonly
+    kind: str  # bool | int | float | str | secret | list | rules | channels | readonly
     of_int: bool  # a list of numbers
     help: str
 
@@ -177,6 +187,8 @@ def _fields(obj: Any, file: str, prefix: str = "") -> Iterator[Field]:
             kind = "secret"
         if path in RULES[file]:
             kind = "rules"
+        if path in CHANNELS[file]:
+            kind = "channels"
         yield Field(file, path, kind, declared == "list[int]", comments.get(f.name, ""))
 
 
@@ -219,6 +231,11 @@ def _coerce(f: Field, value: Any) -> Any:
     if f.kind == "rules":
         try:
             return normalize_all(value, list(main_config.NOTIFICATION_GROUPS))
+        except RuleError as exc:
+            raise ValueError(str(exc)) from None
+    if f.kind == "channels":
+        try:
+            return normalize_channels(value)
         except RuleError as exc:
             raise ValueError(str(exc)) from None
     raise ValueError("this setting cannot be changed here")

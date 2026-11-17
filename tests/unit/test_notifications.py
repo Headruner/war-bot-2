@@ -14,6 +14,7 @@ from evedm.notifications import (
     READ_MARGIN_S,
     NotificationService,
     parse_body,
+    short_name_of,
     structure_name_of,
     structure_of,
     title_of,
@@ -30,9 +31,18 @@ BODY = "solarsystemID: 30002187\nstructureID: 1035000000001\nstructureTypeID: 35
 
 @pytest.fixture
 def ns(settings, services, graph):  # noqa: ANN001, ANN201
-    return NotificationService(
+    service = NotificationService(
         settings.notifications, services["db"], graph, services["chars"], services["esi"], demo=False
     )
+    service.channels = lambda: all_types("111")  # every grouped type has a channel unless a test says otherwise
+    return service
+
+
+def all_types(channel: str, role: str = "") -> dict[str, dict[str, str]]:
+    from evedm.config import NOTIFICATION_GROUPS
+
+    types = [t for group in NOTIFICATION_GROUPS.values() for t in group]
+    return {t: {"channel_id": channel, "mention_role_id": role} for t in types}
 
 
 async def push(http, character_id: int, items: list[dict]) -> None:  # noqa: ANN001
@@ -530,15 +540,19 @@ async def test_reads_are_spread_over_esis_cache_window(ns):
 class FakeNotifier:
     def __init__(self) -> None:
         self.sent: list[dict] = []
+        self.to: list[str | None] = []  # the channel (or webhook) of each post
         self.edits: list[tuple[str, dict]] = []
+        self.edit_to: list[str | None] = []
         self.gone = False
 
-    async def send(self, payload: dict) -> dict:
+    async def send(self, payload: dict, channel_id: str | None = None) -> dict:
         self.sent.append(payload)
+        self.to.append(channel_id)
         return {"id": f"m{len(self.sent)}"}
 
-    async def edit(self, message_id: str, payload: dict) -> dict | None:
+    async def edit(self, message_id: str, payload: dict, channel_id: str | None = None) -> dict | None:
         self.edits.append((message_id, payload))
+        self.edit_to.append(channel_id)
         return None if self.gone else {"id": message_id}
 
 
@@ -555,7 +569,7 @@ async def test_a_notification_is_posted_once_and_updated_for_the_next_recipient(
     await ns.poll_once()
     assert await ns.post_discord() == 1
     embed = ns.notifier.sent[0]["embeds"][0]
-    assert embed["title"] == "StructureUnderAttack · A structure in Amarr is under attack!"
+    assert embed["title"] == "UNDER ATTACK"
     assert embed["timestamp"] == when
     fields = embed_lines(embed)
     assert "Amarr" in fields["System"] and "dotlan" in fields["System"]
@@ -577,7 +591,7 @@ async def test_a_notification_is_posted_once_and_updated_for_the_next_recipient(
     # a message deleted in Discord is posted again
     ns.notifier.gone = True
     services["db"].execute("UPDATE character_notifications SET posted=0 WHERE character_id=?", (B,))
-    services["db"].save_notification_post(ns.event_key(services["db"].notifications([A])[0]), "m1", [])
+    services["db"].save_notification_post(ns.event_key(services["db"].notifications([A])[0]), "m1", [], "111")
     assert await ns.post_discord() == 1 and len(ns.notifier.sent) == 2
 
 
@@ -596,7 +610,7 @@ async def test_history_and_filtered_types_are_never_posted(ns, services, http):
     await ns.poll_once()
     assert await ns.post_discord() == 1
     assert [p["embeds"][0]["title"] for p in ns.notifier.sent] == [
-        "StructureItemsMovedToSafety · Your assets in Amarr have been moved to Asset Safety!"
+        "ASSET SAFETY"
     ]
     states = {r["notification_id"]: r["posted"] for r in services["db"].notifications([A], limit=10)}
     assert states == {1: 2, 2: 2, 3: 1}
@@ -608,7 +622,7 @@ async def test_a_failed_post_is_kept_for_the_next_round(ns, services, http):
     await add_character(services, A)
 
     class Down(FakeNotifier):
-        async def send(self, payload: dict) -> dict:
+        async def send(self, payload: dict, channel_id: str | None = None) -> dict:
             raise NotifyError("Discord error 500")
 
     ns.notifier = Down()
@@ -619,36 +633,34 @@ async def test_a_failed_post_is_kept_for_the_next_round(ns, services, http):
     assert await ns.post_discord() == 1
 
 
-async def test_the_role_is_pinged_for_attacks_only(ns, services, http):
+async def test_the_role_of_a_type_is_pinged_for_that_type_only(ns, services, http):
     await add_character(services, A)
     ns.notifier = FakeNotifier()
-    ns.s.discord.mention_role_id = "4242"
+    ns.channels = lambda: all_types("111") | {"StructureUnderAttack": {"channel_id": "111", "mention_role_id": "4242"}}
     await push(http, A, [item(1, timestamp=stamp()), item(2, "StructureItemsMovedToSafety", timestamp=stamp(2))])
     await ns.poll_once()
     assert await ns.post_discord() == 2
     by_title = {p["embeds"][0]["title"]: p for p in ns.notifier.sent}
-    assert by_title["StructureUnderAttack · A structure in Amarr is under attack!"]["content"] == "<@&4242>"
-    assert (
-        "content" not in by_title["StructureItemsMovedToSafety · Your assets in Amarr have been moved to Asset Safety!"]
-    )
-    ns.s.discord.mention_role_id = ""
+    assert by_title["UNDER ATTACK"]["content"] == "<@&4242>"
+    assert "content" not in by_title["ASSET SAFETY"]
 
 
-async def test_the_wars_channel_is_used_when_notifications_have_none(tmp_path):
+def test_the_notifier_is_attached_for_the_types_that_have_a_channel(tmp_path):
     ws = WarsSettings()
-    ws.discord.bot_token, ws.discord.channel_id = "bot-token", "111"
-    with TestClient(create_app(web_settings(tmp_path, []), ws)) as c:
-        ns = c.app.state.svc.notifications
-        assert ns.notifier is not None and (ns.notifier.bot_token, ns.notifier.channel_id) == ("bot-token", "111")
+    ws.discord.bot_token = "bot-token"
+    with TestClient(create_app(web_settings(tmp_path, []), ws)) as c:  # no type has a channel: nothing is posted
+        assert c.app.state.svc.notifications.notifier is None
     own = web_settings(tmp_path / "own", [])
-    own.notifications.discord.channel_id = "222"
+    own.notifications.discord.channels = {"StructureUnderAttack": {"channel_id": "222"}}
     with TestClient(create_app(own, ws)) as c:
-        assert c.app.state.svc.notifications.notifier.channel_id == "222"
-    ws.discord.bot_token = ""  # a channel without a bot: nothing is posted
-    with TestClient(create_app(web_settings(tmp_path / "nobot", []), ws)) as c:
-        assert c.app.state.svc.notifications.notifier is None
-    with TestClient(create_app(web_settings(tmp_path / "none", []), WarsSettings())) as c:
-        assert c.app.state.svc.notifications.notifier is None
+        ns = c.app.state.svc.notifications
+        assert ns.notifier is not None and ns.notifier.bot_token == "bot-token"
+        assert ns.channels() == {"StructureUnderAttack": {"channel_id": "222", "mention_role_id": ""}}
+    hook = "https://discord.com/api/webhooks/123/abc-DEF_1"
+    only_hook = web_settings(tmp_path / "hook", [])
+    only_hook.notifications.discord.channels = {"StructureLostArmor": {"channel_id": hook}}
+    with TestClient(create_app(only_hook, WarsSettings())) as c:  # a webhook needs no bot token
+        assert c.app.state.svc.notifications.notifier is not None
 
 
 def test_notifications_stored_before_the_upgrade_are_not_posted(tmp_path):
@@ -682,82 +694,71 @@ def test_notifications_stored_before_the_upgrade_are_not_posted(tmp_path):
         db.close()
 
 
-# --------------------------------------------------------------------------- Discord rules
-class ChannelNotifier(FakeNotifier):
-    def __init__(self) -> None:
-        super().__init__()
-        self.to: list[str | None] = []
-        self.edit_to: list[str | None] = []
-
-    async def send(self, payload: dict, channel_id: str | None = None) -> dict:
-        self.to.append(channel_id)
-        return await super().send(payload)
-
-    async def edit(self, message_id: str, payload: dict, channel_id: str | None = None) -> dict | None:
-        self.edit_to.append(channel_id)
-        return await super().edit(message_id, payload)
-
-
-def rule(**kw) -> dict:
-    from evedm.config import NOTIFICATION_GROUPS
-    from evedm.discord_rules import normalize
-
-    return normalize({"source": "notifications", "channel_id": "1"} | kw, 1, list(NOTIFICATION_GROUPS))
-
-
-async def test_rules_post_a_notification_to_every_matching_channel(ns, services, http):
+# --------------------------------------------------------------------------- one channel per type
+async def test_each_type_goes_to_its_own_channel(ns, services, http):
     await add_character(services, A)
     await add_character(services, B)
-    ns.notifier = ChannelNotifier()
-    ns.s.discord.mention_role_id = "4242"  # the single channel's role: not used with rules
-    ns.rules = lambda: [
-        rule(name="attacks", channel_id="11", groups=["structure_attack"], mention_role_id="9"),
-        rule(name="asset safety", channel_id="22", types=["StructureItemsMovedToSafety"]),
-        rule(name="all of Domain", channel_id="33", regions=["domain"]),
-        rule(name="Jita only", channel_id="44", systems=["Jita"]),
-        rule(name="off", channel_id="55", enabled=False),
-        rule(name="an alerts rule", source="alerts", channel_id="66"),
-    ]
+    ns.notifier = FakeNotifier()
+    hook = "https://discord.com/api/webhooks/123/abc-DEF_1"
+    ns.channels = lambda: {
+        "StructureUnderAttack": {"channel_id": "11", "mention_role_id": "9"},
+        "StructureItemsMovedToSafety": {"channel_id": hook, "mention_role_id": ""},
+        "StructureFuelAlert": {"channel_id": "33", "mention_role_id": ""},
+    }
     when = stamp()
     await push(http, A, [item(1, timestamp=when), item(2, "StructureItemsMovedToSafety", timestamp=stamp(2))])
     await ns.poll_once()
     assert await ns.post_discord() == 2
-    sent = sorted(zip(ns.notifier.to, (p["embeds"][0]["title"] for p in ns.notifier.sent), strict=True))
-    attack = "StructureUnderAttack · A structure in Amarr is under attack!"
-    safety = "StructureItemsMovedToSafety · Your assets in Amarr have been moved to Asset Safety!"
-    assert sent == sorted([("11", attack), ("22", safety), ("33", attack), ("33", safety)])
-    pings = {to: p.get("content") for to, p in zip(ns.notifier.to, ns.notifier.sent, strict=True)}
-    assert pings == {"11": "<@&9>", "22": None, "33": None}  # a rule pings its own role, with every message
+    titles = [p["embeds"][0]["title"] for p in ns.notifier.sent]
+    sent = dict(zip(titles, zip(ns.notifier.to, ns.notifier.sent, strict=True), strict=True))
+    assert sent["UNDER ATTACK"][0] == "11" and sent["UNDER ATTACK"][1]["content"] == "<@&9>"
+    assert sent["ASSET SAFETY"][0] == hook and "content" not in sent["ASSET SAFETY"][1]
+    # the webhook URL (it holds a token) is never stored, only its ID
+    keys = [r["event_key"] for r in services["db"].query("SELECT event_key FROM notification_posts")]
+    stored = {k.rpartition("|")[2] for k in keys}
+    assert stored == {"11", "wh:123"}
 
-    # the same attack reaches a second character: the message in each of its channels is edited
+    # the same attack reaches a second character: the message in its channel is edited
     await push(http, B, [item(9, timestamp=when)])
     services["db"].set_notification_check(B, 0)
     services["esi"]._cache.clear()
     await ns.poll_once()
-    assert await ns.post_discord() == 1 and len(ns.notifier.sent) == 4
-    assert sorted(ns.notifier.edit_to) == ["11", "33"]
-    by_channel = dict(zip(ns.notifier.to, (f"m{i}" for i in range(1, 5)), strict=False))
-    assert {m for m, _ in ns.notifier.edits} <= set(by_channel.values())
-    for _, payload in ns.notifier.edits:
-        received = embed_lines(payload)["Received by"]
-        assert received.count(",") == 1
+    assert await ns.post_discord() == 1 and len(ns.notifier.sent) == 2
+    assert ns.notifier.edit_to == ["11"]
+    assert embed_lines(ns.notifier.edits[0][1])["Received by"].count(",") == 1
     assert await ns.post_discord() == 0
 
 
-async def test_a_rule_that_matches_nothing_posts_nothing(ns, services, http):
+async def test_a_type_without_a_channel_posts_nothing(ns, services, http):
     await add_character(services, A)
-    ns.notifier = ChannelNotifier()
-    ns.rules = lambda: [rule(channel_id="44", systems=["Jita"])]  # the notification is from Amarr
+    ns.notifier = FakeNotifier()
+    ns.channels = lambda: {"StructureFuelAlert": {"channel_id": "44", "mention_role_id": ""}}  # not an attack
     await push(http, A, [item(1, timestamp=stamp())])
     await ns.poll_once()
     assert await ns.post_discord() == 0 and ns.notifier.sent == []
     assert [r["posted"] for r in services["db"].notifications([A])] == [2]
-    ns.rules = lambda: [rule(source="alerts", channel_id="66")]  # no rule for notifications: the single channel
-    await push(http, A, [item(1, timestamp=stamp()), item(2, timestamp=stamp(3))])
-    services["db"].set_notification_check(A, 0)
-    services["esi"]._cache.clear()
-    await ns.poll_once()
-    assert await ns.post_discord() == 1 and ns.notifier.to == [None]
+
+
+async def test_a_webhook_posts_without_the_bot_header():
+    import httpx
+
+    from evedm.wars.discord import DiscordNotifier
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"id": "77"})
+
+    notifier = DiscordNotifier("", "", 0, transport=httpx.MockTransport(handler))  # no bot token at all
+    hook = "https://discord.com/api/webhooks/123/abc-DEF_1"
+    assert (await notifier.send({"embeds": []}, channel_id=hook))["id"] == "77"
+    assert (await notifier.edit("77", {"embeds": []}, channel_id=hook))["id"] == "77"
+    assert [(r.method, str(r.url)) for r in seen] == [
+        ("POST", hook + "?wait=true"),
+        ("PATCH", hook + "/messages/77"),
+    ]
+    assert all("authorization" not in r.headers for r in seen)
 
 
 ABANDON = "StructureImpendingAbandonmentAssetsAtRisk"
@@ -834,3 +835,13 @@ async def test_a_name_in_the_body_is_shown_and_the_event_is_one_for_every_charac
     last = ns.notifier.edits[-1][1] if ns.notifier.edits else ns.notifier.sent[0]
     fields = embed_lines(last)
     assert "C6CG-W - Euphoria HQ" in fields["Structure"] and fields["Received by"].count(",") == 1
+
+
+def test_the_discord_title_opens_with_a_short_name():
+    assert short_name_of("StructureUnderAttack") == "UNDER ATTACK"
+    assert short_name_of("StructureLostShields") == "SHIELDS LOST"
+    assert short_name_of("TowerAlertMsg") == "POS ATTACKED"
+    assert short_name_of("StructureImpendingAbandonmentAssetsAtRisk") == "ABANDONED"
+    assert short_name_of("StructureFuelAlert") == "STRUCTURE FUEL"  # no entry: first two words
+    assert short_name_of("SomethingNewMsg") == "SOMETHING NEW"
+    assert short_name_of("") == "NOTIFICATION"

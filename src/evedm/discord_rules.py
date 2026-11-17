@@ -8,6 +8,7 @@ one rule, even a switched-off one, only the rules count for that source. An empt
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -58,32 +59,19 @@ _ATTACK_TYPES = [
     "TowerAlertMsg",
     "StructureDestroyed",
 ]
-PRESETS: list[dict[str, Any]] = [
+PRESETS: list[dict[str, Any]] = []  # no ready-made alert rules; notification channels have CHANNEL_PRESETS
+
+# Ready-made notification channels the Settings page fills in with one click (rows that already have a channel keep
+# it). The channel IDs are the ones of the Discord server this was made for: change them if yours differ.
+CHANNEL_PRESETS: list[dict[str, Any]] = [
     {
         "id": "structure-notifications",
         "title": "Structure notifications: attacks, abandonment, asset safety",
-        "note": "Three rules, one channel each. The channel IDs are the ones of the Discord server this was made for: "
-        "change them in each rule if yours differ.",
-        "rules": [
-            {
-                "name": "Attacks",
-                "source": "notifications",
-                "channel_id": "1298246888495124511",
-                "types": _ATTACK_TYPES,
-            },
-            {
-                "name": "Abandonment",
-                "source": "notifications",
-                "channel_id": "1298246853783064678",
-                "types": ["StructureImpendingAbandonmentAssetsAtRisk"],
-            },
-            {
-                "name": "Asset safety",
-                "source": "notifications",
-                "channel_id": "1298246659481931858",
-                "types": ["StructureItemsMovedToSafety"],
-            },
-        ],
+        "channels": {
+            **{t: "1298246888495124511" for t in _ATTACK_TYPES},
+            "StructureImpendingAbandonmentAssetsAtRisk": "1298246853783064678",
+            "StructureItemsMovedToSafety": "1298246659481931858",
+        },
     }
 ]
 
@@ -226,3 +214,70 @@ def targets(matching: list[dict[str, Any]]) -> list[Target]:
         if rule["enabled"]:
             by_channel[rule["channel_id"]] = by_channel.get(rule["channel_id"]) or rule["mention_role_id"]
     return [Target(channel, role) for channel, role in by_channel.items()]
+
+
+# -- one channel (or webhook) per notification type ------------------------------------------------------------
+# ``notifications.discord.channels``: {ESI notification type: {channel_id, mention_role_id}}. ``channel_id`` is a
+# numeric channel the bot posts to, or a Discord webhook URL (posted without the bot). A type without an entry is
+# not posted. This replaces the notification rules and the single notification channel.
+WEBHOOK_URL = re.compile(r"^https://(?:discord|discordapp)\.com/api/webhooks/\d+/[\w-]+/?$")
+MAX_CHANNELS = 300
+
+
+def is_webhook(value: Any) -> bool:
+    """A Discord webhook URL (what ``channel_id`` may hold instead of a channel ID)."""
+    return bool(WEBHOOK_URL.match(str(value or "").strip().split("?")[0]))
+
+
+def normalize_channels(raw: Any) -> dict[str, dict[str, str]]:
+    """Every entry with both keys as text; RuleError names the notification type that is wrong."""
+    if raw is None or raw == "":
+        return {}
+    if not isinstance(raw, dict):
+        raise RuleError("notifications.discord.channels must map notification types to channels")
+    if len(raw) > MAX_CHANNELS:
+        raise RuleError(f"notifications.discord.channels: at most {MAX_CHANNELS} types")
+    out: dict[str, dict[str, str]] = {}
+    for key, entry in raw.items():
+        ntype = str(key).strip()
+        if not ntype or " " in ntype:
+            raise RuleError(f"channels: '{key}' is not a notification type")
+        if not isinstance(entry, dict):
+            entry = {"channel_id": entry}
+        unknown = sorted(set(entry) - {"channel_id", "mention_role_id"})
+        if unknown:
+            raise RuleError(f"{ntype}: unknown key(s) {unknown}")
+        channel = "" if entry.get("channel_id") is None else str(entry.get("channel_id")).strip()
+        if not channel:
+            continue  # an empty row is simply "not posted"
+        if not (channel.isdigit() or is_webhook(channel)):
+            raise RuleError(f"{ntype}: use a numeric channel ID or a Discord webhook URL")
+        role = _snowflake(entry.get("mention_role_id"), f"{ntype}: mention_role_id", required=False)
+        out[ntype] = {"channel_id": channel, "mention_role_id": role}
+    return out
+
+
+def migrate_notification_rules(
+    rules: list[dict[str, Any]],
+    channel: str,
+    groups: list[str],
+    role: str,
+    catalogue: dict[str, list[str]],
+) -> dict[str, dict[str, str]]:
+    """The per-type channels that give the notifications of the old settings the same destination: the types of each
+    enabled notification rule go to its channel (the first rule wins; place filters cannot be carried over), else the
+    types of ``groups`` go to the single ``channel``. ``role`` was pinged on structure attacks and starbases only."""
+    out: dict[str, dict[str, str]] = {}
+    everything = [t for types in catalogue.values() for t in types]
+    for rule in rules:
+        if rule.get("source") != "notifications" or not rule.get("enabled", True):
+            continue
+        wanted = [t for g in rule["groups"] for t in catalogue.get(g, [])] + list(rule["types"])
+        for ntype in wanted or everything:
+            out.setdefault(ntype, {"channel_id": rule["channel_id"], "mention_role_id": rule["mention_role_id"]})
+    if not out and channel:
+        attacked = {t for g in ("structure_attack", "tower") for t in catalogue.get(g, [])}
+        for group in groups:
+            for ntype in catalogue.get(group, []):
+                out.setdefault(ntype, {"channel_id": channel, "mention_role_id": role if ntype in attacked else ""})
+    return out

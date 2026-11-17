@@ -34,6 +34,10 @@ function pending() {
     if (resets.has(RULES_KEY)) reset.push(RULES_KEY);
     else if (rulesDirty()) set[RULES_KEY] = rules.map((e) => canon(e.rule));
   }
+  if (channelsF) {
+    if (resets.has(CHANNELS_KEY)) reset.push(CHANNELS_KEY);
+    else if (channelsDirty()) set[CHANNELS_KEY] = canonChannels();
+  }
   return { set, reset };
 }
 
@@ -46,6 +50,9 @@ function refresh() {
   const rulesQueued = resets.has(RULES_KEY), rulesReset = $("#s-rules-reset");
   $("#s-rules .s-rlist")?.classList.toggle("queued", rulesQueued);
   if (rulesReset) rulesReset.textContent = rulesQueued ? "Undo reset" : "Reset rules";
+  const chQueued = resets.has(CHANNELS_KEY), chReset = $("#s-channels-reset");
+  $("#s-channels .s-chlist")?.classList.toggle("queued", chQueued);
+  if (chReset) chReset.textContent = chQueued ? "Undo reset" : "Reset channels";
   for (const r of refs) {
     const queued = resets.has(r.f.key);
     r.box.classList.toggle("dirty", queued || r.f.key in set);
@@ -127,7 +134,7 @@ function renderGroups() {
   refs = [];
   let i = 0;
   for (const g of data.groups) {
-    const fields = g.fields.filter((f) => f.type !== "rules");
+    const fields = g.fields.filter((f) => f.type !== "rules" && f.type !== "channels");
     if (!fields.length) continue;
     const det = el("details", "s-group");
     det.open = true;
@@ -199,9 +206,9 @@ function renderDiscord() {
 
 /* ---------------------------------------------------------------- Discord rules editor */
 const RULES_KEY = "evedm:discord.rules";
-const RULES_HINT = "Every empty list filter means “any”. An alert or notification that matches several rules is posted "
-  + "to each of their channels. While a source has no rule, its single-channel settings below are used; with at "
-  + "least one rule (even switched off), only the rules are used.";
+const RULES_HINT = "Rules for structure alerts. Every empty list filter means “any”. An alert that matches several "
+  + "rules is posted to each of their channels. While there is no rule, the single-channel alert settings below are "
+  + "used; with at least one rule (even switched off), only the rules are used. Notifications have their own table above.";
 // [key, label, kind, only for source, hint]
 const RULE_FIELDS = [
   ["name", "Name", "text"], ["enabled", "Enabled", "bool"],
@@ -395,8 +402,7 @@ function renderRules() {
   regions.id = "s-regions";
   for (const name of ruleOptions().regions) regions.append(Object.assign(el("option"), { value: name }));
   rules.forEach((e, i) => list.append(ruleBlock(e, i)));
-  bar.append(button("Add alerts rule", "btn small-btn", () => addRule("alerts")),
-    button("Add notifications rule", "btn small-btn", () => addRule("notifications")));
+  bar.append(button("Add alerts rule", "btn small-btn", () => addRule("alerts")));
   if (rulesF.overridden) {
     const reset = button("Reset rules", "btn small-btn", () => {
       if (!resets.delete(RULES_KEY)) resets.add(RULES_KEY);
@@ -416,11 +422,107 @@ function renderRules() {
     ...(presets.childElementCount ? [presets] : []));
 }
 
+/* ---------------------------------------------------------------- notification channels (one per type) */
+const CHANNELS_KEY = "evedm:notifications.discord.channels";
+const CHANNELS_HINT = "One Discord channel per notification type. Enter a channel ID (posted by the bot) or a webhook "
+  + "URL (posted without the bot). A type with an empty row is not posted. The role, when given, is pinged with every "
+  + "message of that type. The header of the message is the short name shown in the first column.";
+let channelsF = null;          // the "channels" field from the server
+let chan = {};                 // editor model: { type: { channel_id, mention_role_id } }
+let loadedChannels = "";       // canonical JSON as loaded
+
+function canonChannels() {
+  const out = {};
+  for (const type of Object.keys(chan).sort()) {
+    const c = chan[type], id = (c.channel_id || "").trim();
+    if (id) out[type] = { channel_id: id, mention_role_id: (c.mention_role_id || "").trim() };
+  }
+  return out;
+}
+const channelsDirty = () => JSON.stringify(canonChannels()) !== loadedChannels;
+
+function loadChannels() {
+  channelsF = data.groups.flatMap((g) => g.fields).find((f) => f.type === "channels") || null;
+  chan = {};
+  for (const [type, c] of Object.entries(channelsF ? channelsF.value || {} : {})) {
+    chan[type] = { channel_id: String(c.channel_id || ""), mention_role_id: String(c.mention_role_id || "") };
+  }
+  loadedChannels = JSON.stringify(canonChannels());
+}
+
+function channelRow(opt) {
+  const c = (chan[opt.type] ||= { channel_id: "", mention_role_id: "" });
+  const row = el("div", "s-chrow");
+  const name = el("div", "s-chname");
+  name.append(el("strong", null, opt.short), el("span", "small", opt.type));
+  const id = Object.assign(el("input"), { type: "text", value: c.channel_id, placeholder: "channel ID or webhook URL" });
+  const role = Object.assign(el("input"), { type: "text", value: c.mention_role_id, placeholder: "role ID" });
+  id.setAttribute("aria-label", `${opt.short}: channel ID or webhook URL`);
+  role.setAttribute("aria-label", `${opt.short}: role ID`);
+  const result = el("span", "small");
+  const test = button("Test", "btn small-btn", async () => {
+    test.disabled = true;
+    try {
+      result.textContent = (await send("/api/settings/discord/test", "POST", { channel_id: c.channel_id.trim() })).detail || "sent";
+    } catch (err) {
+      result.textContent = err.message;
+    }
+    test.disabled = !c.channel_id.trim();
+  });
+  const sync = () => {
+    c.channel_id = id.value;
+    c.mention_role_id = role.value;
+    test.disabled = !c.channel_id.trim();
+    refresh();
+  };
+  id.addEventListener("input", sync);
+  role.addEventListener("input", sync);
+  test.disabled = !c.channel_id.trim();
+  row.append(name, id, role, test, result);
+  return row;
+}
+
+function renderChannels() {
+  const card = $("#s-channels");
+  card.hidden = !channelsF;
+  if (!channelsF) return;
+  const list = el("div", "s-chlist"), bar = el("div", "s-drow");
+  for (const g of data.channel_options || []) {
+    const det = el("details", "s-group");
+    det.open = true;
+    det.append(el("summary", null, g.label));
+    for (const opt of g.types) det.append(channelRow(opt));
+    list.append(det);
+  }
+  if (channelsF.overridden) {
+    const reset = button("Reset channels", "btn small-btn", () => {
+      if (!resets.delete(CHANNELS_KEY)) resets.add(CHANNELS_KEY);
+      refresh();
+    });
+    reset.id = "s-channels-reset";
+    reset.title = "go back to the channels from the configuration files";
+    bar.append(reset);
+  }
+  for (const p of data.channel_presets || []) {
+    bar.append(button(`Fill: ${p.title}`, "btn small-btn", () => {
+      for (const [type, id] of Object.entries(p.channels)) {
+        const c = (chan[type] ||= { channel_id: "", mention_role_id: "" });
+        if (!c.channel_id.trim()) c.channel_id = id;  // a row that has a channel keeps it
+      }
+      renderChannels();
+      refresh();
+    }));
+  }
+  card.replaceChildren(el("h2", null, "Notification channels"), el("p", "small", CHANNELS_HINT), list, bar);
+}
+
 function render() {
   resets.clear();
   $("#s-intro").textContent = `Changes are saved to ${data.file} and win over the configuration files and `
     + `environment variables.${data.note ? " " + data.note : ""}`;
   renderDiscord();
+  loadChannels();
+  renderChannels();
   loadRules();
   renderRules();
   renderGroups();

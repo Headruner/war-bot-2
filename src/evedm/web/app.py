@@ -34,7 +34,7 @@ from ..config import NOTIFICATION_GROUPS, WAYPOINT_SCOPE, ConfigError, Settings
 from ..crypto import TokenCipher, redact
 from ..db import Database
 from ..demo import seed_demo, seed_demo_notifications, seed_demo_roster
-from ..discord_rules import KINDS, PRESETS, SPACES, of_source
+from ..discord_rules import CHANNEL_PRESETS, KINDS, PRESETS, SPACES, is_webhook, of_source
 from ..esi import EsiClient, EsiError
 from ..evescout import EveScout
 from ..logs import LaunchRecorder, peak_rss_mb, rss_mb, setup_logging, trim_memory
@@ -342,9 +342,19 @@ def discord_status(settings: Settings, ws: WarsSettings, svc: Services) -> dict[
         # a test message goes to one channel: with rules, each rule has its own button
         return {"enabled": bool(on), "ready": False, "detail": detail}
 
+    def channels_row(service: Any, d: Any) -> dict[str, Any]:
+        n = len(d.channels)
+        if service is None:
+            return row(service, d.enabled)
+        detail = f"{n} notification type(s) with a channel or webhook" if n else "no type has a channel yet"
+        if getattr(service, "notifier", None) is None and n and d.enabled:
+            detail += "; posting is not ready"
+        # a test message goes to one channel: every row has its own button
+        return {"enabled": d.enabled and bool(n), "ready": False, "detail": detail}
+
     return {
         "wars": row(svc.wars, ws.discord.enabled),
-        "notifications": ruled("notifications", svc.notifications, settings.notifications.discord.enabled),
+        "notifications": channels_row(svc.notifications, settings.notifications.discord),
         "alerts": ruled("alerts", svc.alerts, settings.alerts.discord.enabled),
     }
 
@@ -352,38 +362,45 @@ def discord_status(settings: Settings, ws: WarsSettings, svc: Services) -> dict[
 REMOVED_ENV = ("EVEDM_WARS_DISCORD_WEBHOOK", "EVEDM_NOTIFICATIONS_DISCORD_WEBHOOK", "EVEDM_ALERTS_DISCORD_WEBHOOK")
 
 
+def channel_options() -> list[dict[str, Any]]:
+    """The rows of the notification channel table: every grouped type with the short name its Discord header shows."""
+    from ..notifications import GROUP_LABELS, short_name_of
+
+    return [
+        {
+            "group": group,
+            "label": GROUP_LABELS.get(group, group),
+            "types": [{"type": t, "short": short_name_of(t)} for t in types],
+        }
+        for group, types in NOTIFICATION_GROUPS.items()
+    ]
+
+
 def attach_notification_discord(settings: Settings, ws: WarsSettings, svc: Services) -> None:
-    """Post notifications to Discord as the bot: by the Discord rules when there are any, else to their own
-    channel, else to the wars channel."""
+    """Post notifications to Discord: each type to its own channel (the bot) or webhook, as set in
+    ``notifications.discord.channels``; a type without an entry is not posted."""
     ns = svc.notifications
     d = settings.notifications.discord
     if ns is None:
         return
     ns.notifier = None
-    ns.rules = lambda: settings.discord.rules
-    ruled = has_rules(settings, "notifications")  # the rules name the channels; the single channel is not used
-    if settings.demo or not (ruled or d.enabled):
+    ns.channels = lambda: settings.notifications.discord.channels
+    if settings.demo or not (d.enabled and d.channels):
         return
     from ..wars.discord import DiscordNotifier
     from ..wars.service import public_base
 
     token = settings.discord.bot_token or ws.discord.bot_token
-    channel = "" if ruled else d.channel_id or ws.discord.channel_id
-    if not token or not (ruled or channel):
-        log.info(
-            "notifications are not posted to Discord: no bot token or channel"
-            " (EVEDM_DISCORD_BOT_TOKEN, EVEDM_WARS_DISCORD_CHANNEL_ID)"
-        )
-        return
+    bot_needed = any(not is_webhook(e["channel_id"]) for e in d.channels.values())
+    if bot_needed and not token:
+        log.warning("notifications: channels need the bot token (EVEDM_DISCORD_BOT_TOKEN); webhooks still post")
     base = public_base(settings, ws)
-    ns.notifier = DiscordNotifier(
-        token, channel, ws.discord.min_seconds_between_posts, dry_run=ws.discord.dry_run
-    )
+    ns.notifier = DiscordNotifier(token, "", ws.discord.min_seconds_between_posts, dry_run=ws.discord.dry_run)
     ns.page_url = f"{base}/notifications" if base else None
     ns.site_url = base or None
     ns.evescout = svc.evescout
-    where = "by the rules" if ruled else "their own channel" if d.channel_id else "the wars channel"
-    log.info("notifications are posted to Discord (%s)", where)
+    hooks = sum(is_webhook(e["channel_id"]) for e in d.channels.values())
+    log.info("notifications are posted to Discord: %d type(s), %d by webhook", len(d.channels), hooks)
 
 
 def create_app(settings: Settings, wars_settings: WarsSettings | None = None) -> FastAPI:
@@ -1547,8 +1564,9 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
             "discord": discord_status(settings, ws, svc_of(request)),
             "discord_bot": presence.state if presence is not None else None,
             "rule_options": options,
+            "channel_options": channel_options(),
         }
-        return admin.state() | extra | {"rule_presets": PRESETS}
+        return admin.state() | extra | {"rule_presets": PRESETS, "channel_presets": CHANNEL_PRESETS}
 
     def named_places(rules: Any, graph: GateGraph) -> Any:
         """The rules with their system and region names as the universe spells them; 400 for an unknown one."""
@@ -1652,12 +1670,13 @@ def create_app(settings: Settings, wars_settings: WarsSettings | None = None) ->
         target, channel = body.get("target"), str(body.get("channel_id") or "").strip()
         svc = svc_of(request)
         services = {"wars": svc.wars, "notifications": svc.notifications, "alerts": svc.alerts}
-        if channel:  # the channel of a rule (saved or not), with the saved bot token
+        if channel:  # a channel of a rule or notification type (saved or not): bot token, or the webhook itself
             token = settings.discord.bot_token or ws.discord.bot_token
-            if not channel.isdigit() or not token:
-                problem = "save the bot token first" if channel.isdigit() else "channel_id must be a numeric ID"
+            hook = is_webhook(channel)
+            if not (channel.isdigit() or hook) or (not hook and not token):
+                problem = "save the bot token first" if channel.isdigit() else "use a channel ID or a webhook URL"
                 raise HTTPException(status_code=400, detail=problem)
-            notifier, target = DiscordNotifier(token, channel, 0), "this rule's messages"
+            notifier, target = DiscordNotifier(token, channel, 0), "this channel's messages"
         elif target not in services:
             raise HTTPException(status_code=400, detail="target must be wars, notifications or alerts")
         else:

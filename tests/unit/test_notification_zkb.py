@@ -7,7 +7,7 @@ import sqlite3
 import time
 
 import pytest
-from test_notifications import A, B, FakeNotifier, item, push, stamp
+from test_notifications import A, B, FakeNotifier, all_types, item, push, stamp
 
 from common import AMARR, JITA, add_character, embed_lines
 from evedm.cli import main
@@ -30,6 +30,7 @@ def ns(settings, services, graph):  # noqa: ANN001, ANN201
         settings.notifications, services["db"], graph, services["chars"], services["esi"], demo=False
     )
     services["db"].save_type_names({ASTRAHUS: "Astrahus", FORTIZAR: "Fortizar"})
+    s.channels = lambda: all_types("111")
     return s
 
 

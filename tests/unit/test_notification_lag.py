@@ -12,7 +12,7 @@ import time
 
 import httpx
 import pytest
-from test_notifications import A, B, FakeNotifier, item, push, sight, stamp
+from test_notifications import A, B, FakeNotifier, all_types, item, push, sight, stamp
 
 from common import add_character
 from evedm.cli import main
@@ -32,9 +32,11 @@ pytestmark = pytest.mark.anyio
 
 @pytest.fixture
 def ns(settings, services, graph):  # noqa: ANN001, ANN201
-    return NotificationService(
+    service = NotificationService(
         settings.notifications, services["db"], graph, services["chars"], services["esi"], demo=False
     )
+    service.channels = lambda: all_types("111")
+    return service
 
 
 def near(got: float, want: float, tol: float = 0.01) -> bool:
@@ -547,7 +549,7 @@ async def test_discord_gets_a_character_as_soon_as_it_is_read_not_after_the_roun
             break
         await asyncio.sleep(0.01)
     assert len(ns.notifier.sent) == 1 and not task.done()  # A's message is out while B is still being read
-    assert "under attack" in ns.notifier.sent[0]["embeds"][0]["title"]
+    assert ns.notifier.sent[0]["embeds"][0]["title"] == "UNDER ATTACK"
     release.set()
     assert await task == 2
     assert len(ns.notifier.sent) == 2  # B follows as soon as it is stored; nothing posted twice
@@ -563,7 +565,7 @@ async def test_a_failed_post_is_not_hammered_by_every_read_and_is_retried_when_d
     class Down(FakeNotifier):
         attempts = 0
 
-        async def send(self, payload: dict) -> dict:
+        async def send(self, payload: dict, channel_id: str | None = None) -> dict:
             Down.attempts += 1
             await asyncio.sleep(0.05)  # both reads are done and waiting to post by the time this fails
             raise NotifyError("Discord error 500")

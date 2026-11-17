@@ -70,12 +70,52 @@ def test_a_wrong_rule_is_refused_by_name(raw, message):
 def test_rules_in_the_configuration_file_are_validated_at_start():
     s = Settings()
     s.secret_key, s.demo = "k", True
-    s.discord.rules = [{"source": "notifications", "channel_id": 42, "groups": ["asset_safety"]}]
+    s.discord.rules = [{"source": "alerts", "channel_id": 42, "kinds": ["destroyed"]}]
     s.validate_for_serve()
     assert s.discord.rules[0]["channel_id"] == "42" and s.discord.rules[0]["types"] == []
-    s.discord.rules = [{"source": "notifications", "channel_id": "x"}]
+    s.discord.rules = [{"source": "alerts", "channel_id": "x"}]
     with pytest.raises(ConfigError, match=r"discord.rules: rule 1: channel_id"):
         s.validate_for_serve()
+
+
+def test_old_notification_rules_and_the_single_channel_become_channels_once():
+    from evedm.config import NOTIFICATION_GROUPS
+
+    s = Settings()
+    s.secret_key, s.demo = "k", True
+    s.discord.rules = [
+        {"source": "notifications", "channel_id": 11, "groups": ["asset_safety"], "mention_role_id": "5"},
+        {"source": "notifications", "channel_id": 22, "types": ["StructureUnderAttack", "StructureItemsDelivered"]},
+        {"source": "notifications", "channel_id": 33, "enabled": False, "types": ["StructureLostArmor"]},
+        {"source": "alerts", "channel_id": 44},
+    ]
+    s.validate_for_serve()
+    ch = s.notifications.discord.channels
+    assert ch["StructureItemsMovedToSafety"] == {"channel_id": "11", "mention_role_id": "5"}
+    assert ch["StructureItemsDelivered"]["channel_id"] == "11"  # the first rule wins
+    assert ch["StructureUnderAttack"]["channel_id"] == "22" and "StructureLostArmor" not in ch  # a rule that is off
+    assert [r["source"] for r in s.discord.rules] == ["alerts"]  # notification rules are gone, alert rules stay
+    s.validate_for_serve()  # again: nothing changes
+    assert s.notifications.discord.channels == ch
+
+    old = Settings()
+    old.secret_key, old.demo = "k", True
+    old.notifications.discord.channel_id, old.notifications.discord.mention_role_id = 77, "8"
+    old.validate_for_serve()
+    channels = old.notifications.discord.channels
+    assert channels["StructureUnderAttack"] == {"channel_id": "77", "mention_role_id": "8"}  # the role of attacks
+    assert channels["StructureItemsMovedToSafety"] == {"channel_id": "77", "mention_role_id": ""}
+    assert "OrbitalAttacked" not in channels and set(channels) <= {t for v in NOTIFICATION_GROUPS.values() for t in v}
+
+
+def test_channels_that_exist_are_not_replaced_by_the_old_settings():
+    s = Settings()
+    s.secret_key, s.demo = "k", True
+    s.notifications.discord.channels = {"StructureDestroyed": {"channel_id": "5"}}
+    s.notifications.discord.channel_id = "77"
+    s.validate_for_serve()
+    assert s.notifications.discord.channels == {"StructureDestroyed": {"channel_id": "5", "mention_role_id": ""}}
+
 
 
 def test_place_filters():
